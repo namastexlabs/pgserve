@@ -35,3 +35,7 @@ Thumbs.db
 
 # Benchmark results
 tests/benchmarks/results/
+
+demo-data/
+test-data-*/
+*.log

@@ -33,7 +33,9 @@
   "homepage": "https://github.com/namastexlabs/pglite-embedded-server#readme",
   "dependencies": {
     "@electric-sql/pglite": "^0.3.14",
-    "@electric-sql/pglite-socket": "^0.0.19"
+    "@electric-sql/pglite-socket": "^0.0.19",
+    "pino": "^10.1.0",
+    "pino-pretty": "^13.1.2"
   },
   "devDependencies": {
     "better-sqlite3": "^11.10.0",
