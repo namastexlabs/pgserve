@@ -1,5 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
-import { createServer, LogLevel } from 'pglite-server';
+import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { Worker } from 'worker_threads';
 import path from 'path';
 import fs from 'fs';
@@ -135,30 +135,20 @@ export async function startServer({ dataDir, port, logLevel = 'info' }) {
   console.log(`🚀 Initializing PGlite database in ${absoluteDataDir}...`);
   const db = new PGlite(absoluteDataDir);
 
-  // Map log level
-  const logLevelMap = {
-    error: LogLevel.Error,
-    warn: LogLevel.Warn,
-    info: LogLevel.Info,
-    debug: LogLevel.Debug
-  };
-
-  // Create TCP server
-  const server = createServer(db, {
-    logLevel: logLevelMap[logLevel] || LogLevel.Info
+  // Create socket server
+  const server = new PGLiteSocketServer({
+    db,
+    port,
+    host: '127.0.0.1',
+    inspect: logLevel === 'debug' // Enable protocol inspection in debug mode
   });
 
-  // Start listening
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
+  // Start server
+  await server.start();
 
-    server.listen(port, '127.0.0.1', () => {
-      console.log(`✅ PGlite server running on postgresql://localhost:${port}`);
-      console.log(`📁 Data directory: ${absoluteDataDir}`);
-      console.log(`⚡ Mode: Adaptive (${config.workers} ${config.workers === 1 ? 'worker' : 'workers'})`);
-      resolve();
-    });
-  });
+  console.log(`✅ PGlite server running on postgresql://localhost:${port}`);
+  console.log(`📁 Data directory: ${absoluteDataDir}`);
+  console.log(`⚡ Mode: Adaptive (${config.workers} ${config.workers === 1 ? 'worker' : 'workers'})`);
 
   // Add permanent error handler for server lifetime
   server.on('error', (error) => {
@@ -177,8 +167,8 @@ export async function startServer({ dataDir, port, logLevel = 'info' }) {
     console.log(`\n🛑 Shutting down server on port ${port}...`);
 
     try {
-      // Close TCP server
-      server.close();
+      // Stop socket server
+      await server.stop();
     } catch (error) {
       console.error('⚠️  Error closing server:', error.message);
     }

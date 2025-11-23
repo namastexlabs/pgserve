@@ -1,10 +1,15 @@
 /**
  * @namastexlabs/pglite-embedded-server
  *
- * Multi-instance PostgreSQL embedded server using PGlite
- * Zero config, auto-port allocation, perfect for development and embedded apps
+ * Multi-tenant PostgreSQL router using PGlite
+ * Single port, auto-provisioning, perfect for multi-user apps and AI agents
  */
 
+// Multi-tenant mode (NEW - recommended)
+export { MultiTenantRouter, startMultiTenantServer } from './router.js';
+export { InstancePool } from './pool.js';
+
+// Legacy single-instance mode (backwards compatible)
 import { startServer as _startServer, stopServer as _stopServer } from './server.js';
 import { allocatePort, getPortRangeInfo } from './ports.js';
 import {

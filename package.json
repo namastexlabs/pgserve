@@ -33,10 +33,11 @@
   "homepage": "https://github.com/namastexlabs/pglite-embedded-server#readme",
   "dependencies": {
     "@electric-sql/pglite": "^0.3.14",
-    "pglite-server": "^0.1.4"
+    "@electric-sql/pglite-socket": "^0.0.19"
   },
   "devDependencies": {
-    "better-sqlite3": "^11.10.0"
+    "better-sqlite3": "^11.10.0",
+    "pg": "^8.16.3"
   },
   "engines": {
     "node": ">=18.0.0"
