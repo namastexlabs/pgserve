@@ -11,6 +11,7 @@
  */
 
 const PROTOCOL_VERSION_3 = 196608;
+const SSL_REQUEST_CODE = 80877103; // PostgreSQL SSL negotiation request
 const DATABASE_KEY = Buffer.from('database\0');
 
 /**
@@ -187,13 +188,29 @@ export async function readStartupMessage(socket) {
 }
 
 /**
- * Extract database name from socket connection
+ * Extract database name from socket connection (with SSL negotiation support)
  *
  * @param {net.Socket} socket - TCP socket
  * @returns {Promise<{dbName: string, buffered: Buffer}>} Database name and buffered data
  */
 export async function extractDatabaseNameFromSocket(socket) {
-  const { message, allData } = await readStartupMessage(socket);
+  let { message, allData } = await readStartupMessage(socket);
+
+  // Check if this is an SSL request
+  if (message.length >= 8) {
+    const version = message.readInt32BE(4);
+
+    if (version === SSL_REQUEST_CODE) {
+      // Respond with 'N' (no SSL support)
+      socket.write(Buffer.from('N'));
+
+      // Read the actual startup message
+      const result = await readStartupMessage(socket);
+      message = result.message;
+      allData = result.allData;
+    }
+  }
+
   const dbName = extractDatabaseName(message);
   return { dbName, buffered: allData };
 }

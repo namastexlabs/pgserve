@@ -9,7 +9,8 @@ import {
   findByDataDir,
   findByPort,
   portInfo,
-  cleanup
+  cleanup,
+  startMultiTenantServer
 } from '../src/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -39,16 +40,27 @@ const command = args[0];
 function printHelp() {
   console.log(`
 ╔═══════════════════════════════════════════════════════════════════╗
-║  PGlite Embedded Server - Multi-Instance PostgreSQL              ║
+║  PGlite Embedded Server - Multi-Tenant PostgreSQL Router         ║
 ╚═══════════════════════════════════════════════════════════════════╝
 
 USAGE:
   pglite-server <command> [options]
 
 COMMANDS:
-  start <dataDir>              Start server for data directory
-    --port <number>            Use specific port (default: auto-allocate)
+  🚀 MULTI-TENANT MODE (Recommended):
+
+  router                       Start multi-tenant router (single port, auto-provision)
+    --port <number>            PostgreSQL port (default: 5432)
+    --dir <path>               Base directory for databases (default: ./data)
+    --max <number>             Max concurrent databases (default: 100)
     --log <level>              Log level: error, warn, info, debug (default: info)
+    --no-provision             Disable auto-provisioning
+
+  📦 LEGACY MODE (Single instance):
+
+  start <dataDir>              Start server for specific data directory
+    --port <number>            Use specific port (default: auto-allocate 12000-12999)
+    --log <level>              Log level (default: info)
 
   stop <dataDir>               Stop server by data directory
   stop --port <number>         Stop server by port
@@ -68,25 +80,28 @@ COMMANDS:
   help                         Show this help message
 
 EXAMPLES:
-  # Start server (auto-allocate port)
-  pglite-server start ./data/my-db
+  🚀 Multi-tenant mode (RECOMMENDED):
 
-  # Start on specific port
+  # Start router on default port 5432
+  pglite-server router
+
+  # Start on custom port with custom data directory
+  pglite-server router --port 5433 --dir /var/lib/pglite
+
+  # Connect clients:
+  # postgresql://localhost:5432/user123    → auto-creates ./data/user123/
+  # postgresql://localhost:5432/app456     → auto-creates ./data/app456/
+
+  📦 Legacy mode:
+
+  # Start single instance
   pglite-server start ./data/my-db --port 12000
 
-  # List all instances
+  # List instances
   pglite-server list
 
-  # Get connection URL
-  pglite-server url ./data/my-db
-
-  # Stop instance
-  pglite-server stop ./data/my-db
-
-  # Stop all instances
+  # Stop all
   pglite-server stop --all
-
-PORT RANGE: 12000-12999 (1000 available ports)
 
 `);
 }
@@ -322,9 +337,70 @@ function cmdCleanup() {
   }
 }
 
+/**
+ * Command: router (multi-tenant mode)
+ */
+async function cmdRouter() {
+  // Parse options
+  const portIndex = args.indexOf('--port');
+  const port = portIndex >= 0 ? parseInt(args[portIndex + 1], 10) : 5432;
+
+  const dirIndex = args.indexOf('--dir');
+  const dataDir = dirIndex >= 0 ? args[dirIndex + 1] : './data';
+
+  const maxIndex = args.indexOf('--max');
+  const maxInstances = maxIndex >= 0 ? parseInt(args[maxIndex + 1], 10) : 100;
+
+  const logIndex = args.indexOf('--log');
+  const logLevel = logIndex >= 0 ? args[logIndex + 1] : 'info';
+
+  const autoProvision = !args.includes('--no-provision');
+
+  try {
+    console.log(`
+╔═══════════════════════════════════════════════════════════════════╗
+║  Starting Multi-Tenant PostgreSQL Router                         ║
+╚═══════════════════════════════════════════════════════════════════╝
+`);
+
+    const router = await startMultiTenantServer({
+      port,
+      baseDir: dataDir,
+      maxInstances,
+      logLevel,
+      autoProvision
+    });
+
+    console.log(`
+✅ Multi-tenant router started successfully!
+
+📍 PostgreSQL endpoint: postgresql://localhost:${port}/<database>
+📁 Data directory: ${dataDir}
+🎯 Auto-provision: ${autoProvision ? 'enabled' : 'disabled'}
+📊 Max instances: ${maxInstances}
+
+💡 Examples:
+   postgresql://localhost:${port}/user123   → Creates ${dataDir}/user123/
+   postgresql://localhost:${port}/app456    → Creates ${dataDir}/app456/
+
+Press Ctrl+C to stop
+`);
+
+    // Keep process alive
+    await new Promise(() => {});
+  } catch (error) {
+    console.error(`❌ Failed to start router: ${error.message}`);
+    process.exit(1);
+  }
+}
+
 // Main CLI router
 async function main() {
   switch (command) {
+    case 'router':
+      await cmdRouter();
+      break;
+
     case 'start':
       await cmdStart();
       break;
