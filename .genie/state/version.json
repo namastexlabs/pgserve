@@ -1,0 +1,16 @@
+{
+  "version": "2.5.27-rc.4",
+  "installedAt": "2025-11-23T13:42:06.789Z",
+  "updatedAt": "2025-11-23T13:42:06.789Z",
+  "commit": "98eb883",
+  "packageName": "automagik-genie",
+  "customizedFiles": [],
+  "deletedFiles": [],
+  "lastUpgrade": null,
+  "previousVersion": null,
+  "upgradeHistory": [],
+  "migrationInfo": {
+    "backupId": "n/a",
+    "claudeBackedUp": false
+  }
+}
