@@ -12,6 +12,24 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+// Global error handlers (suppress expected PGlite WASM ExitStatus errors)
+process.on('unhandledRejection', (reason, promise) => {
+  // ExitStatus errors are expected from PGlite WASM cleanup - ignore them
+  if (reason && reason.name === 'ExitStatus') {
+    return;
+  }
+  console.error('❌ Unhandled Promise Rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  // ExitStatus errors are expected from PGlite WASM cleanup - ignore them
+  if (error && error.name === 'ExitStatus') {
+    return;
+  }
+  console.error('❌ Uncaught Exception:', error);
+  process.exit(1);
+});
+
 const RESULTS_DIR = new URL('./results', import.meta.url).pathname;
 
 /**
