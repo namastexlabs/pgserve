@@ -2,7 +2,7 @@
 name: garbage-cleaner
 description: Individual PR executor for garbage-collection fixes - implements
 genie:
-  executor: CLAUDE_CODE
+  executor: OPENCODE
   background: true
   model: sonnet
 forge:

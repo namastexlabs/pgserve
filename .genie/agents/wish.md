@@ -3,7 +3,7 @@ name: wish
 description: Universal wish architect - converts ideas into roadmap-aligned
   wishes with spec contracts (all domains)
 genie:
-  executor: CLAUDE_CODE
+  executor: OPENCODE
   background: true
   model: sonnet
 forge:

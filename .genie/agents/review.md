@@ -3,7 +3,7 @@ name: review
 description: Universal review orchestrator - wish audits, code review, and QA
   validation with evidence-based verdicts (all domains)
 genie:
-  executor: CLAUDE_CODE
+  executor: OPENCODE
   background: true
   model: sonnet
 forge:

@@ -2,7 +2,7 @@
 name: update
 description: Process framework upgrade diffs and apply changes intelligently
 genie:
-  executor: CLAUDE_CODE
+  executor: OPENCODE
   background: false
   model: sonnet
 forge:
