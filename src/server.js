@@ -135,6 +135,9 @@ export async function startServer({ dataDir, port, logLevel = 'info' }) {
   console.log(`🚀 Initializing PGlite database in ${absoluteDataDir}...`);
   const db = new PGlite(absoluteDataDir);
 
+  // Wait for PGlite to be ready
+  await db.waitReady;
+
   // Create socket server
   const server = new PGLiteSocketServer({
     db,
@@ -150,11 +153,13 @@ export async function startServer({ dataDir, port, logLevel = 'info' }) {
   console.log(`📁 Data directory: ${absoluteDataDir}`);
   console.log(`⚡ Mode: Adaptive (${config.workers} ${config.workers === 1 ? 'worker' : 'workers'})`);
 
-  // Add permanent error handler for server lifetime
-  server.on('error', (error) => {
-    console.error(`⚠️  Server error on port ${port}:`, error.message);
-    // Log but don't crash - PM2 will handle restarts if needed
-  });
+  // Add permanent error handler for server lifetime (if supported)
+  if (typeof server.on === 'function') {
+    server.on('error', (error) => {
+      console.error(`⚠️  Server error on port ${port}:`, error.message);
+      // Log but don't crash - PM2 will handle restarts if needed
+    });
+  }
 
   // Create lock file
   const lockFile = createLockFile(absoluteDataDir, port, process.pid);

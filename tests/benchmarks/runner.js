@@ -7,10 +7,13 @@
 
 import Database from 'better-sqlite3';
 import { PGlite } from '@electric-sql/pglite';
-import { getOrStart } from '../../src/index.js';
+import { startServer, cleanup } from '../../src/index.js';
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import pg from 'pg';
+
+const { Pool } = pg;
 
 // Global error handlers (suppress expected PGlite WASM ExitStatus errors)
 process.on('unhandledRejection', (reason, promise) => {
@@ -175,24 +178,53 @@ async function benchmarkSQLite(scenario) {
 async function benchmarkPGlite(scenario) {
   console.log('  🔹 Running PGlite benchmark...');
 
+  // Clean up stale instances
+  cleanup();
+
   const dataDir = path.join(RESULTS_DIR, 'pglite-bench');
   if (fs.existsSync(dataDir)) {
     fs.rmSync(dataDir, { recursive: true });
   }
 
-  const instance = await getOrStart({
+  const instance = await startServer({
     dataDir,
     port: 12999,
     autoPort: true,
     logLevel: 'error'
   });
 
-  // Wait for server to be ready
+  // Connect via PostgreSQL pool (proper way to use the server)
+  const pool = new Pool({
+    host: 'localhost',
+    port: instance.port,
+    database: 'postgres',
+    max: 20,
+    connectionTimeoutMillis: 10000,
+    ssl: false
+  });
+
+  // Give server a moment to be fully ready
   await new Promise(resolve => setTimeout(resolve, 1000));
 
-  // Setup schema using PGlite directly
-  const db = new PGlite(dataDir);
-  await db.exec(`
+  // Wait for server to be ready with retries
+  let connected = false;
+  for (let i = 0; i < 10; i++) {
+    try {
+      await pool.query('SELECT 1');
+      connected = true;
+      break;
+    } catch (error) {
+      if (i === 9) throw error;
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+
+  if (!connected) {
+    throw new Error('Failed to connect to PGlite server');
+  }
+
+  // Setup schema
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS messages (
       id SERIAL PRIMARY KEY,
       content TEXT,
@@ -216,7 +248,7 @@ async function benchmarkPGlite(scenario) {
             for (let j = 0; j < perThread; j++) {
               const start = Date.now();
               try {
-                await db.query(
+                await pool.query(
                   'INSERT INTO messages (content, timestamp) VALUES ($1, $2)',
                   [`Message ${i}-${j}`, Date.now()]
                 );
@@ -234,14 +266,94 @@ async function benchmarkPGlite(scenario) {
   }
 
   metrics.end();
-  await db.close();
+
+  // Cleanup
+  await pool.end();
 
   // Stop instance
-  if (!instance.existing) {
+  try {
     await instance.stop();
+  } catch (error) {
+    // ExitStatus errors are expected during WASM cleanup - ignore them
+    if (error.name !== 'ExitStatus') {
+      console.error('⚠️  Error stopping instance:', error.message);
+    }
   }
 
   return metrics.getReport();
+}
+
+/**
+ * PostgreSQL Server Benchmark
+ */
+async function benchmarkPostgreSQL(scenario) {
+  console.log('  🔷 Running PostgreSQL Server benchmark...');
+
+  const pool = new Pool({
+    host: '192.168.112.135',
+    port: 5432,
+    user: 'postgres',
+    password: '#Duassenha#2024',
+    database: 'genie_evolution',
+    max: 20 // Connection pool size
+  });
+
+  try {
+    // Setup schema (use bench_ prefix to avoid conflicts)
+    await pool.query(`
+      DROP TABLE IF EXISTS bench_messages;
+      CREATE TABLE bench_messages (
+        id SERIAL PRIMARY KEY,
+        content TEXT,
+        timestamp BIGINT
+      )
+    `);
+
+    const metrics = new Metrics();
+    metrics.start();
+
+    // Run operations
+    for (const op of scenario.operations) {
+      if (op.type === 'INSERT') {
+        const concurrent = op.concurrent || 1;
+        const perThread = Math.floor(op.count / concurrent);
+
+        const promises = [];
+        for (let i = 0; i < concurrent; i++) {
+          promises.push(
+            (async () => {
+              for (let j = 0; j < perThread; j++) {
+                const start = Date.now();
+                try {
+                  await pool.query(
+                    'INSERT INTO bench_messages (content, timestamp) VALUES ($1, $2)',
+                    [`Message ${i}-${j}`, Date.now()]
+                  );
+                  metrics.addLatency(Date.now() - start);
+                } catch (error) {
+                  metrics.addError(error);
+                }
+              }
+            })()
+          );
+        }
+
+        await Promise.all(promises);
+      }
+    }
+
+    metrics.end();
+
+    // Cleanup
+    await pool.query('DROP TABLE IF EXISTS bench_messages');
+    await pool.end();
+
+    return metrics.getReport();
+  } catch (error) {
+    console.error('   ❌ PostgreSQL benchmark failed:', error.message);
+    await pool.end();
+    throw error;
+  }
 }
 
 /**
@@ -266,24 +378,57 @@ function generateReport(results) {
     md += `${scenario.description}\n\n`;
 
     md += '```\n';
-    md += '┌─────────────────┬──────────┬──────────┬──────────┐\n';
-    md += '│ Database        │ SQLite   │ PGlite   │ Winner   │\n';
-    md += '├─────────────────┼──────────┼──────────┼──────────┤\n';
+    md += '┌─────────────────┬──────────┬──────────┬──────────┬──────────┐\n';
+    md += '│ Database        │ SQLite   │ PGlite   │ PostgreSQL│ Winner   │\n';
+    md += '├─────────────────┼──────────┼──────────┼──────────┼──────────┤\n';
 
     const sqlite = scenario.sqlite;
     const pglite = scenario.pglite;
+    const postgres = scenario.postgres;
 
-    md += `│ Throughput      │ ${String(sqlite.throughput).padEnd(8)} │ ${String(pglite.throughput).padEnd(8)} │ ${pglite.throughput > sqlite.throughput ? 'PGlite' : 'SQLite'}   │\n`;
-    md += `│ P50 latency     │ ${String(sqlite.p50) + 'ms'.padEnd(8)} │ ${String(pglite.p50) + 'ms'.padEnd(8)} │ ${pglite.p50 < sqlite.p50 ? 'PGlite' : 'SQLite'}   │\n`;
-    md += `│ P99 latency     │ ${String(sqlite.p99) + 'ms'.padEnd(8)} │ ${String(pglite.p99) + 'ms'.padEnd(8)} │ ${pglite.p99 < sqlite.p99 ? 'PGlite' : 'SQLite'}   │\n`;
-    md += `│ Errors          │ ${String(sqlite.errors).padEnd(8)} │ ${String(pglite.errors).padEnd(8)} │ ${pglite.errors < sqlite.errors ? 'PGlite' : 'SQLite'}   │\n`;
-    md += `│ Lock timeouts   │ ${String(sqlite.lockTimeouts).padEnd(8)} │ ${String(pglite.lockTimeouts).padEnd(8)} │ ${pglite.lockTimeouts < sqlite.lockTimeouts ? 'PGlite' : 'SQLite'}   │\n`;
-    md += '└─────────────────┴──────────┴──────────┴──────────┘\n';
+    // Find winner for each metric
+    const maxThroughput = Math.max(sqlite.throughput, pglite.throughput, postgres.throughput);
+    const minP50 = Math.min(sqlite.p50, pglite.p50, postgres.p50);
+    const minP99 = Math.min(sqlite.p99, pglite.p99, postgres.p99);
+    const minErrors = Math.min(sqlite.errors, pglite.errors, postgres.errors);
+
+    const getThroughputWinner = () => {
+      if (postgres.throughput === maxThroughput) return 'PostgreSQL';
+      if (pglite.throughput === maxThroughput) return 'PGlite';
+      return 'SQLite';
+    };
+
+    const getLatencyWinner = (metric) => {
+      const pg = postgres[metric];
+      const pgl = pglite[metric];
+      const sql = sqlite[metric];
+      if (pg === Math.min(pg, pgl, sql)) return 'PostgreSQL';
+      if (pgl === Math.min(pg, pgl, sql)) return 'PGlite';
+      return 'SQLite';
+    };
+
+    md += `│ Throughput (qps)│ ${String(sqlite.throughput).padEnd(8)} │ ${String(pglite.throughput).padEnd(8)} │ ${String(postgres.throughput).padEnd(9)} │ ${getThroughputWinner().padEnd(8)} │\n`;
+    md += `│ P50 latency (ms)│ ${String(sqlite.p50).padEnd(8)} │ ${String(pglite.p50).padEnd(8)} │ ${String(postgres.p50).padEnd(9)} │ ${getLatencyWinner('p50').padEnd(8)} │\n`;
+    md += `│ P99 latency (ms)│ ${String(sqlite.p99).padEnd(8)} │ ${String(pglite.p99).padEnd(8)} │ ${String(postgres.p99).padEnd(9)} │ ${getLatencyWinner('p99').padEnd(8)} │\n`;
+    md += `│ Errors          │ ${String(sqlite.errors).padEnd(8)} │ ${String(pglite.errors).padEnd(8)} │ ${String(postgres.errors).padEnd(9)} │ ${postgres.errors === minErrors ? 'PostgreSQL' : (pglite.errors === minErrors ? 'PGlite' : 'SQLite').padEnd(8)} │\n`;
+    md += `│ Lock timeouts   │ ${String(sqlite.lockTimeouts).padEnd(8)} │ ${String(pglite.lockTimeouts).padEnd(8)} │ ${String(postgres.lockTimeouts).padEnd(9)} │ N/A      │\n`;
+    md += '└─────────────────┴──────────┴──────────┴──────────┴──────────┘\n';
     md += '```\n\n';
 
-    if (pglite.throughput > sqlite.throughput) {
-      const improvement = ((pglite.throughput / sqlite.throughput - 1) * 100).toFixed(1);
-      md += `💡 **PGlite is ${improvement}% faster than SQLite for this workload**\n\n`;
+    // Analysis
+    const winner = getThroughputWinner();
+    if (winner === 'PostgreSQL') {
+      const vsSQL = ((postgres.throughput / sqlite.throughput - 1) * 100).toFixed(1);
+      const vsPGL = ((postgres.throughput / pglite.throughput - 1) * 100).toFixed(1);
+      md += `💡 **PostgreSQL Server is ${vsSQL}% faster than SQLite and ${vsPGL}% faster than PGlite**\n\n`;
+    } else if (winner === 'PGlite') {
+      const vsSQL = ((pglite.throughput / sqlite.throughput - 1) * 100).toFixed(1);
+      const vsPG = ((pglite.throughput / postgres.throughput - 1) * 100).toFixed(1);
+      md += `💡 **PGlite is ${vsSQL}% faster than SQLite and ${vsPG}% faster than PostgreSQL Server**\n\n`;
+    } else {
+      const vsPGL = ((sqlite.throughput / pglite.throughput - 1) * 100).toFixed(1);
+      const vsPG = ((sqlite.throughput / postgres.throughput - 1) * 100).toFixed(1);
+      md += `💡 **SQLite is ${vsPGL}% faster than PGlite and ${vsPG}% faster than PostgreSQL Server**\n\n`;
     }
   }
 
@@ -318,16 +463,19 @@ async function main() {
 
     const sqlite = await benchmarkSQLite(scenario);
     const pglite = await benchmarkPGlite(scenario);
+    const postgres = await benchmarkPostgreSQL(scenario);
 
     results.push({
       name: scenario.name,
       description: scenario.description,
       sqlite,
-      pglite
+      pglite,
+      postgres
     });
 
-    console.log(`\n   SQLite:  ${sqlite.throughput} qps, P50=${sqlite.p50}ms, errors=${sqlite.errors}`);
-    console.log(`   PGlite:  ${pglite.throughput} qps, P50=${pglite.p50}ms, errors=${pglite.errors}`);
+    console.log(`\n   SQLite:      ${sqlite.throughput} qps, P50=${sqlite.p50}ms, errors=${sqlite.errors}`);
+    console.log(`   PGlite:      ${pglite.throughput} qps, P50=${pglite.p50}ms, errors=${pglite.errors}`);
+    console.log(`   PostgreSQL:  ${postgres.throughput} qps, P50=${postgres.p50}ms, errors=${postgres.errors}`);
   }
 
   console.log('\n📄 Generating report...\n');

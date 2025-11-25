@@ -79,8 +79,11 @@ class ManagedInstance extends EventEmitter {
     this.activeSocket = socket;
     this.lastAccess = Date.now();
 
-    socket.on('close', () => this.unlock());
-    socket.on('error', () => this.unlock());
+    // Only attach event listeners if socket is provided
+    if (socket) {
+      socket.on('close', () => this.unlock());
+      socket.on('error', () => this.unlock());
+    }
 
     this.emit('locked', this.dbName, socket);
   }
@@ -95,10 +98,10 @@ class ManagedInstance extends EventEmitter {
 
     this.emit('unlocked', this.dbName);
 
-    // Process queue (if any waiting connections)
+    // Resolve one waiting promise (it will lock, then when it unlocks, the next will be resolved)
     if (this.queue.length > 0) {
-      const { socket, resolve } = this.queue.shift();
-      this.lock(socket);
+      const { resolve } = this.queue.shift();
+      // Don't lock here - let the acquire() caller handle locking with their socket
       resolve(this);
     }
   }
