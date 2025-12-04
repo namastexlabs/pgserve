@@ -157,6 +157,9 @@ publish: check-git check-npm check-files ## 🚀 Publish to npm (auto-bumps vers
 	@echo "$(CYAN)Current version: v$(VERSION)$(RESET)"
 	@echo ""
 	@echo "$(CYAN)📈 Bumping patch version...$(RESET)"
+	@NEW_VER=$$(node -e "const p=require('./package.json'); const v=p.version.split('.'); v[2]=parseInt(v[2])+1; console.log(v.join('.'))"); \
+	git tag -d "v$$NEW_VER" 2>/dev/null || true; \
+	git push origin --delete "v$$NEW_VER" 2>/dev/null || true
 	@npm version patch -m "chore: bump version to %s"
 	@NEW_VERSION=$$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/'); \
 	echo "$(GREEN)✅ Version bumped to $$NEW_VERSION$(RESET)"; \
