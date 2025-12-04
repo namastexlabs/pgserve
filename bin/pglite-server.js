@@ -32,7 +32,13 @@ process.on('uncaughtException', (error) => {
 
 // Parse CLI arguments
 const args = process.argv.slice(2);
-const command = args[0];
+
+// Default to router mode if first arg is a flag (e.g., --port) or no args
+let command = args[0];
+if (command?.startsWith('--') || command === undefined) {
+  command = 'router';
+  // Don't modify args - router will parse them
+}
 
 /**
  * Print usage help
@@ -54,6 +60,7 @@ COMMANDS:
     --dir <path>               Base directory for databases (default: ./data)
     --max <number>             Max concurrent databases (default: 100)
     --log <level>              Log level: error, warn, info, debug (default: info)
+    --memory                   Use in-memory databases (ephemeral, for testing)
     --no-provision             Disable auto-provisioning
 
   📦 LEGACY MODE (Single instance):
@@ -354,6 +361,7 @@ async function cmdRouter() {
   const logIndex = args.indexOf('--log');
   const logLevel = logIndex >= 0 ? args[logIndex + 1] : 'info';
 
+  const memoryMode = args.includes('--memory');
   const autoProvision = !args.includes('--no-provision');
 
   try {
@@ -365,7 +373,8 @@ async function cmdRouter() {
 
     const router = await startMultiTenantServer({
       port,
-      baseDir: dataDir,
+      baseDir: memoryMode ? null : dataDir,
+      memoryMode,
       maxInstances,
       logLevel,
       autoProvision
@@ -375,13 +384,14 @@ async function cmdRouter() {
 ✅ Multi-tenant router started successfully!
 
 📍 PostgreSQL endpoint: postgresql://localhost:${port}/<database>
-📁 Data directory: ${dataDir}
+📁 Data directory: ${memoryMode ? '(in-memory)' : dataDir}
 🎯 Auto-provision: ${autoProvision ? 'enabled' : 'disabled'}
+💾 Mode: ${memoryMode ? 'In-memory (ephemeral)' : 'Persistent'}
 📊 Max instances: ${maxInstances}
 
 💡 Examples:
-   postgresql://localhost:${port}/user123   → Creates ${dataDir}/user123/
-   postgresql://localhost:${port}/app456    → Creates ${dataDir}/app456/
+   postgresql://localhost:${port}/user123   → ${memoryMode ? 'Creates in-memory database' : `Creates ${dataDir}/user123/`}
+   postgresql://localhost:${port}/app456    → ${memoryMode ? 'Creates in-memory database' : `Creates ${dataDir}/app456/`}
 
 Press Ctrl+C to stop
 `);

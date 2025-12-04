@@ -27,6 +27,7 @@ export class MultiTenantRouter extends EventEmitter {
     this.port = options.port || 5432;
     this.host = options.host || '127.0.0.1';
     this.baseDir = options.baseDir || './data';
+    this.memoryMode = options.memoryMode || false;
     this.maxInstances = options.maxInstances || 100;
     this.autoProvision = options.autoProvision !== false;
     this.inspect = options.inspect || false;
@@ -44,6 +45,7 @@ export class MultiTenantRouter extends EventEmitter {
     // Instance pool
     this.pool = new InstancePool({
       baseDir: this.baseDir,
+      memoryMode: this.memoryMode,
       maxInstances: this.maxInstances,
       autoProvision: this.autoProvision,
       logger: this.logger.child({ component: 'pool' })
@@ -125,7 +127,8 @@ export class MultiTenantRouter extends EventEmitter {
         this.logger.info({
           host: this.host,
           port: this.port,
-          baseDir: this.baseDir,
+          baseDir: this.memoryMode ? '(in-memory)' : this.baseDir,
+          memoryMode: this.memoryMode,
           autoProvision: this.autoProvision,
           maxInstances: this.maxInstances
         }, 'Multi-tenant router started');

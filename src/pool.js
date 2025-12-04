@@ -20,10 +20,11 @@ import { EventEmitter } from 'events';
  * Wrapper for PGlite instance with connection management
  */
 class ManagedInstance extends EventEmitter {
-  constructor(dbName, dataDir, logger) {
+  constructor(dbName, dataDir, logger, memoryMode = false) {
     super();
     this.dbName = dbName;
     this.dataDir = dataDir;
+    this.memoryMode = memoryMode;
     this.logger = logger; // Pino logger
     this.db = null;
     this.locked = false;
@@ -47,20 +48,27 @@ class ManagedInstance extends EventEmitter {
 
     const initStart = Date.now();
 
-    // Ensure directory exists
-    if (!fs.existsSync(this.dataDir)) {
-      fs.mkdirSync(this.dataDir, { recursive: true });
+    if (this.memoryMode) {
+      // Use in-memory database (unique per instance)
+      this.logger.debug({ dbName: this.dbName, mode: 'memory' }, 'Initializing in-memory PGlite instance');
+      this.db = new PGlite();
+    } else {
+      // Ensure directory exists for file-based storage
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
+      }
+
+      this.logger.debug({ dbName: this.dbName, dataDir: this.dataDir }, 'Initializing PGlite instance');
+      this.db = new PGlite(this.dataDir);
     }
 
-    this.logger.debug({ dbName: this.dbName, dataDir: this.dataDir }, 'Initializing PGlite instance');
-
-    this.db = new PGlite(this.dataDir);
     await this.db.waitReady;
 
     const initTime = Date.now() - initStart;
     this.logger.info({
       dbName: this.dbName,
-      dataDir: this.dataDir,
+      dataDir: this.memoryMode ? '(in-memory)' : this.dataDir,
+      memoryMode: this.memoryMode,
       initTimeMs: initTime
     }, 'PGlite instance initialized');
 
@@ -185,6 +193,7 @@ export class InstancePool extends EventEmitter {
   constructor(options = {}) {
     super();
     this.baseDir = options.baseDir || './data';
+    this.memoryMode = options.memoryMode || false;
     this.maxInstances = options.maxInstances || 100;
     this.autoProvision = options.autoProvision !== false; // Default true
     this.instances = new Map(); // dbName -> ManagedInstance (O(1) lookups)
@@ -222,11 +231,12 @@ export class InstancePool extends EventEmitter {
       }
 
       // Create new instance
-      const dataDir = path.join(this.baseDir, dbName);
+      const dataDir = this.memoryMode ? null : path.join(this.baseDir, dbName);
       instance = new ManagedInstance(
         dbName,
         dataDir,
-        this.logger.child({ dbName }) // Child logger with context
+        this.logger.child({ dbName }), // Child logger with context
+        this.memoryMode
       );
 
       // Forward events (use once() where appropriate for performance)
