@@ -57,10 +57,9 @@ COMMANDS:
 
   router                       Start multi-tenant router (single port, auto-provision)
     --port <number>            PostgreSQL port (default: 8432)
-    --dir <path>               Base directory for databases (default: ./data)
+    --data <path>              Base directory for databases (enables persistence)
     --max <number>             Max concurrent databases (default: 100)
     --log <level>              Log level: error, warn, info, debug (default: info)
-    --memory                   Use in-memory databases (ephemeral, for testing)
     --no-provision             Disable auto-provisioning
 
   📦 LEGACY MODE (Single instance):
@@ -89,15 +88,18 @@ COMMANDS:
 EXAMPLES:
   🚀 Multi-tenant mode (RECOMMENDED):
 
-  # Start router on default port 8432
-  pgserve router
+  # Start router (in-memory mode, default)
+  pgserve
 
-  # Start on custom port with custom data directory
-  pgserve router --port 8433 --dir /var/lib/pglite
+  # Start with persistent storage
+  pgserve --data ./data
+
+  # Custom port with persistence
+  pgserve --port 8433 --data /var/lib/pglite
 
   # Connect clients:
-  # postgresql://localhost:8432/user123    → auto-creates ./data/user123/
-  # postgresql://localhost:8432/app456     → auto-creates ./data/app456/
+  # postgresql://localhost:8432/user123    → in-memory db "user123"
+  # postgresql://localhost:8432/app456     → in-memory db "app456"
 
   📦 Legacy mode:
 
@@ -352,16 +354,15 @@ async function cmdRouter() {
   const portIndex = args.indexOf('--port');
   const port = portIndex >= 0 ? parseInt(args[portIndex + 1], 10) : 8432;
 
-  const dirIndex = args.indexOf('--dir');
-  const dataDir = dirIndex >= 0 ? args[dirIndex + 1] : './data';
+  const dataIndex = args.indexOf('--data');
+  const dataDir = dataIndex >= 0 ? args[dataIndex + 1] : null;
+  const memoryMode = dataDir === null;
 
   const maxIndex = args.indexOf('--max');
   const maxInstances = maxIndex >= 0 ? parseInt(args[maxIndex + 1], 10) : 100;
 
   const logIndex = args.indexOf('--log');
   const logLevel = logIndex >= 0 ? args[logIndex + 1] : 'info';
-
-  const memoryMode = args.includes('--memory');
   const autoProvision = !args.includes('--no-provision');
 
   try {
