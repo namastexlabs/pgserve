@@ -1,6 +1,6 @@
 {
   "name": "@namastexlabs/pglite-embedded-server",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Multi-instance PostgreSQL embedded server using PGlite - zero config, auto-port allocation, perfect for development and embedded apps",
   "main": "src/index.js",
   "type": "module",
