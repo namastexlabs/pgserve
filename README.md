@@ -247,23 +247,23 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
   </tr>
   <tr>
     <td><b>Concurrent Writes</b> (10 agents)</td>
-    <td><span style="color:#b91c1c">100 qps</span></td>
+    <td>100 qps</td>
     <td>219 qps</td>
     <td>758 qps</td>
-    <td><b><span style="color:#166534">855 qps</span></b></td>
+    <td><b>855 qps 🏆</b></td>
   </tr>
   <tr>
     <td><b>Mixed Workload</b> (messages)</td>
-    <td><span style="color:#b91c1c">335 qps</span></td>
+    <td>335 qps</td>
     <td>506 qps</td>
     <td>940 qps</td>
-    <td><b><span style="color:#166534">1034 qps</span></b></td>
+    <td><b>1034 qps 🏆</b></td>
   </tr>
   <tr>
     <td><b>Write Lock</b> (50 writers)</td>
-    <td><span style="color:#b91c1c">98 qps</span></td>
+    <td>98 qps</td>
     <td>201 qps</td>
-    <td><b><span style="color:#166534">478 qps</span></b></td>
+    <td><b>478 qps 🏆</b></td>
     <td>391 qps</td>
   </tr>
 </table>
