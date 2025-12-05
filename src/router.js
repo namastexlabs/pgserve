@@ -1,19 +1,19 @@
 /**
- * Multi-Tenant Router (Performance Optimized)
+ * Multi-Tenant Router (TCP Proxy to Embedded PostgreSQL)
  *
- * Single TCP server that routes connections to different PGlite instances
- * based on database name from PostgreSQL connection string
+ * Single TCP server that routes connections to an embedded PostgreSQL instance.
+ * Extracts database name from PostgreSQL startup message, auto-creates database,
+ * then proxies the connection to real PostgreSQL.
  *
- * Performance Optimizations:
- * - Pino logger (5x faster than console.log)
- * - TCP socket optimizations (nodelay, keepalive)
- * - Minimal event emitter overhead
- * - Optimized connection tracking
+ * Features:
+ * - TRUE concurrent connections (native PostgreSQL)
+ * - Auto-provision databases on first connection
+ * - Zero configuration required
+ * - Memory mode (default) or persistent storage
  */
 
 import net from 'net';
-import { PGLiteSocketHandler } from '@electric-sql/pglite-socket';
-import { InstancePool } from './pool.js';
+import { PostgresManager } from './postgres.js';
 import { extractDatabaseNameFromSocket } from './protocol.js';
 import { EventEmitter } from 'events';
 import pino from 'pino';
@@ -24,13 +24,15 @@ import pino from 'pino';
 export class MultiTenantRouter extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.port = options.port || 8432;
+    this.port = options.port || 5432;
     this.host = options.host || '127.0.0.1';
-    this.baseDir = options.baseDir || './data';
-    this.memoryMode = options.memoryMode || false;
-    this.maxInstances = options.maxInstances || 100;
+    this.baseDir = options.baseDir || null; // null = memory mode
+    this.memoryMode = !options.baseDir;
+    this.maxConnections = options.maxConnections || 1000;
     this.autoProvision = options.autoProvision !== false;
-    this.inspect = options.inspect || false;
+
+    // Internal PostgreSQL port (different from router port)
+    this.pgPort = options.pgPort || (this.port + 1000);
 
     // Pino logger (ultra-fast structured logging)
     const logLevel = options.logLevel || 'info';
@@ -42,13 +44,11 @@ export class MultiTenantRouter extends EventEmitter {
       } : undefined
     });
 
-    // Instance pool
-    this.pool = new InstancePool({
-      baseDir: this.baseDir,
-      memoryMode: this.memoryMode,
-      maxInstances: this.maxInstances,
-      autoProvision: this.autoProvision,
-      logger: this.logger.child({ component: 'pool' })
+    // PostgreSQL manager
+    this.pgManager = new PostgresManager({
+      dataDir: this.baseDir,
+      port: this.pgPort,
+      logger: this.logger.child({ component: 'postgres' })
     });
 
     // TCP server
@@ -56,21 +56,7 @@ export class MultiTenantRouter extends EventEmitter {
     this.connections = new Set();
 
     // Performance: Reduce event listener overhead
-    this.setMaxListeners(this.maxInstances + 10);
-
-    // Forward pool events (optimized logging)
-    this.pool.on('instance-created', (dbName) => {
-      this.logger.info({ dbName }, 'Database created');
-      this.emit('database-created', dbName);
-    });
-
-    this.pool.on('instance-connection', (dbName) => {
-      this.logger.debug({ dbName }, 'Connection opened');
-    });
-
-    this.pool.on('instance-disconnection', (dbName) => {
-      this.logger.debug({ dbName }, 'Connection closed');
-    });
+    this.setMaxListeners(this.maxConnections + 10);
   }
 
   /**
@@ -84,16 +70,6 @@ export class MultiTenantRouter extends EventEmitter {
     // Enable TCP keepalive (detect dead connections)
     socket.setKeepAlive(true, 60000); // 60s initial delay
 
-    // Increase socket buffer sizes for better throughput
-    // Note: These are hints to OS, actual values may differ
-    try {
-      socket.setRecvBufferSize && socket.setRecvBufferSize(128 * 1024); // 128KB
-      socket.setSendBufferSize && socket.setSendBufferSize(128 * 1024); // 128KB
-    } catch (err) {
-      // Ignore if not supported
-      this.logger.debug({ err }, 'Could not set socket buffer sizes');
-    }
-
     // Prevent socket timeout during long-running queries
     socket.setTimeout(0);
   }
@@ -102,19 +78,20 @@ export class MultiTenantRouter extends EventEmitter {
    * Start multi-tenant router
    */
   async start() {
+    // Start PostgreSQL first
+    await this.pgManager.start();
+
     return new Promise((resolve, reject) => {
-      // Create TCP server with optimizations
+      // Create TCP server
       this.server = net.createServer({
-        // Performance: Allow half-open sockets (faster cleanup)
         allowHalfOpen: false,
-        // Performance: Pause on connect (manual resume after setup)
         pauseOnConnect: true
       }, async (socket) => {
         await this.handleConnection(socket);
       });
 
-      // Set max connections (system limit)
-      this.server.maxConnections = this.maxInstances * 2;
+      // Set max connections
+      this.server.maxConnections = this.maxConnections;
 
       // Error handling
       this.server.on('error', (error) => {
@@ -127,10 +104,11 @@ export class MultiTenantRouter extends EventEmitter {
         this.logger.info({
           host: this.host,
           port: this.port,
+          pgPort: this.pgPort,
           baseDir: this.memoryMode ? '(in-memory)' : this.baseDir,
           memoryMode: this.memoryMode,
           autoProvision: this.autoProvision,
-          maxInstances: this.maxInstances
+          maxConnections: this.maxConnections
         }, 'Multi-tenant router started');
 
         this.emit('listening');
@@ -140,7 +118,7 @@ export class MultiTenantRouter extends EventEmitter {
   }
 
   /**
-   * Handle incoming connection (Performance Optimized)
+   * Handle incoming connection (TCP Proxy)
    */
   async handleConnection(socket) {
     const connId = `${socket.remoteAddress}:${socket.remotePort}`;
@@ -152,11 +130,8 @@ export class MultiTenantRouter extends EventEmitter {
     // Track connection
     this.connections.add(socket);
 
-    // NOTE: Don't resume here - let readStartupMessage() resume after setting up listeners
-    // This prevents race condition where data arrives before listener is attached
-
     let dbName = null;
-    let handler = null;
+    let pgSocket = null;
 
     try {
       // Extract database name from PostgreSQL handshake
@@ -166,44 +141,72 @@ export class MultiTenantRouter extends EventEmitter {
 
       this.logger.info({ dbName, connId }, 'Connection request');
 
-      // Get or create PGlite instance (with locking)
-      const instance = await this.pool.acquire(dbName, socket);
+      // Auto-provision database if needed
+      if (this.autoProvision) {
+        await this.pgManager.createDatabase(dbName);
+      }
 
       const routingTime = Date.now() - startTime;
       this.logger.info({
         dbName,
         connId,
-        dataDir: instance.dataDir,
         routingTimeMs: routingTime
-      }, 'Routed to database');
+      }, 'Routing to PostgreSQL');
 
-      // Push buffered data back to socket for handler to read
-      socket.unshift(buffered);
-
-      // Create handler for this connection
-      handler = new PGLiteSocketHandler({
-        db: instance.db,
-        closeOnDetach: true,
-        inspect: this.inspect
+      // Connect to real PostgreSQL
+      pgSocket = net.connect({
+        host: '127.0.0.1',
+        port: this.pgPort
       });
 
-      // Attach socket to handler
-      await handler.attach(socket);
+      // Wait for PostgreSQL connection
+      await new Promise((resolve, reject) => {
+        pgSocket.once('connect', resolve);
+        pgSocket.once('error', reject);
+      });
 
-      this.logger.debug({ dbName, connId }, 'Socket attached');
+      this.optimizeSocket(pgSocket);
 
-      // Handle socket close (cleanup)
+      // Send the buffered startup message to PostgreSQL
+      pgSocket.write(buffered);
+
+      // Resume client socket (was paused on connect)
+      socket.resume();
+
+      // Bidirectional pipe (TRUE proxy)
+      socket.pipe(pgSocket);
+      pgSocket.pipe(socket);
+
+      this.logger.debug({ dbName, connId }, 'Connection established');
+
+      // Handle cleanup
       const cleanup = () => {
         this.logger.debug({ dbName, connId }, 'Connection closed');
-        if (handler) {
-          handler.detach();
-        }
         this.connections.delete(socket);
+
+        if (pgSocket && !pgSocket.destroyed) {
+          pgSocket.destroy();
+        }
+        if (socket && !socket.destroyed) {
+          socket.destroy();
+        }
       };
 
       socket.once('close', cleanup);
       socket.once('error', (error) => {
-        this.logger.warn({ dbName, connId, err: error }, 'Socket error');
+        this.logger.warn({ dbName, connId, err: error }, 'Client socket error');
+        cleanup();
+      });
+
+      pgSocket.once('close', () => {
+        this.logger.debug({ dbName, connId }, 'PostgreSQL connection closed');
+        if (socket && !socket.destroyed) {
+          socket.destroy();
+        }
+      });
+
+      pgSocket.once('error', (error) => {
+        this.logger.warn({ dbName, connId, err: error }, 'PostgreSQL socket error');
         cleanup();
       });
 
@@ -212,15 +215,11 @@ export class MultiTenantRouter extends EventEmitter {
       this.logger.error({ dbName, connId, err: error }, 'Connection error');
 
       // Cleanup
-      if (handler) {
-        try {
-          handler.detach();
-        } catch (detachErr) {
-          this.logger.debug({ err: detachErr }, 'Error detaching handler');
-        }
+      if (pgSocket && !pgSocket.destroyed) {
+        pgSocket.destroy();
       }
 
-      socket.destroy(); // Force close on error
+      socket.destroy();
       this.connections.delete(socket);
       this.emit('connection-error', { error, dbName, connId });
     }
@@ -235,7 +234,7 @@ export class MultiTenantRouter extends EventEmitter {
     // Close all connections gracefully
     const activeConns = this.connections.size;
     for (const socket of this.connections) {
-      socket.end(); // Graceful close (vs destroy())
+      socket.end();
     }
     this.connections.clear();
 
@@ -246,12 +245,11 @@ export class MultiTenantRouter extends EventEmitter {
       });
     }
 
-    // Close all PGlite instances
-    await this.pool.closeAll();
+    // Stop PostgreSQL
+    await this.pgManager.stop();
 
     this.logger.info({
-      activeConnections: activeConns,
-      closedInstances: this.pool.instances.size
+      activeConnections: activeConns
     }, 'Router stopped');
 
     this.emit('stopped');
@@ -264,8 +262,9 @@ export class MultiTenantRouter extends EventEmitter {
     return {
       port: this.port,
       host: this.host,
+      pgPort: this.pgPort,
       activeConnections: this.connections.size,
-      pool: this.pool.getStats()
+      postgres: this.pgManager.getStats()
     };
   }
 
@@ -273,7 +272,7 @@ export class MultiTenantRouter extends EventEmitter {
    * List all databases
    */
   listDatabases() {
-    return this.pool.list();
+    return this.pgManager.getStats().databases;
   }
 }
 

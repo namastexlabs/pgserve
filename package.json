@@ -1,7 +1,7 @@
 {
   "name": "pgserve",
-  "version": "0.2.0",
-  "description": "Multi-instance PostgreSQL embedded server using PGlite - zero config, auto-port allocation, perfect for development and embedded apps",
+  "version": "1.0.0",
+  "description": "Embedded PostgreSQL server with true concurrent connections - zero config, auto-provision databases",
   "main": "src/index.js",
   "type": "module",
   "bin": {
@@ -12,14 +12,12 @@
     "test": "node --test tests/**/*.test.js"
   },
   "keywords": [
-    "pglite",
     "postgresql",
     "embedded",
     "database",
-    "wasm",
-    "electron",
+    "postgres",
     "development",
-    "multi-instance"
+    "multi-tenant"
   ],
   "author": "Namastex Labs <labs@namastex.com>",
   "license": "MIT",
@@ -32,15 +30,17 @@
   },
   "homepage": "https://github.com/namastexlabs/pgserve#readme",
   "dependencies": {
-    "@electric-sql/pglite": "^0.3.14",
-    "@electric-sql/pglite-socket": "^0.0.19",
+    "pg": "^8.16.3",
     "pino": "^10.1.0",
     "pino-pretty": "^13.1.2"
   },
-  "devDependencies": {
-    "better-sqlite3": "^11.10.0",
-    "pg": "^8.16.3"
+  "optionalDependencies": {
+    "@embedded-postgres/linux-x64": "17.7.0-beta.15",
+    "@embedded-postgres/darwin-arm64": "17.7.0-beta.15",
+    "@embedded-postgres/darwin-x64": "17.7.0-beta.15",
+    "@embedded-postgres/win32-x64": "17.7.0-beta.15"
   },
+  "devDependencies": {},
   "engines": {
     "node": ">=18.0.0"
   }
