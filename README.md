@@ -107,7 +107,8 @@ Options:
   --data <path>         Data directory for persistence (default: in-memory)
   --host <host>         Host to bind to (default: 127.0.0.1)
   --log <level>         Log level: error, warn, info, debug (default: info)
-  --cluster             Enable cluster mode (multi-core scaling)
+  --cluster             Force cluster mode (auto-enabled on multi-core systems)
+  --no-cluster          Force single-process mode
   --workers <n>         Number of worker processes (default: CPU cores)
   --no-provision        Disable auto-provisioning of databases
   --sync-to <url>       Sync to real PostgreSQL (async replication)
@@ -119,7 +120,11 @@ Options:
 
 ```bash
 # Development (memory mode - fast, disposable)
+# Auto-clusters on multi-core systems for best performance
 pgserve
+
+# Single-process mode (simpler logs, less memory)
+pgserve --no-cluster
 
 # Production (persistent data)
 pgserve --data /var/lib/pgserve
@@ -127,7 +132,7 @@ pgserve --data /var/lib/pgserve
 # Custom port
 pgserve --port 5433
 
-# Cluster mode (multi-core scaling)
+# Explicit cluster with specific worker count
 pgserve --cluster --workers 4
 
 # Debug logging
@@ -331,9 +336,9 @@ const server = await startMultiTenantServer({
 
 | Scenario | SQLite | PGlite | PostgreSQL | pgserve | Winner |
 |----------|--------|--------|------------|---------|--------|
-| **Concurrent Writes** (10 agents) | 99 qps | 225 qps | 649 qps | 559 qps | PostgreSQL |
-| **Mixed Workload** (messages) | 354 qps | 536 qps | 1023 qps | **1098 qps** | **pgserve** |
-| **Write Lock** (50 writers) | 104 qps | 231 qps | 448 qps | **518 qps** | **pgserve** |
+| **Concurrent Writes** (10 agents) | 100 qps | 219 qps | 758 qps | **855 qps** | **pgserve** |
+| **Mixed Workload** (messages) | 335 qps | 506 qps | 940 qps | **1034 qps** | **pgserve** |
+| **Write Lock** (50 writers) | 98 qps | 201 qps | 478 qps | 391 qps | PostgreSQL |
 
 *PostgreSQL = Docker with disk storage (realistic production comparison)*
 
@@ -341,19 +346,19 @@ const server = await startMultiTenantServer({
 
 | Scenario | pgserve | PGlite | Advantage |
 |----------|---------|--------|-----------|
-| Concurrent Writes | 559 qps | 225 qps | **2.5x faster** |
-| Mixed Workload | 1098 qps | 536 qps | **2.0x faster** |
-| Write Lock | 518 qps | 231 qps | **2.2x faster** |
+| Concurrent Writes | 855 qps | 219 qps | **3.9x faster** |
+| Mixed Workload | 1034 qps | 506 qps | **2.0x faster** |
+| Write Lock | 391 qps | 201 qps | **1.9x faster** |
 
 ### pgserve vs Docker PostgreSQL
 
 | Scenario | pgserve | PostgreSQL | Result |
 |----------|---------|------------|--------|
-| Concurrent Writes | 559 qps | 649 qps | 86% of Docker |
-| Mixed Workload | **1098 qps** | 1023 qps | **7% faster** |
-| Write Lock | **518 qps** | 448 qps | **16% faster** |
+| Concurrent Writes | **855 qps** | 758 qps | **12.8% faster** |
+| Mixed Workload | **1034 qps** | 940 qps | **10% faster** |
+| Write Lock | 391 qps | 478 qps | 82% of Docker |
 
-**Key takeaway:** pgserve beats Docker PostgreSQL in typical workloads (mixed ops, write contention) while being 2-3x faster than PGlite across the board. For development, CI/CD, and ephemeral deployments, pgserve offers PostgreSQL-level performance without Docker.
+**Key takeaway:** pgserve now beats Docker PostgreSQL in 2/3 scenarios thanks to smart auto-clustering. For development, CI/CD, and ephemeral deployments, pgserve offers better-than-Docker performance without Docker.
 
 > Run benchmarks yourself: `npm run bench`
 

@@ -9,6 +9,7 @@
 
 import { fileURLToPath } from 'url';
 import path from 'path';
+import os from 'os';
 import { startMultiTenantServer } from '../src/index.js';
 import { startClusterServer } from '../src/cluster.js';
 
@@ -45,7 +46,8 @@ OPTIONS:
   --data <path>      Data directory for persistence (default: in-memory)
   --host <host>      Host to bind to (default: 127.0.0.1)
   --log <level>      Log level: error, warn, info, debug (default: info)
-  --cluster          Enable cluster mode (multi-core scaling)
+  --cluster          Force cluster mode (auto-enabled on multi-core systems)
+  --no-cluster       Force single-process mode (disables auto-cluster)
   --workers <n>      Number of worker processes (default: CPU cores)
   --no-provision     Disable auto-provisioning of databases
   --sync-to <url>    Sync to real PostgreSQL (async replication)
@@ -89,13 +91,16 @@ FEATURES:
  * Parse command line arguments
  */
 function parseArgs() {
+  // Auto-enable cluster mode on multi-core systems for best performance
+  const cpuCount = os.cpus().length;
+
   const options = {
     port: 5432,
     host: '127.0.0.1',
     dataDir: null, // null = memory mode
     logLevel: 'info',
     autoProvision: true,
-    cluster: false,
+    cluster: cpuCount > 1,  // Auto-enable on multi-core (use --no-cluster to disable)
     workers: null, // null = use CPU count
     syncTo: null,  // Sync target PostgreSQL URL
     syncDatabases: null // Database patterns to sync (comma-separated)
@@ -127,6 +132,10 @@ function parseArgs() {
 
       case '--cluster':
         options.cluster = true;
+        break;
+
+      case '--no-cluster':
+        options.cluster = false;
         break;
 
       case '--workers':
