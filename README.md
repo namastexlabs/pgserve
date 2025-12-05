@@ -15,6 +15,7 @@
   <p>
     <a href="#features">Features</a> •
     <a href="#quick-start">Quick Start</a> •
+    <a href="#async-replication">Sync</a> •
     <a href="#performance">Performance</a> •
     <a href="#programmatic-api">API</a> •
     <a href="#contributing">Contributing</a>
@@ -65,6 +66,7 @@ pgserve is an embedded PostgreSQL 17 server that runs anywhere Node.js runs:
 | **Auto-Provision** | Database created on first connection |
 | **Memory Mode** | Default mode - fast, ephemeral (data lost on restart) |
 | **Persistent Mode** | Use `--data ./path` to persist databases to disk |
+| **Async Replication** | Sync to real PostgreSQL with zero performance impact |
 | **Cross-Platform** | Linux x64, macOS ARM64/x64, Windows x64 |
 | **PostgreSQL 17.7** | Latest stable, native binaries |
 | **Any Client Works** | psql, node-postgres, Prisma, Drizzle, etc. |
@@ -101,14 +103,16 @@ Platform-specific PostgreSQL binaries are automatically downloaded on first run.
 pgserve [options]
 
 Options:
-  --port <number>    PostgreSQL port (default: 5432)
-  --data <path>      Data directory for persistence (default: in-memory)
-  --host <host>      Host to bind to (default: 127.0.0.1)
-  --log <level>      Log level: error, warn, info, debug (default: info)
-  --cluster          Enable cluster mode (multi-core scaling)
-  --workers <n>      Number of worker processes (default: CPU cores)
-  --no-provision     Disable auto-provisioning of databases
-  --help             Show help message
+  --port <number>       PostgreSQL port (default: 5432)
+  --data <path>         Data directory for persistence (default: in-memory)
+  --host <host>         Host to bind to (default: 127.0.0.1)
+  --log <level>         Log level: error, warn, info, debug (default: info)
+  --cluster             Enable cluster mode (multi-core scaling)
+  --workers <n>         Number of worker processes (default: CPU cores)
+  --no-provision        Disable auto-provisioning of databases
+  --sync-to <url>       Sync to real PostgreSQL (async replication)
+  --sync-databases <p>  Database patterns to sync (comma-separated, e.g. "myapp,tenant_*")
+  --help                Show help message
 ```
 
 ### Examples
@@ -131,6 +135,12 @@ pgserve --log debug
 
 # Persistent with custom port
 pgserve --port 5433 --data ./mydata
+
+# Sync to real PostgreSQL (async replication)
+pgserve --sync-to "postgresql://user:pass@db.example.com:5432/prod"
+
+# Sync specific databases only
+pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
 ```
 
 ### Connecting
@@ -206,6 +216,57 @@ DATABASE_URL="postgresql://localhost:5432/myapp"
 # Run migrations (auto-provisions "myapp" database)
 npx prisma migrate dev
 ```
+
+---
+
+## Async Replication
+
+Sync your ephemeral pgserve data to a real PostgreSQL database asynchronously. Uses PostgreSQL's native logical replication for **zero performance impact** on the hot path.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────┐
+│   pgserve (Memory Mode - HOT PATH)       │
+│   Fast, ephemeral, zero config           │
+└─────────────────────┬───────────────────┘
+                      │ PostgreSQL Logical Replication
+                      │ (async, non-blocking)
+                      ▼
+┌─────────────────────────────────────────┐
+│   Real PostgreSQL (AWS RDS, Supabase)    │
+│   Persistent, production-ready           │
+└─────────────────────────────────────────┘
+```
+
+### CLI Usage
+
+```bash
+# Sync all databases to real PostgreSQL
+pgserve --sync-to "postgresql://user:pass@db.example.com:5432/mydb"
+
+# Sync only specific databases (supports wildcards)
+pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
+```
+
+### Programmatic API
+
+```javascript
+import { startMultiTenantServer } from 'pgserve';
+
+const server = await startMultiTenantServer({
+  port: 5432,
+  syncTo: 'postgresql://user:pass@prod-db.example.com:5432/main',
+  syncDatabases: 'app_*,users'  // Optional: patterns for selective sync
+});
+```
+
+### Key Benefits
+
+- **Zero Hot Path Impact** - Replication handled by PostgreSQL WAL writer, not Node.js
+- **Non-Blocking** - Sync failures don't affect main server operation
+- **Selective Sync** - Choose which databases to replicate using patterns
+- **Native PostgreSQL** - Uses built-in logical replication (no custom protocols)
 
 ---
 
