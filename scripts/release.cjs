@@ -108,7 +108,7 @@ function createTag(version) {
   }
 
   // Stage and commit
-  exec('git add -A');
+  exec('git add package.json');
   try {
     exec(`git commit -m "${commitMsg}"`);
   } catch (e) {

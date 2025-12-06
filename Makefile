@@ -169,31 +169,30 @@ DIST_DIR := dist
 
 .PHONY: build build-linux build-macos build-windows build-all clean-dist
 
-build: ## Build standalone executable for current platform
-	@echo "$(CYAN)🔨 Building standalone executable...$(RESET)"
+$(DIST_DIR):
 	@mkdir -p $(DIST_DIR)
+
+build: $(DIST_DIR) ## Build standalone executable for current platform
+	@echo "$(CYAN)🔨 Building standalone executable...$(RESET)"
 	@bun build --compile bin/pglite-server.js --outfile $(DIST_DIR)/pgserve
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve$(RESET)"
 
-build-linux: ## Build for Linux (x64 + arm64)
+build-linux: $(DIST_DIR) ## Build for Linux (x64 + arm64)
 	@echo "$(CYAN)🐧 Building for Linux...$(RESET)"
-	@mkdir -p $(DIST_DIR)
 	@bun build --compile --target=bun-linux-x64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-linux-x64
 	@bun build --compile --target=bun-linux-arm64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-linux-arm64
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-linux-x64$(RESET)"
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-linux-arm64$(RESET)"
 
-build-macos: ## Build for macOS (x64 + arm64)
+build-macos: $(DIST_DIR) ## Build for macOS (x64 + arm64)
 	@echo "$(CYAN)🍎 Building for macOS...$(RESET)"
-	@mkdir -p $(DIST_DIR)
 	@bun build --compile --target=bun-darwin-x64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-darwin-x64
 	@bun build --compile --target=bun-darwin-arm64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-darwin-arm64
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-darwin-x64$(RESET)"
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-darwin-arm64$(RESET)"
 
-build-windows: ## Build for Windows (x64)
+build-windows: $(DIST_DIR) ## Build for Windows (x64)
 	@echo "$(CYAN)🪟 Building for Windows...$(RESET)"
-	@mkdir -p $(DIST_DIR)
 	@bun build --compile --target=bun-windows-x64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-windows-x64.exe
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-windows-x64.exe$(RESET)"
 
