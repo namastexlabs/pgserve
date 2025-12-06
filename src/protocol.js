@@ -14,7 +14,6 @@ const PROTOCOL_VERSION_3 = 196608;
 const SSL_REQUEST_CODE = 80877103;    // PostgreSQL SSL negotiation request
 const GSSAPI_REQUEST_CODE = 80877104; // PostgreSQL GSSAPI encryption request
 const CANCEL_REQUEST_CODE = 80877102; // PostgreSQL cancel request
-const DATABASE_KEY = Buffer.from('database\0');
 
 /**
  * Parse PostgreSQL startup message to extract connection parameters

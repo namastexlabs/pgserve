@@ -209,5 +209,3 @@ export class Dashboard {
     }
   }
 }
-
-export default Dashboard;

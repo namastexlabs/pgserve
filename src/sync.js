@@ -46,9 +46,9 @@ export class SyncManager {
 
   /**
    * Initialize the SyncManager after PostgreSQL is ready
-   * @param {Object} pgManager - PostgresManager instance
+   * @param {Object} _pgManager - PostgresManager instance (unused, reserved for future)
    */
-  async initialize(pgManager) {
+  async initialize(_pgManager) {
     if (!this.targetUrl) {
       throw new Error('SyncManager requires targetUrl');
     }
@@ -340,5 +340,3 @@ export class SyncManager {
     this.logger.info('Sync manager stopped');
   }
 }
-
-export default SyncManager;

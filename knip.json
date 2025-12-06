@@ -1,0 +1,8 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": ["src/index.js", "bin/pglite-server.js"],
+  "project": ["src/**/*.js", "bin/**/*.js"],
+  "ignore": ["tests/**", "helpers/**"],
+  "ignoreDependencies": ["pino-pretty"],
+  "ignoreExportsUsedInFile": true
+}

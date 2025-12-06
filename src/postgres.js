@@ -18,7 +18,6 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import net from 'net';
 
 // Resolve binary paths from embedded-postgres platform packages
 function getBinaryPaths() {
@@ -187,8 +186,8 @@ export class PostgresManager {
         // Clean up password file
         try {
           await fs.promises.unlink(passwordFile);
-        } catch (e) {
-          // Ignore
+        } catch {
+          // Ignore cleanup errors
         }
 
         if (code === 0) {

@@ -16,7 +16,7 @@ import { startClusterServer } from '../src/cluster.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Global error handlers
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason, _promise) => {
   console.error('Unhandled Promise Rejection:', reason);
 });
 
@@ -158,6 +158,7 @@ function parseArgs() {
       case 'help':
         printHelp();
         process.exit(0);
+        // falls through (unreachable - exit above)
 
       default:
         if (arg.startsWith('-')) {

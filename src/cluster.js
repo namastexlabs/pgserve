@@ -77,7 +77,7 @@ class ClusterRouter extends EventEmitter {
       await this.adminClient.connect();
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, _reject) => {
       this.server = net.createServer({
         allowHalfOpen: false,
         pauseOnConnect: true
@@ -318,5 +318,3 @@ export async function startClusterServer(options = {}) {
     return router;
   }
 }
-
-export default startClusterServer;

@@ -585,5 +585,3 @@ export class RestoreManager {
     }
   }
 }
-
-export default RestoreManager;

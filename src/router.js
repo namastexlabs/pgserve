@@ -159,7 +159,7 @@ export class MultiTenantRouter extends EventEmitter {
         .catch(err => this.logger.warn({ err: err.message }, 'Sync manager initialization failed (non-fatal)'));
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve, _reject) => {
       // Create TCP server
       this.server = net.createServer({
         allowHalfOpen: false,
