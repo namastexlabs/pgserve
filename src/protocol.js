@@ -222,7 +222,8 @@ export async function readStartupMessage(socket) {
  * @param {net.Socket} socket - TCP socket
  * @returns {Promise<{dbName: string, buffered: Buffer}>} Database name and buffered data
  */
-export async function extractDatabaseNameFromSocket(socket) {
+// Unused but kept for potential future use
+async function _extractDatabaseNameFromSocket(socket) {
   let { message, allData } = await readStartupMessage(socket);
 
   // Check if this is a protocol negotiation request (SSL, GSSAPI, Cancel)

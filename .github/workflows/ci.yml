@@ -55,3 +55,30 @@ jobs:
 
       - name: Run tests
         run: bun test
+
+  # Validate build works
+  build-check:
+    name: Build Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build executable
+        run: |
+          mkdir -p dist
+          bun build --compile bin/pglite-server.js --outfile dist/pgserve
+
+      - name: Verify executable
+        run: |
+          ./dist/pgserve --help
+          echo "Build successful!"

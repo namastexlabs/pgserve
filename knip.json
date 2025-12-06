@@ -3,7 +3,6 @@
   "entry": ["src/index.js", "bin/pglite-server.js"],
   "project": ["src/**/*.js", "bin/**/*.js"],
   "ignore": ["tests/**", "helpers/**", "scripts/**"],
-  "ignoreDependencies": ["pino-pretty"],
-  "ignoreBinaries": ["scripts/test-npx.sh"],
+  "ignoreBinaries": ["scripts/test-npx.sh", "make"],
   "ignoreExportsUsedInFile": true
 }

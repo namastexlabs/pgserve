@@ -1,0 +1,207 @@
+name: Unified Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Release action'
+        required: true
+        type: choice
+        options:
+          - bump-rc
+          - promote
+
+concurrency:
+  group: unified-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  # Gate: Skip bot commits, detect action from PR labels
+  gate:
+    name: Release Gate
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       (contains(github.event.pull_request.labels.*.name, 'rc') ||
+        contains(github.event.pull_request.labels.*.name, 'stable')))
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      action: ${{ steps.detect.outputs.action }}
+
+    steps:
+      - name: Check for bot commits
+        id: check
+        run: |
+          # Skip if this is a bot commit (prevents infinite loops)
+          if [[ "${{ github.actor }}" == "github-actions[bot]" ]]; then
+            echo "Skipping: bot commit detected"
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Detect action
+        id: detect
+        if: steps.check.outputs.should_run == 'true'
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "action=${{ inputs.action }}" >> $GITHUB_OUTPUT
+            echo "Action from dispatch: ${{ inputs.action }}"
+          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'stable') }}" == "true" ]]; then
+            echo "action=promote" >> $GITHUB_OUTPUT
+            echo "Action from label: promote (stable)"
+          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'rc') }}" == "true" ]]; then
+            echo "action=bump-rc" >> $GITHUB_OUTPUT
+            echo "Action from label: bump-rc"
+          else
+            echo "No release label found"
+            echo "action=" >> $GITHUB_OUTPUT
+          fi
+
+  # Version: Bump version and create tag
+  version:
+    name: Bump Version
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true' && needs.gate.outputs.action != ''
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      npm_tag: ${{ steps.bump.outputs.npm_tag }}
+      is_promote: ${{ steps.bump.outputs.is_promote }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run release script
+        id: bump
+        run: node scripts/release.cjs --action ${{ needs.gate.outputs.action }}
+
+      - name: Push changes
+        run: |
+          git push origin HEAD:${{ github.ref_name }}
+          git push origin --tags
+
+  # Build: Build all platforms (skip for promote)
+  build:
+    name: Build & Publish
+    needs: version
+    if: needs.version.outputs.is_promote != 'true'
+    uses: ./.github/workflows/build-all-platforms.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      npm_tag: ${{ needs.version.outputs.npm_tag }}
+    secrets: inherit
+
+  # Promote: Just update npm tags (no rebuild)
+  promote:
+    name: Promote to Latest
+    needs: version
+    if: needs.version.outputs.is_promote == 'true'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Get RC version from @next tag
+        id: get-rc
+        run: |
+          RC_VERSION=$(npm view pgserve@next version 2>/dev/null || echo "")
+          if [ -z "$RC_VERSION" ]; then
+            echo "No RC version found at @next tag"
+            exit 1
+          fi
+          echo "rc_version=$RC_VERSION" >> $GITHUB_OUTPUT
+          echo "Found RC version: $RC_VERSION"
+
+      - name: Promote @next to @latest
+        run: |
+          echo "Promoting pgserve@${{ steps.get-rc.outputs.rc_version }} to @latest"
+          npm dist-tag add pgserve@${{ steps.get-rc.outputs.rc_version }} latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify promotion
+        run: |
+          LATEST=$(npm view pgserve@latest version)
+          echo "Latest version is now: $LATEST"
+          if [ "$LATEST" != "${{ steps.get-rc.outputs.rc_version }}" ]; then
+            echo "Warning: Version mismatch after promotion"
+          fi
+
+  # GitHub Release: Create release with changelog
+  github-release:
+    name: Create GitHub Release
+    needs: [version, build]
+    if: always() && needs.version.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Download artifacts
+        if: needs.build.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          if [ -d "dist" ]; then
+            echo "Release artifacts:"
+            ls -la dist/
+          else
+            echo "No artifacts (promote release)"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```bash
+            npm install pgserve@${{ needs.version.outputs.npm_tag }}
+            bunx pgserve@${{ needs.version.outputs.npm_tag }}
+            ```
+          prerelease: ${{ contains(needs.version.outputs.version, '-rc.') }}
+          files: |
+            dist/*
+          fail_on_unmatched_files: false
