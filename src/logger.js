@@ -25,7 +25,7 @@ export function createLogger(options = {}) {
         colorize: true,
         ignore: 'pid,hostname',           // Remove noise
         translateTime: 'HH:MM:ss',        // Short timestamp
-        hideObject: true,                 // Hide JSON attributes for clean output
+        singleLine: false,                // Multi-line for readable objects
       }
     }
   });
