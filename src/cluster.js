@@ -25,7 +25,7 @@ import { EventEmitter } from 'events';
 class ClusterRouter extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.port = options.port || 5432;
+    this.port = options.port || 8432;
     this.host = options.host || '127.0.0.1';
     this.pgSocketPath = options.pgSocketPath; // From PRIMARY
     this.pgPort = options.pgPort;
@@ -192,7 +192,7 @@ class ClusterRouter extends EventEmitter {
  */
 export async function startClusterServer(options = {}) {
   const numWorkers = options.workers || os.cpus().length;
-  const port = options.port || 5432;
+  const port = options.port || 8432;
   const host = options.host || '127.0.0.1';
   const pgPort = options.pgPort || (port + 1000);
 
@@ -292,7 +292,7 @@ export async function startClusterServer(options = {}) {
   } else {
     // WORKER: Only run TCP routing, connect to PRIMARY's PostgreSQL
     const router = new ClusterRouter({
-      port: parseInt(process.env.PGSERVE_PORT) || 5432,
+      port: parseInt(process.env.PGSERVE_PORT) || 8432,
       host: process.env.PGSERVE_HOST || '127.0.0.1',
       pgSocketPath: process.env.PGSERVE_PG_SOCKET || null,
       pgPort: parseInt(process.env.PGSERVE_PG_PORT) || 6432,

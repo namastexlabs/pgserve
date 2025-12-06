@@ -42,7 +42,7 @@ USAGE:
   pgserve [options]
 
 OPTIONS:
-  --port <number>    PostgreSQL port (default: 5432)
+  --port <number>    PostgreSQL port (default: 8432)
   --data <path>      Data directory for persistence (default: in-memory)
   --host <host>      Host to bind to (default: 127.0.0.1)
   --log <level>      Log level: error, warn, info, debug (default: info)
@@ -95,7 +95,7 @@ function parseArgs() {
   const cpuCount = os.cpus().length;
 
   const options = {
-    port: 5432,
+    port: 8432,
     host: '127.0.0.1',
     dataDir: null, // null = memory mode
     logLevel: 'info',

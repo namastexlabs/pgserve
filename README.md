@@ -99,7 +99,7 @@ npm install pgserve
 pgserve [options]
 
 Options:
-  --port <number>       PostgreSQL port (default: 5432)
+  --port <number>       PostgreSQL port (default: 8432)
   --data <path>         Data directory for persistence (default: in-memory)
   --host <host>         Host to bind to (default: 127.0.0.1)
   --log <level>         Log level: error, warn, info, debug (default: info)
@@ -139,7 +139,7 @@ pgserve --sync-to "postgresql://user:pass@db.example.com:5432/prod"
 import { startMultiTenantServer } from 'pgserve';
 
 const server = await startMultiTenantServer({
-  port: 5432,
+  port: 8432,
   host: '127.0.0.1',
   baseDir: null,        // null = memory mode
   logLevel: 'info',

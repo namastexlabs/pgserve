@@ -56,7 +56,7 @@ export class Dashboard {
    */
   showHeader(config = {}) {
     const mode = config.memoryMode ? 'In-memory' : 'Persistent';
-    const port = config.port || 5432;
+    const port = config.port || 8432;
     const host = config.host || '127.0.0.1';
     const syncTo = config.syncTo ? ` → ${this._maskUrl(config.syncTo)}` : '';
 
@@ -169,7 +169,7 @@ export class Dashboard {
    * Show final ready message
    */
   showReady(config = {}) {
-    const port = config.port || 5432;
+    const port = config.port || 8432;
     const host = config.host || '127.0.0.1';
 
     console.log('');
