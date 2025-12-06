@@ -111,10 +111,13 @@ check-npm: ## Check npm authentication
 	@echo "$(CYAN)🔍 Checking npm authentication...$(RESET)"
 	@if ! npm whoami >/dev/null 2>&1; then \
 		echo "$(RED)❌ Not logged in to npm!$(RESET)"; \
-		echo "$(YELLOW)Run: npm login$(RESET)"; \
+		echo "$(YELLOW)Run: npm login --auth-type=legacy$(RESET)"; \
 		exit 1; \
 	fi
 	@echo "$(GREEN)✅ Logged in as: $$(npm whoami)$(RESET)"
+	@if [ -z "$$NPM_TOKEN" ] && ! grep -q "_authToken" ~/.npmrc 2>/dev/null; then \
+		echo "$(YELLOW)⚠️  Consider using NPM_TOKEN or ~/.npmrc for non-interactive publish$(RESET)"; \
+	fi
 
 check-version: ## Check if version tag exists
 	@echo "$(CYAN)🔍 Checking version $(VERSION)...$(RESET)"
@@ -178,7 +181,7 @@ publish: check-git check-npm check-files ## 🚀 Publish to npm (auto-bumps vers
 	fi; \
 	echo ""; \
 	echo "$(CYAN)📦 Publishing to npm...$(RESET)"; \
-	npm publish --access public; \
+	npm publish --access public || { echo "$(RED)❌ npm publish failed! Run manually: npm publish --access public$(RESET)"; exit 1; }; \
 	echo "$(GREEN)✅ Published to npm!$(RESET)"; \
 	echo ""; \
 	if command -v gh >/dev/null 2>&1; then \
