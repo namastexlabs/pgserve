@@ -210,7 +210,8 @@ export async function startClusterServer(options = {}) {
     const pgManager = new PostgresManager({
       dataDir: options.baseDir,
       port: pgPort,
-      logger: logger.child({ component: 'postgres' })
+      logger: logger.child({ component: 'postgres' }),
+      useRam: options.useRam  // Use /dev/shm for true RAM storage (Linux only)
     });
 
     await pgManager.start();

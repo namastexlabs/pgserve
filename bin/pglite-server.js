@@ -44,6 +44,7 @@ USAGE:
 OPTIONS:
   --port <number>    PostgreSQL port (default: 8432)
   --data <path>      Data directory for persistence (default: in-memory)
+  --ram              Use RAM storage via /dev/shm (Linux only, faster)
   --host <host>      Host to bind to (default: 127.0.0.1)
   --log <level>      Log level: error, warn, info, debug (default: info)
   --cluster          Force cluster mode (auto-enabled on multi-core systems)
@@ -55,7 +56,8 @@ OPTIONS:
   --help             Show this help message
 
 MODES:
-  In-memory (default):  Fast, ephemeral - data lost on restart
+  In-memory (default):  Ephemeral temp directory - data lost on restart
+  RAM mode (--ram):     True RAM via /dev/shm (Linux only, fastest)
   Persistent:           Use --data to persist databases to disk
 
 EXAMPLES:
@@ -98,6 +100,7 @@ function parseArgs() {
     port: 8432,
     host: '127.0.0.1',
     dataDir: null, // null = memory mode
+    useRam: false, // Use /dev/shm for true RAM storage (Linux only)
     logLevel: 'info',
     autoProvision: true,
     cluster: cpuCount > 1,  // Auto-enable on multi-core (use --no-cluster to disable)
@@ -118,6 +121,10 @@ function parseArgs() {
       case '--data':
       case '-d':
         options.dataDir = args[++i];
+        break;
+
+      case '--ram':
+        options.useRam = true;
         break;
 
       case '--host':
@@ -196,6 +203,7 @@ pgserve - Embedded PostgreSQL Server
         port: options.port,
         host: options.host,
         baseDir: options.dataDir,
+        useRam: options.useRam,
         logLevel: options.logLevel,
         autoProvision: options.autoProvision,
         workers: options.workers
@@ -204,13 +212,17 @@ pgserve - Embedded PostgreSQL Server
       // Only primary process shows full startup message
       if (server.workers) {
         const stats = server.getStats();
+        const storageType = options.dataDir
+          ? options.dataDir
+          : (options.useRam ? '/dev/shm (RAM)' : '(temp directory)');
+
         console.log(`
 Cluster started successfully!
 
   Endpoint:    postgresql://${options.host}:${options.port}/<database>
   Mode:        ${memoryMode ? 'In-memory (ephemeral)' : 'Persistent'} (Cluster)
   Workers:     ${stats.workers} processes
-  Data:        ${memoryMode ? '(temp directory)' : options.dataDir}
+  Data:        ${storageType}
   Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
 
 Examples:
@@ -226,6 +238,7 @@ Press Ctrl+C to stop
         port: options.port,
         host: options.host,
         baseDir: options.dataDir,
+        useRam: options.useRam,
         logLevel: options.logLevel,
         autoProvision: options.autoProvision,
         syncTo: options.syncTo,
@@ -239,12 +252,16 @@ Press Ctrl+C to stop
         ? `Enabled → ${options.syncTo.replace(/:[^:@]+@/, ':***@')}`
         : 'Disabled';
 
+      const storageType = options.dataDir
+        ? options.dataDir
+        : (options.useRam ? '/dev/shm (RAM)' : '(temp directory)');
+
       console.log(`
 Server started successfully!
 
   Endpoint:    postgresql://${options.host}:${options.port}/<database>
   Mode:        ${memoryMode ? 'In-memory (ephemeral)' : 'Persistent'}
-  Data:        ${memoryMode ? '(temp directory)' : options.dataDir}
+  Data:        ${storageType}
   PostgreSQL:  Port ${router.pgPort} (internal)
   Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
   Sync:        ${syncStatus}${options.syncDatabases ? ` (${options.syncDatabases})` : ''}

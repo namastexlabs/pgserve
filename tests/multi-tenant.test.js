@@ -9,8 +9,7 @@
 
 import { startMultiTenantServer } from '../src/index.js';
 import pg from 'pg';
-import { test } from 'node:test';
-import assert from 'node:assert';
+import { test, expect } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
 
@@ -26,7 +25,7 @@ function cleanup() {
   }
 }
 
-test('Multi-tenant router - basic setup', async (t) => {
+test('Multi-tenant router - basic setup', async () => {
   cleanup();
 
   const router = await startMultiTenantServer({
@@ -37,14 +36,14 @@ test('Multi-tenant router - basic setup', async (t) => {
 
   // Verify router started
   const stats = router.getStats();
-  assert.equal(stats.port, 15432);
-  assert.equal(stats.pool.totalInstances, 0); // No instances yet
+  expect(stats.port).toBe(15432);
+  expect(stats.postgres.databases.length).toBe(0); // No databases yet
 
   await router.stop();
   cleanup();
 });
 
-test('Multi-tenant router - auto-provision database', async (t) => {
+test('Multi-tenant router - auto-provision database', async () => {
   cleanup();
 
   const router = await startMultiTenantServer({
@@ -58,19 +57,19 @@ test('Multi-tenant router - auto-provision database', async (t) => {
     host: '127.0.0.1',
     port: 15432,
     database: 'testdb1',
-    user: 'postgres' // PGlite doesn't require auth
+    user: 'postgres',
+    password: 'postgres'
   });
 
   await client.connect();
 
   // Verify instance was created
   const stats = router.getStats();
-  assert.equal(stats.pool.totalInstances, 1);
+  expect(stats.postgres.databases.length).toBe(1);
 
   const databases = router.listDatabases();
-  assert.equal(databases.length, 1);
-  assert.equal(databases[0].dbName, 'testdb1');
-  assert.equal(databases[0].locked, true); // Locked to connection
+  expect(databases.length).toBe(1);
+  expect(databases[0]).toBe('testdb1');
 
   // Create table
   await client.query('CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT)');
@@ -78,15 +77,15 @@ test('Multi-tenant router - auto-provision database', async (t) => {
 
   // Query
   const result = await client.query('SELECT * FROM users');
-  assert.equal(result.rows.length, 1);
-  assert.equal(result.rows[0].name, 'Alice');
+  expect(result.rows.length).toBe(1);
+  expect(result.rows[0].name).toBe('Alice');
 
   await client.end();
   await router.stop();
   cleanup();
 });
 
-test('Multi-tenant router - multiple databases isolated', async (t) => {
+test('Multi-tenant router - multiple databases isolated', async () => {
   cleanup();
 
   const router = await startMultiTenantServer({
@@ -99,7 +98,9 @@ test('Multi-tenant router - multiple databases isolated', async (t) => {
   const client1 = new Client({
     host: '127.0.0.1',
     port: 15432,
-    database: 'db1'
+    database: 'db1',
+    user: 'postgres',
+    password: 'postgres'
   });
 
   await client1.connect();
@@ -108,7 +109,7 @@ test('Multi-tenant router - multiple databases isolated', async (t) => {
 
   // Verify db1 exists
   let stats = router.getStats();
-  assert.equal(stats.pool.totalInstances, 1);
+  expect(stats.postgres.databases.length).toBe(1);
 
   await client1.end();
 
@@ -116,7 +117,9 @@ test('Multi-tenant router - multiple databases isolated', async (t) => {
   const client2 = new Client({
     host: '127.0.0.1',
     port: 15432,
-    database: 'db2'
+    database: 'db2',
+    user: 'postgres',
+    password: 'postgres'
   });
 
   await client2.connect();
@@ -125,7 +128,7 @@ test('Multi-tenant router - multiple databases isolated', async (t) => {
 
   // Verify db2 exists
   stats = router.getStats();
-  assert.equal(stats.pool.totalInstances, 2);
+  expect(stats.postgres.databases.length).toBe(2);
 
   await client2.end();
 
@@ -133,22 +136,24 @@ test('Multi-tenant router - multiple databases isolated', async (t) => {
   const client1Again = new Client({
     host: '127.0.0.1',
     port: 15432,
-    database: 'db1'
+    database: 'db1',
+    user: 'postgres',
+    password: 'postgres'
   });
 
   await client1Again.connect();
 
   // Should have users table, NOT posts table
   const usersResult = await client1Again.query('SELECT * FROM users');
-  assert.equal(usersResult.rows.length, 1);
-  assert.equal(usersResult.rows[0].name, 'Alice');
+  expect(usersResult.rows.length).toBe(1);
+  expect(usersResult.rows[0].name).toBe('Alice');
 
   // Posts table should NOT exist
   try {
     await client1Again.query('SELECT * FROM posts');
-    assert.fail('Should throw error - posts table does not exist in db1');
+    throw new Error('Should throw error - posts table does not exist in db1');
   } catch (error) {
-    assert.ok(error.message.includes('does not exist'));
+    expect(error.message).toContain('does not exist');
   }
 
   await client1Again.end();
@@ -156,7 +161,7 @@ test('Multi-tenant router - multiple databases isolated', async (t) => {
   cleanup();
 });
 
-test('Multi-tenant router - instance reuse', async (t) => {
+test('Multi-tenant router - instance reuse', async () => {
   cleanup();
 
   const router = await startMultiTenantServer({
@@ -169,7 +174,9 @@ test('Multi-tenant router - instance reuse', async (t) => {
   const client1 = new Client({
     host: '127.0.0.1',
     port: 15432,
-    database: 'reuse-test'
+    database: 'reuse-test',
+    user: 'postgres',
+    password: 'postgres'
   });
 
   await client1.connect();
@@ -181,19 +188,21 @@ test('Multi-tenant router - instance reuse', async (t) => {
   const client2 = new Client({
     host: '127.0.0.1',
     port: 15432,
-    database: 'reuse-test'
+    database: 'reuse-test',
+    user: 'postgres',
+    password: 'postgres'
   });
 
   await client2.connect();
 
   // Should still have the table from client1
   const result = await client2.query('SELECT * FROM test');
-  assert.equal(result.rows.length, 1);
-  assert.equal(result.rows[0].value, 42);
+  expect(result.rows.length).toBe(1);
+  expect(result.rows[0].value).toBe(42);
 
-  // Still only 1 instance
+  // Still only 1 database
   const stats = router.getStats();
-  assert.equal(stats.pool.totalInstances, 1);
+  expect(stats.postgres.databases.length).toBe(1);
 
   await client2.end();
   await router.stop();

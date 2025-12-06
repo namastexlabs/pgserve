@@ -246,7 +246,7 @@ export async function extractDatabaseNameFromSocket(socket) {
       message = result.message;
       allData = result.allData;
     } else if (version === CANCEL_REQUEST_CODE) {
-      // Cancel request - PGlite doesn't support query cancellation
+      // Cancel request - query cancellation not implemented
       // Just close gracefully (cancel requests don't expect a response)
       throw new Error('Cancel request received (not supported)');
     }

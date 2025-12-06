@@ -108,6 +108,8 @@ export class PostgresManager {
     this.creatingDatabases = new Map(); // Track in-progress creations
     this.socketDir = null; // Unix socket directory for faster local connections
     this.adminPool = null; // Connection pool for database admin operations
+    this.useRam = options.useRam || false; // Use /dev/shm for true RAM storage (Linux only)
+    this.isTrueRam = false; // Tracks if we're actually using RAM storage
 
     // Sync/Replication options (for async sync to real PostgreSQL)
     this.syncEnabled = options.syncEnabled || false;
@@ -143,8 +145,27 @@ export class PostgresManager {
         fs.mkdirSync(this.databaseDir, { recursive: true });
       }
     } else {
-      // Memory mode: use temp directory with unique suffix
-      this.databaseDir = path.join(os.tmpdir(), `pgserve-${process.pid}-${Date.now()}`);
+      // Memory mode: use /dev/shm if --ram flag, otherwise /tmp
+      let baseDir = os.tmpdir();
+      this.isTrueRam = false;
+
+      if (this.useRam) {
+        const platform = os.platform();
+        if (platform === 'linux') {
+          const shmDir = '/dev/shm';
+          try {
+            fs.accessSync(shmDir, fs.constants.W_OK);
+            baseDir = shmDir;
+            this.isTrueRam = true;
+          } catch {
+            throw new Error('--ram requires /dev/shm which is not available or not writable. Run without --ram flag.');
+          }
+        } else {
+          throw new Error(`--ram is only supported on Linux. Current platform: ${platform}`);
+        }
+      }
+
+      this.databaseDir = path.join(baseDir, `pgserve-${process.pid}-${Date.now()}`);
       // Clean up if exists from a previous failed run
       if (fs.existsSync(this.databaseDir)) {
         fs.rmSync(this.databaseDir, { recursive: true, force: true });
@@ -162,8 +183,9 @@ export class PostgresManager {
     this.logger.info({
       databaseDir: this.databaseDir,
       persistent: this.persistent,
+      trueRam: this.isTrueRam,
       port: this.port
-    }, 'Starting embedded PostgreSQL');
+    }, this.isTrueRam ? 'PostgreSQL using RAM storage (/dev/shm)' : 'Starting embedded PostgreSQL');
 
     // Check if data directory is already initialized
     const pgVersionFile = path.join(this.databaseDir, 'PG_VERSION');

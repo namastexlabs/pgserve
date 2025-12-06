@@ -1,5 +1,5 @@
 # ==========================================
-# 📦 PGlite Embedded Server - Makefile
+# 📦 pgserve - Embedded PostgreSQL Server
 # ==========================================
 
 .DEFAULT_GOAL := help
@@ -24,8 +24,8 @@ VERSION := $(shell grep '"version"' package.json | head -1 | sed 's/.*"version":
 .PHONY: help
 help: ## Show this help
 	@echo ""
-	@echo "$(PURPLE)$(BOLD)📦 PGlite Embedded Server$(RESET) - v$(VERSION)"
-	@echo "$(CYAN)Multi-instance PostgreSQL server using PGlite$(RESET)"
+	@echo "$(PURPLE)$(BOLD)📦 pgserve$(RESET) - v$(VERSION)"
+	@echo "$(CYAN)Embedded PostgreSQL server with multi-tenant support$(RESET)"
 	@echo ""
 	@echo "$(BOLD)Quick Commands:$(RESET)"
 	@echo "  $(PURPLE)publish$(RESET)        Publish to npm (auto-checks, builds, publishes)"
@@ -48,8 +48,20 @@ help: ## Show this help
 .PHONY: install
 install: ## Install dependencies
 	@echo "$(CYAN)📦 Installing dependencies...$(RESET)"
-	@npm install
+	@bun install
 	@echo "$(GREEN)✅ Dependencies installed!$(RESET)"
+
+.PHONY: test
+test: ## Run tests
+	@echo "$(CYAN)🧪 Running tests...$(RESET)"
+	@bun test
+	@echo "$(GREEN)✅ Tests passed!$(RESET)"
+
+.PHONY: bench
+bench: ## Run benchmarks
+	@echo "$(CYAN)📊 Running benchmarks...$(RESET)"
+	@bun tests/benchmarks/runner.js
+	@echo "$(GREEN)✅ Benchmarks complete!$(RESET)"
 
 # ==========================================
 # 🧪 Testing
@@ -78,21 +90,21 @@ pm2-start: ## Start server with PM2
 
 pm2-stop: ## Stop PM2 instance
 	@echo "$(CYAN)🛑 Stopping PM2 instance...$(RESET)"
-	@pm2 stop "PGlite Local Server" 2>/dev/null || true
-	@pm2 delete "PGlite Local Server" 2>/dev/null || true
+	@pm2 stop "pgserve" 2>/dev/null || true
+	@pm2 delete "pgserve" 2>/dev/null || true
 	@pm2 save
 	@echo "$(GREEN)✅ PM2 instance stopped!$(RESET)"
 
 pm2-restart: ## Restart PM2 instance
 	@echo "$(CYAN)🔄 Restarting PM2 instance...$(RESET)"
-	@pm2 restart "PGlite Local Server" 2>/dev/null || $(MAKE) pm2-start
+	@pm2 restart "pgserve" 2>/dev/null || $(MAKE) pm2-start
 	@echo "$(GREEN)✅ PM2 instance restarted!$(RESET)"
 
 pm2-logs: ## Show PM2 logs
-	@pm2 logs "PGlite Local Server" --lines 50
+	@pm2 logs "pgserve" --lines 50
 
 pm2-status: ## Show PM2 status
-	@pm2 status "PGlite Local Server"
+	@pm2 status "pgserve"
 
 # ==========================================
 # 🔍 Pre-publish Checks
@@ -215,7 +227,7 @@ clean: ## Clean generated files
 
 clean-all: clean ## Deep clean (including node_modules)
 	@echo "$(CYAN)🧹 Deep cleaning...$(RESET)"
-	@rm -rf node_modules package-lock.json pnpm-lock.yaml
+	@rm -rf node_modules package-lock.json pnpm-lock.yaml bun.lock
 	@echo "$(GREEN)✅ Deep clean complete!$(RESET)"
 
 # ==========================================

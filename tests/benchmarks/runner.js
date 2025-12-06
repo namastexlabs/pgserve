@@ -10,6 +10,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { startMultiTenantServer } from '../../src/index.js';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -372,24 +373,29 @@ async function benchmarkPostgreSQL(scenario) {
 
 /**
  * pgserve Benchmark (our solution - embedded PostgreSQL with TRUE concurrency)
+ * @param {Object} scenario - Benchmark scenario
+ * @param {boolean} useRam - Use /dev/shm RAM storage (Linux only)
  */
-async function benchmarkPgserve(scenario) {
-  console.log('  🚀 Running pgserve benchmark...');
+async function benchmarkPgserve(scenario, useRam = false) {
+  const mode = useRam ? 'RAM' : 'disk';
+  console.log(`  🚀 Running pgserve (${mode}) benchmark...`);
 
   let server;
   try {
-    // Start pgserve in memory mode
+    // Start pgserve in memory mode (optionally with RAM storage)
     server = await startMultiTenantServer({
-      port: 18432,
-      logLevel: 'error'
+      port: useRam ? 18433 : 18432,
+      logLevel: 'error',
+      useRam
     });
 
     // Wait for server to be fully ready
     await new Promise(resolve => setTimeout(resolve, 2000));
 
+    const port = useRam ? 18433 : 18432;
     const pool = new Pool({
       host: 'localhost',
-      port: 18432,
+      port,
       database: 'bench_test',
       user: 'postgres',
       password: 'postgres',
@@ -488,7 +494,7 @@ async function benchmarkPgserve(scenario) {
 
     return metrics.getReport();
   } catch (error) {
-    console.error('   pgserve benchmark failed:', error.message);
+    console.error(`   pgserve (${mode}) benchmark failed:`, error.message);
     if (server) {
       try { await server.stop(); } catch (e) {}
     }
@@ -524,49 +530,92 @@ function generateReport(results) {
     md += `## ${scenario.name}\n\n`;
     md += `${scenario.description}\n\n`;
 
-    const { sqlite, pglite, postgres, pgserve } = scenario;
+    const { sqlite, pglite, postgres, pgserve, pgserveRam } = scenario;
+    const hasRam = pgserveRam && !pgserveRam.skipped;
 
-    md += '```\n';
-    md += '┌─────────────────┬──────────┬──────────┬──────────┬──────────┬──────────┐\n';
-    md += '│ Metric          │ SQLite   │ PGlite   │ PostgreSQL│ pgserve  │ Winner   │\n';
-    md += '├─────────────────┼──────────┼──────────┼──────────┼──────────┼──────────┤\n';
+    if (hasRam) {
+      // Extended table with RAM column
+      md += '```\n';
+      md += '┌─────────────────┬──────────┬──────────┬──────────┬──────────┬─────────────┬─────────────┐\n';
+      md += '│ Metric          │ SQLite   │ PGlite   │ PostgreSQL│ pgserve  │ pgserve RAM │ Winner      │\n';
+      md += '├─────────────────┼──────────┼──────────┼──────────┼──────────┼─────────────┼─────────────┤\n';
 
-    // Find winners
-    const throughputs = { sqlite: sqlite.throughput, pglite: pglite.throughput, postgres: postgres.throughput, pgserve: pgserve.throughput };
-    const p50s = { sqlite: sqlite.p50, pglite: pglite.p50, postgres: postgres.p50, pgserve: pgserve.p50 };
-    const p99s = { sqlite: sqlite.p99, pglite: pglite.p99, postgres: postgres.p99, pgserve: pgserve.p99 };
-    const errors = { sqlite: sqlite.errors, pglite: pglite.errors, postgres: postgres.errors, pgserve: pgserve.errors };
+      // Find winners (include RAM)
+      const throughputs = { sqlite: sqlite.throughput, pglite: pglite.throughput, postgres: postgres.throughput, pgserve: pgserve.throughput, pgserveRam: pgserveRam.throughput };
+      const p50s = { sqlite: sqlite.p50, pglite: pglite.p50, postgres: postgres.p50, pgserve: pgserve.p50, pgserveRam: pgserveRam.p50 };
+      const p99s = { sqlite: sqlite.p99, pglite: pglite.p99, postgres: postgres.p99, pgserve: pgserve.p99, pgserveRam: pgserveRam.p99 };
+      const errors = { sqlite: sqlite.errors, pglite: pglite.errors, postgres: postgres.errors, pgserve: pgserve.errors, pgserveRam: pgserveRam.errors };
 
-    const getMaxKey = (obj) => Object.entries(obj).reduce((a, b) => a[1] > b[1] ? a : b)[0];
-    const getMinKey = (obj) => Object.entries(obj).filter(([k,v]) => v > 0 || k === 'sqlite').reduce((a, b) => a[1] < b[1] ? a : b)[0];
-    const getMinErrorKey = (obj) => Object.entries(obj).reduce((a, b) => a[1] <= b[1] ? a : b)[0];
+      const getMaxKey = (obj) => Object.entries(obj).reduce((a, b) => a[1] > b[1] ? a : b)[0];
+      const getMinKey = (obj) => Object.entries(obj).filter(([k,v]) => v > 0 || k === 'sqlite').reduce((a, b) => a[1] < b[1] ? a : b)[0];
+      const getMinErrorKey = (obj) => Object.entries(obj).reduce((a, b) => a[1] <= b[1] ? a : b)[0];
 
-    const nameMap = { sqlite: 'SQLite', pglite: 'PGlite', postgres: 'PostgreSQL', pgserve: 'pgserve' };
+      const nameMap = { sqlite: 'SQLite', pglite: 'PGlite', postgres: 'PostgreSQL', pgserve: 'pgserve', pgserveRam: 'pgserve RAM' };
 
-    const pad = (s, n) => String(s).padEnd(n);
+      const pad = (s, n) => String(s).padEnd(n);
 
-    md += `│ Throughput (qps)│ ${pad(sqlite.throughput, 8)} │ ${pad(pglite.throughput, 8)} │ ${pad(postgres.throughput, 9)} │ ${pad(pgserve.throughput, 8)} │ ${pad(nameMap[getMaxKey(throughputs)], 8)} │\n`;
-    md += `│ P50 latency (ms)│ ${pad(sqlite.p50, 8)} │ ${pad(pglite.p50, 8)} │ ${pad(postgres.p50, 9)} │ ${pad(pgserve.p50, 8)} │ ${pad(nameMap[getMinKey(p50s)], 8)} │\n`;
-    md += `│ P99 latency (ms)│ ${pad(sqlite.p99, 8)} │ ${pad(pglite.p99, 8)} │ ${pad(postgres.p99, 9)} │ ${pad(pgserve.p99, 8)} │ ${pad(nameMap[getMinKey(p99s)], 8)} │\n`;
-    md += `│ Errors          │ ${pad(sqlite.errors, 8)} │ ${pad(pglite.errors, 8)} │ ${pad(postgres.errors, 9)} │ ${pad(pgserve.errors, 8)} │ ${pad(nameMap[getMinErrorKey(errors)], 8)} │\n`;
-    md += '└─────────────────┴──────────┴──────────┴──────────┴──────────┴──────────┘\n';
-    md += '```\n\n';
+      md += `│ Throughput (qps)│ ${pad(sqlite.throughput, 8)} │ ${pad(pglite.throughput, 8)} │ ${pad(postgres.throughput, 9)} │ ${pad(pgserve.throughput, 8)} │ ${pad(pgserveRam.throughput, 11)} │ ${pad(nameMap[getMaxKey(throughputs)], 11)} │\n`;
+      md += `│ P50 latency (ms)│ ${pad(sqlite.p50, 8)} │ ${pad(pglite.p50, 8)} │ ${pad(postgres.p50, 9)} │ ${pad(pgserve.p50, 8)} │ ${pad(pgserveRam.p50, 11)} │ ${pad(nameMap[getMinKey(p50s)], 11)} │\n`;
+      md += `│ P99 latency (ms)│ ${pad(sqlite.p99, 8)} │ ${pad(pglite.p99, 8)} │ ${pad(postgres.p99, 9)} │ ${pad(pgserve.p99, 8)} │ ${pad(pgserveRam.p99, 11)} │ ${pad(nameMap[getMinKey(p99s)], 11)} │\n`;
+      md += `│ Errors          │ ${pad(sqlite.errors, 8)} │ ${pad(pglite.errors, 8)} │ ${pad(postgres.errors, 9)} │ ${pad(pgserve.errors, 8)} │ ${pad(pgserveRam.errors, 11)} │ ${pad(nameMap[getMinErrorKey(errors)], 11)} │\n`;
+      md += '└─────────────────┴──────────┴──────────┴──────────┴──────────┴─────────────┴─────────────┘\n';
+      md += '```\n\n';
 
-    // Analysis
-    const winner = nameMap[getMaxKey(throughputs)];
-    if (winner === 'pgserve') {
-      const vsSQLite = sqlite.throughput > 0 ? ((pgserve.throughput / sqlite.throughput - 1) * 100).toFixed(1) : 'N/A';
-      const vsPGlite = pglite.throughput > 0 ? ((pgserve.throughput / pglite.throughput - 1) * 100).toFixed(1) : 'N/A';
-      const vsPostgres = postgres.throughput > 0 ? ((pgserve.throughput / postgres.throughput - 1) * 100).toFixed(1) : 'N/A';
-      md += `**pgserve wins!** ${vsPGlite}% faster than PGlite for concurrent workloads.\n\n`;
+      // Analysis with RAM comparison
+      const winner = nameMap[getMaxKey(throughputs)];
+      if (winner === 'pgserve RAM') {
+        const vsDisk = pgserve.throughput > 0 ? ((pgserveRam.throughput / pgserve.throughput - 1) * 100).toFixed(1) : 'N/A';
+        const vsPGlite = pglite.throughput > 0 ? ((pgserveRam.throughput / pglite.throughput - 1) * 100).toFixed(1) : 'N/A';
+        md += `**pgserve RAM wins!** ${vsDisk}% faster than disk mode, ${vsPGlite}% faster than PGlite.\n\n`;
+      } else if (winner === 'pgserve') {
+        const vsPGlite = pglite.throughput > 0 ? ((pgserve.throughput / pglite.throughput - 1) * 100).toFixed(1) : 'N/A';
+        md += `**pgserve wins!** ${vsPGlite}% faster than PGlite for concurrent workloads.\n\n`;
+      } else {
+        md += `**${winner} wins** this scenario.\n\n`;
+      }
     } else {
-      md += `**${winner} wins** this scenario.\n\n`;
+      // Original table without RAM column
+      md += '```\n';
+      md += '┌─────────────────┬──────────┬──────────┬──────────┬──────────┬──────────┐\n';
+      md += '│ Metric          │ SQLite   │ PGlite   │ PostgreSQL│ pgserve  │ Winner   │\n';
+      md += '├─────────────────┼──────────┼──────────┼──────────┼──────────┼──────────┤\n';
+
+      // Find winners
+      const throughputs = { sqlite: sqlite.throughput, pglite: pglite.throughput, postgres: postgres.throughput, pgserve: pgserve.throughput };
+      const p50s = { sqlite: sqlite.p50, pglite: pglite.p50, postgres: postgres.p50, pgserve: pgserve.p50 };
+      const p99s = { sqlite: sqlite.p99, pglite: pglite.p99, postgres: postgres.p99, pgserve: pgserve.p99 };
+      const errors = { sqlite: sqlite.errors, pglite: pglite.errors, postgres: postgres.errors, pgserve: pgserve.errors };
+
+      const getMaxKey = (obj) => Object.entries(obj).reduce((a, b) => a[1] > b[1] ? a : b)[0];
+      const getMinKey = (obj) => Object.entries(obj).filter(([k,v]) => v > 0 || k === 'sqlite').reduce((a, b) => a[1] < b[1] ? a : b)[0];
+      const getMinErrorKey = (obj) => Object.entries(obj).reduce((a, b) => a[1] <= b[1] ? a : b)[0];
+
+      const nameMap = { sqlite: 'SQLite', pglite: 'PGlite', postgres: 'PostgreSQL', pgserve: 'pgserve' };
+
+      const pad = (s, n) => String(s).padEnd(n);
+
+      md += `│ Throughput (qps)│ ${pad(sqlite.throughput, 8)} │ ${pad(pglite.throughput, 8)} │ ${pad(postgres.throughput, 9)} │ ${pad(pgserve.throughput, 8)} │ ${pad(nameMap[getMaxKey(throughputs)], 8)} │\n`;
+      md += `│ P50 latency (ms)│ ${pad(sqlite.p50, 8)} │ ${pad(pglite.p50, 8)} │ ${pad(postgres.p50, 9)} │ ${pad(pgserve.p50, 8)} │ ${pad(nameMap[getMinKey(p50s)], 8)} │\n`;
+      md += `│ P99 latency (ms)│ ${pad(sqlite.p99, 8)} │ ${pad(pglite.p99, 8)} │ ${pad(postgres.p99, 9)} │ ${pad(pgserve.p99, 8)} │ ${pad(nameMap[getMinKey(p99s)], 8)} │\n`;
+      md += `│ Errors          │ ${pad(sqlite.errors, 8)} │ ${pad(pglite.errors, 8)} │ ${pad(postgres.errors, 9)} │ ${pad(pgserve.errors, 8)} │ ${pad(nameMap[getMinErrorKey(errors)], 8)} │\n`;
+      md += '└─────────────────┴──────────┴──────────┴──────────┴──────────┴──────────┘\n';
+      md += '```\n\n';
+
+      // Analysis
+      const winner = nameMap[getMaxKey(throughputs)];
+      if (winner === 'pgserve') {
+        const vsPGlite = pglite.throughput > 0 ? ((pgserve.throughput / pglite.throughput - 1) * 100).toFixed(1) : 'N/A';
+        md += `**pgserve wins!** ${vsPGlite}% faster than PGlite for concurrent workloads.\n\n`;
+      } else {
+        md += `**${winner} wins** this scenario.\n\n`;
+      }
     }
   }
 
   md += '---\n\n';
   md += '## Why pgserve?\n\n';
   md += '- **TRUE Concurrency**: Native PostgreSQL process forking\n';
+  md += '- **RAM Mode**: `--ram` flag for /dev/shm storage (Linux)\n';
   md += '- **Zero Config**: Just run `npx pgserve`\n';
   md += '- **Auto-Provision**: Databases created on first connection\n';
   md += '- **PostgreSQL 17.7**: Latest stable, native binaries\n';
@@ -597,6 +646,14 @@ async function main() {
 
   const results = [];
 
+  // Check if RAM mode is available (Linux only with /dev/shm)
+  const canUseRam = os.platform() === 'linux' && fs.existsSync('/dev/shm');
+  if (canUseRam) {
+    console.log('💾 RAM mode available (/dev/shm detected)\n');
+  } else {
+    console.log('⚠️  RAM mode not available (Linux /dev/shm required)\n');
+  }
+
   for (const scenario of scenarios) {
     console.log(`\n📊 Scenario: ${scenario.name}`);
     console.log(`   ${scenario.description}\n`);
@@ -604,7 +661,10 @@ async function main() {
     const sqlite = await benchmarkSQLite(scenario);
     const pglite = await benchmarkPGlite(scenario);
     const postgres = await benchmarkPostgreSQL(scenario);
-    const pgserve = await benchmarkPgserve(scenario);
+    const pgserve = await benchmarkPgserve(scenario, false);  // disk mode
+    const pgserveRam = canUseRam
+      ? await benchmarkPgserve(scenario, true)  // RAM mode
+      : { throughput: 0, p50: 0, p99: 0, errors: 0, lockTimeouts: 0, totalOps: 0, skipped: true };
 
     results.push({
       name: scenario.name,
@@ -612,13 +672,17 @@ async function main() {
       sqlite,
       pglite,
       postgres,
-      pgserve
+      pgserve,
+      pgserveRam
     });
 
-    console.log(`\n   SQLite:      ${sqlite.throughput} qps, P50=${sqlite.p50}ms, errors=${sqlite.errors}`);
-    console.log(`   PGlite:      ${pglite.throughput} qps, P50=${pglite.p50}ms, errors=${pglite.errors}`);
-    console.log(`   PostgreSQL:  ${postgres.throughput} qps, P50=${postgres.p50}ms, errors=${postgres.errors}`);
-    console.log(`   pgserve:     ${pgserve.throughput} qps, P50=${pgserve.p50}ms, errors=${pgserve.errors}`);
+    console.log(`\n   SQLite:        ${sqlite.throughput} qps, P50=${sqlite.p50}ms, errors=${sqlite.errors}`);
+    console.log(`   PGlite:        ${pglite.throughput} qps, P50=${pglite.p50}ms, errors=${pglite.errors}`);
+    console.log(`   PostgreSQL:    ${postgres.throughput} qps, P50=${postgres.p50}ms, errors=${postgres.errors}`);
+    console.log(`   pgserve:       ${pgserve.throughput} qps, P50=${pgserve.p50}ms, errors=${pgserve.errors}`);
+    if (canUseRam) {
+      console.log(`   pgserve (RAM): ${pgserveRam.throughput} qps, P50=${pgserveRam.p50}ms, errors=${pgserveRam.errors}`);
+    }
   }
 
   console.log('\n📄 Generating report...\n');
