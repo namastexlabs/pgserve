@@ -19,7 +19,7 @@ import { RestoreManager } from './restore.js';
 import { Dashboard } from './dashboard.js';
 import { extractDatabaseNameFromSocket } from './protocol.js';
 import { EventEmitter } from 'events';
-import pino from 'pino';
+import { createLogger } from './logger.js';
 
 /**
  * Multi-Tenant Router Server
@@ -39,13 +39,7 @@ export class MultiTenantRouter extends EventEmitter {
 
     // Pino logger (ultra-fast structured logging)
     const logLevel = options.logLevel || 'info';
-    this.logger = options.logger || pino({
-      level: logLevel,
-      transport: logLevel === 'debug' ? {
-        target: 'pino-pretty',
-        options: { colorize: true }
-      } : undefined
-    });
+    this.logger = options.logger || createLogger({ level: logLevel });
 
     // Sync options (async replication to real PostgreSQL)
     this.syncTo = options.syncTo || null;

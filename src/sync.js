@@ -6,7 +6,7 @@
  */
 
 import pg from 'pg';
-import pino from 'pino';
+import { createLogger } from './logger.js';
 
 /**
  * Match database name against patterns (supports wildcards)
@@ -36,7 +36,7 @@ export class SyncManager {
     this.sourcePort = options.sourcePort;          // pgserve PostgreSQL port
     this.sourceSocketPath = options.sourceSocketPath; // pgserve socket path (optional)
 
-    this.logger = pino({ level: options.logLevel || 'info' }).child({ component: 'sync' });
+    this.logger = createLogger({ level: options.logLevel || 'info', component: 'sync' });
 
     this.sourcePool = null;  // Connection to pgserve's PostgreSQL
     this.targetPool = null;  // Connection to real PostgreSQL

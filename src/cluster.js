@@ -13,7 +13,7 @@ import cluster from 'cluster';
 import os from 'os';
 import net from 'net';
 import pg from 'pg';
-import pino from 'pino';
+import { createLogger } from './logger.js';
 import { PostgresManager } from './postgres.js';
 import { extractDatabaseNameFromSocket } from './protocol.js';
 import { EventEmitter } from 'events';
@@ -34,7 +34,7 @@ class ClusterRouter extends EventEmitter {
     this.autoProvision = options.autoProvision !== false;
     this.maxConnections = options.maxConnections || 1000;
 
-    this.logger = pino({ level: options.logLevel || 'info' });
+    this.logger = createLogger({ level: options.logLevel || 'info' });
     this.adminClient = null;
     this.server = null;
     this.connections = new Set();
@@ -206,7 +206,7 @@ export async function startClusterServer(options = {}) {
     console.log(`[pgserve] Cluster mode: ${numWorkers} workers`);
 
     // PRIMARY: Start our embedded PostgreSQL (single instance)
-    const logger = pino({ level: options.logLevel || 'info' });
+    const logger = createLogger({ level: options.logLevel || 'info' });
     const pgManager = new PostgresManager({
       dataDir: options.baseDir,
       port: pgPort,

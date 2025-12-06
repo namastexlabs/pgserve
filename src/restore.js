@@ -15,7 +15,7 @@
 
 import pg from 'pg';
 import { from as copyFrom, to as copyTo } from 'pg-copy-streams';
-import pino from 'pino';
+import { createLogger } from './logger.js';
 
 /**
  * Match database name against patterns (supports wildcards)
@@ -46,7 +46,7 @@ export class RestoreManager {
     this.targetPort = options.targetPort;            // Local embedded PostgreSQL port
     this.targetSocketPath = options.targetSocketPath; // Unix socket path (optional)
 
-    this.logger = options.logger || pino({ level: options.logLevel || 'info' }).child({ component: 'restore' });
+    this.logger = options.logger || createLogger({ level: options.logLevel || 'info', component: 'restore' });
 
     // Connection pools (lazy initialized)
     this.sourcePool = null;
