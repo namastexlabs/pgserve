@@ -257,16 +257,18 @@ Press Ctrl+C to stop
 `);
     }
 
-    // Graceful shutdown
-    const shutdown = async () => {
-      console.log('\nShutting down...');
-      await server.stop();
-      console.log('Server stopped.');
-      process.exit(0);
-    };
+    // Graceful shutdown (only for primary/single-process, workers handle via IPC)
+    if (!process.env.PGSERVE_WORKER) {
+      const shutdown = async () => {
+        console.log('\nShutting down...');
+        await server.stop();
+        console.log('Server stopped.');
+        process.exit(0);
+      };
 
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    }
 
     // Keep process alive
     await new Promise(() => {});

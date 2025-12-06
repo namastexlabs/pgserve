@@ -74,6 +74,8 @@ class ClusterRouter extends EventEmitter {
       }
 
       this.adminClient = new pg.Client(connectionConfig);
+      // Suppress errors during shutdown (PostgreSQL terminating connections)
+      this.adminClient.on('error', () => {});
       await this.adminClient.connect();
     }
 
@@ -178,7 +180,11 @@ class ClusterRouter extends EventEmitter {
     this.connections.clear();
 
     if (this.adminClient) {
-      await this.adminClient.end();
+      try {
+        await this.adminClient.end();
+      } catch {
+        // Ignore - connection may already be terminated
+      }
     }
 
     if (this.server) {
