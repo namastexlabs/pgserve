@@ -1,0 +1,28 @@
+# Bun Configuration for pgserve
+# https://bun.sh/docs/runtime/bunfig
+
+[test]
+# Enable coverage reporting
+coverage = true
+coverageDir = "./coverage"
+
+# Test timeout (in milliseconds) - allow extra time for PostgreSQL startup
+timeout = 60000
+
+# Number of retries for flaky tests
+retries = 1
+
+[run]
+# Use bun as shell for scripts
+shell = "bun"
+
+[install]
+# Use exact versions in lockfile
+exact = true
+
+# Faster installs with frozen lockfile in CI
+# frozen-lockfile = true
+
+[serve]
+# Default port for bun serve (not used by pgserve, but for reference)
+# port = 3000

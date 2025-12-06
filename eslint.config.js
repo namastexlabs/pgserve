@@ -19,6 +19,11 @@ export default [
         clearInterval: 'readonly',
         URL: 'readonly',
         __dirname: 'readonly',
+        // Bun globals
+        Bun: 'readonly',
+        TextDecoder: 'readonly',
+        TextEncoder: 'readonly',
+        Response: 'readonly',
       },
     },
     rules: {

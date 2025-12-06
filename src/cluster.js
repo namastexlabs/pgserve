@@ -11,12 +11,17 @@
 
 import cluster from 'cluster';
 import os from 'os';
-import net from 'net';
-import pg from 'pg';
+import { SQL } from 'bun';
 import { createLogger } from './logger.js';
 import { PostgresManager } from './postgres.js';
-import { extractDatabaseNameFromSocket } from './protocol.js';
+import { extractDatabaseName } from './protocol.js';
 import { EventEmitter } from 'events';
+
+// PostgreSQL protocol constants
+const PROTOCOL_VERSION_3 = 196608;
+const SSL_REQUEST_CODE = 80877103;
+const GSSAPI_REQUEST_CODE = 80877104;
+const CANCEL_REQUEST_CODE = 80877102;
 
 /**
  * ClusterRouter - Lightweight TCP router for worker processes
@@ -35,142 +40,233 @@ class ClusterRouter extends EventEmitter {
     this.maxConnections = options.maxConnections || 1000;
 
     this.logger = createLogger({ level: options.logLevel || 'info' });
-    this.adminClient = null;
+    this.sql = null;  // Bun.sql for admin queries
     this.server = null;
     this.connections = new Set();
     this.setMaxListeners(this.maxConnections + 10);
   }
 
-  optimizeSocket(socket) {
-    socket.setNoDelay(true);
-    socket.setKeepAlive(true, 60000);
-    socket.setTimeout(0);
-  }
+  /**
+   * Socket state storage for Bun TCP handler model
+   */
+  socketState = new WeakMap();
 
   async start() {
-    // Admin connection for auto-provisioning databases
+    // Admin connection for auto-provisioning databases (Bun.sql)
     if (this.autoProvision) {
-      let connectionConfig;
-      if (this.pgSocketPath) {
-        // pg library expects socket DIRECTORY as host, it appends .s.PGSQL.<port>
-        // Socket path format: /tmp/pgserve-sock-xxx/.s.PGSQL.<port>
-        // Extract directory by removing the socket file suffix
-        const socketDir = this.pgSocketPath.replace(/\/\.s\.PGSQL\.\d+$/, '');
-        connectionConfig = {
-          host: socketDir,
-          port: this.pgPort,
-          database: 'postgres',
-          user: this.pgUser,
-          password: this.pgPassword
-        };
-      } else {
-        connectionConfig = {
-          host: '127.0.0.1',
-          port: this.pgPort,
-          database: 'postgres',
-          user: this.pgUser,
-          password: this.pgPassword
-        };
-      }
-
-      this.adminClient = new pg.Client(connectionConfig);
-      // Suppress errors during shutdown (PostgreSQL terminating connections)
-      this.adminClient.on('error', () => {});
-      await this.adminClient.connect();
+      // Bun.sql uses TCP connections - Unix sockets not directly supported
+      // This is fine for admin queries (low volume, local connection)
+      this.sql = new SQL({
+        hostname: '127.0.0.1',
+        port: this.pgPort,
+        database: 'postgres',
+        username: this.pgUser,
+        password: this.pgPassword,
+        max: 2,  // Small pool for admin queries
+        idleTimeout: 30,
+      });
     }
 
-    return new Promise((resolve, _reject) => {
-      this.server = net.createServer({
-        allowHalfOpen: false,
-        pauseOnConnect: true
-      }, (socket) => this.handleConnection(socket));
-
-      this.server.maxConnections = this.maxConnections;
-
-      this.server.on('error', (error) => {
-        this.logger.error({ err: error }, 'Router error');
-        this.emit('error', error);
-      });
-
-      this.server.listen(this.port, this.host, () => {
-        this.emit('listening');
-        resolve();
-      });
+    // Create TCP server using Bun.listen() for 2-3x throughput
+    const router = this;
+    this.server = Bun.listen({
+      hostname: this.host,
+      port: this.port,
+      socket: {
+        data(socket, data) {
+          router.handleSocketData(socket, data);
+        },
+        open(socket) {
+          router.handleSocketOpen(socket);
+        },
+        close(socket) {
+          router.handleSocketClose(socket);
+        },
+        error(socket, error) {
+          router.handleSocketError(socket, error);
+        },
+        drain(socket) {
+          const state = router.socketState.get(socket);
+          if (state?.pgSocket) {
+            state.pgSocket.resume?.();
+          }
+        }
+      }
     });
+
+    this.emit('listening');
   }
 
   async createDatabase(dbName) {
-    if (!this.autoProvision || !this.adminClient) return;
+    if (!this.autoProvision || !this.sql) return;
 
     try {
-      const result = await this.adminClient.query(
-        'SELECT 1 FROM pg_database WHERE datname = $1',
-        [dbName]
-      );
+      // Bun.sql uses tagged template literals for parameterized queries
+      const result = await this.sql`SELECT 1 FROM pg_database WHERE datname = ${dbName}`;
 
-      if (result.rows.length === 0) {
-        await this.adminClient.query(`CREATE DATABASE "${dbName}"`);
+      if (result.length === 0) {
+        // Use sql() helper for safe identifier escaping (like CREATE DATABASE)
+        await this.sql.unsafe(`CREATE DATABASE "${dbName.replace(/"/g, '""')}"`);
       }
     } catch (error) {
       // Ignore "already exists" (race condition between workers)
-      if (!error.message.includes('already exists')) {
+      if (!error.message?.includes('already exists')) {
         this.logger.error({ database: dbName, err: error }, 'Failed to create database');
       }
     }
   }
 
-  async handleConnection(socket) {
+  /**
+   * Handle socket open (Bun TCP handler)
+   */
+  handleSocketOpen(socket) {
+    this.socketState.set(socket, {
+      buffer: null,
+      pgSocket: null,
+      dbName: null,
+      handshakeComplete: false
+    });
     this.connections.add(socket);
-    this.optimizeSocket(socket);
+  }
 
-    let dbName = null;
-    let pgSocket = null;
+  /**
+   * Handle socket data (Bun TCP handler)
+   */
+  handleSocketData(socket, data) {
+    const state = this.socketState.get(socket);
+    if (!state) return;
+
+    // If handshake complete, forward to PostgreSQL
+    if (state.handshakeComplete && state.pgSocket) {
+      state.pgSocket.write(data);
+      return;
+    }
+
+    // Buffer data for startup message parsing
+    if (state.buffer) {
+      state.buffer = Buffer.concat([state.buffer, data]);
+    } else {
+      state.buffer = Buffer.from(data);
+    }
+
+    this.processStartupMessage(socket, state);
+  }
+
+  /**
+   * Process PostgreSQL startup message and establish proxy connection
+   */
+  async processStartupMessage(socket, state) {
+    const buffer = state.buffer;
+    if (!buffer || buffer.length < 8) return;
+
+    const messageLength = buffer.readUInt32BE(0);
+    if (buffer.length < messageLength) return;
+
+    const code = buffer.readUInt32BE(4);
+
+    // Handle SSL/GSSAPI/Cancel requests
+    if (code === SSL_REQUEST_CODE || code === GSSAPI_REQUEST_CODE) {
+      socket.write(Buffer.from('N'));
+      state.buffer = buffer.length > messageLength ? buffer.subarray(messageLength) : null;
+      return;
+    }
+
+    if (code === CANCEL_REQUEST_CODE) {
+      socket.end();
+      return;
+    }
+
+    if (code !== PROTOCOL_VERSION_3) {
+      this.logger.warn({ code }, 'Unsupported protocol version');
+      socket.end();
+      return;
+    }
+
+    const startupMessage = buffer.subarray(0, messageLength);
+    const dbName = extractDatabaseName(startupMessage);
+    state.dbName = dbName;
 
     try {
-      const { dbName: extractedDbName, buffered } = await extractDatabaseNameFromSocket(socket);
-      dbName = extractedDbName;
-
       await this.createDatabase(dbName);
 
-      // Connect to PRIMARY's PostgreSQL
+      const router = this;
+
+      // Connect to PRIMARY's PostgreSQL using Bun.connect()
       if (this.pgSocketPath) {
-        pgSocket = net.connect({ path: this.pgSocketPath });
+        state.pgSocket = await Bun.connect({
+          unix: this.pgSocketPath,
+          socket: {
+            data(_pgSocket, pgData) {
+              socket.write(pgData);
+            },
+            open(pgSocket) {
+              pgSocket.write(startupMessage);
+              state.handshakeComplete = true;
+            },
+            close(_pgSocket) {
+              socket.end();
+            },
+            error(_pgSocket, error) {
+              router.logger.error({ dbName, err: error }, 'PostgreSQL socket error');
+              socket.end();
+            },
+            drain(_pgSocket) {}
+          }
+        });
       } else {
-        pgSocket = net.connect({ host: '127.0.0.1', port: this.pgPort });
+        state.pgSocket = await Bun.connect({
+          hostname: '127.0.0.1',
+          port: this.pgPort,
+          socket: {
+            data(_pgSocket, pgData) {
+              socket.write(pgData);
+            },
+            open(pgSocket) {
+              pgSocket.write(startupMessage);
+              state.handshakeComplete = true;
+            },
+            close(_pgSocket) {
+              socket.end();
+            },
+            error(_pgSocket, error) {
+              router.logger.error({ dbName, err: error }, 'PostgreSQL socket error');
+              socket.end();
+            },
+            drain(_pgSocket) {}
+          }
+        });
       }
-
-      await new Promise((resolve, reject) => {
-        pgSocket.once('connect', resolve);
-        pgSocket.once('error', reject);
-      });
-
-      this.optimizeSocket(pgSocket);
-      pgSocket.write(buffered);
-      socket.resume();
-
-      // Bidirectional pipe
-      socket.pipe(pgSocket);
-      pgSocket.pipe(socket);
-
-      const cleanup = () => {
-        this.connections.delete(socket);
-        if (pgSocket && !pgSocket.destroyed) pgSocket.destroy();
-        if (socket && !socket.destroyed) socket.destroy();
-      };
-
-      socket.once('close', cleanup);
-      socket.once('error', cleanup);
-      pgSocket.once('close', () => {
-        if (socket && !socket.destroyed) socket.destroy();
-      });
-      pgSocket.once('error', cleanup);
-
     } catch (error) {
       this.logger.error({ dbName, err: error }, 'Connection error');
-      if (pgSocket && !pgSocket.destroyed) pgSocket.destroy();
-      socket.destroy();
-      this.connections.delete(socket);
+      socket.end();
     }
+  }
+
+  /**
+   * Handle socket close (Bun TCP handler)
+   */
+  handleSocketClose(socket) {
+    const state = this.socketState.get(socket);
+    if (state?.pgSocket) {
+      state.pgSocket.end();
+    }
+    this.connections.delete(socket);
+    this.socketState.delete(socket);
+  }
+
+  /**
+   * Handle socket error (Bun TCP handler)
+   */
+  handleSocketError(socket, error) {
+    const state = this.socketState.get(socket);
+    if (error.code !== 'ECONNRESET') {
+      this.logger.error({ err: error, dbName: state?.dbName }, 'Socket error');
+    }
+    if (state?.pgSocket) {
+      state.pgSocket.end();
+    }
+    this.connections.delete(socket);
+    this.socketState.delete(socket);
   }
 
   async stop() {
@@ -179,16 +275,17 @@ class ClusterRouter extends EventEmitter {
     }
     this.connections.clear();
 
-    if (this.adminClient) {
+    if (this.sql) {
       try {
-        await this.adminClient.end();
+        await this.sql.close();
       } catch {
         // Ignore - connection may already be terminated
       }
     }
 
+    // Close TCP server (Bun.listen returns a server with stop() method)
     if (this.server) {
-      await new Promise((resolve) => this.server.close(resolve));
+      this.server.stop();
     }
   }
 }
