@@ -49,11 +49,48 @@ function getBinaryPaths() {
     const initdb = path.join(binDir, platform === 'win32' ? 'initdb.exe' : 'initdb');
     const postgres = path.join(binDir, platform === 'win32' ? 'postgres.exe' : 'postgres');
     if (fs.existsSync(initdb) && fs.existsSync(postgres)) {
-      return { initdb, postgres, binDir };
+      // lib directory is sibling to bin (contains bundled ICU libraries)
+      const libDir = path.join(binDir, '..', 'lib');
+      return { initdb, postgres, binDir, libDir };
     }
   }
 
   throw new Error(`Could not find PostgreSQL binaries. Please run: npm install ${pkgName}`);
+}
+
+/**
+ * Build environment variables for spawning PostgreSQL binaries.
+ *
+ * This is critical for cross-platform compatibility:
+ * - The @embedded-postgres binaries are compiled against ICU 60
+ * - Modern Linux distros (Ubuntu 22.04+, Debian 12+) ship ICU 70+
+ * - The binaries have RUNPATH=$ORIGIN/../lib, but this fails when:
+ *   - Package managers (pnpm, yarn) use symlinks/hardlinks differently
+ *   - The lib/ directory isn't accessible relative to the binary's resolved path
+ *
+ * Solution: Explicitly set LD_LIBRARY_PATH to include the bundled libraries.
+ *
+ * @param {string} libDir - Path to the lib directory containing ICU libraries
+ * @returns {NodeJS.ProcessEnv} Environment variables for spawn()
+ */
+function buildSpawnEnv(libDir) {
+  const platform = os.platform();
+  const env = { ...process.env, LC_ALL: 'C', LANG: 'C' };
+
+  if (platform === 'linux') {
+    // Linux: LD_LIBRARY_PATH for runtime library loading
+    // Prepend our lib dir to ensure our bundled ICU libs are found first
+    const existingLdPath = process.env.LD_LIBRARY_PATH || '';
+    env.LD_LIBRARY_PATH = libDir + (existingLdPath ? `:${existingLdPath}` : '');
+  } else if (platform === 'darwin') {
+    // macOS: DYLD_LIBRARY_PATH for runtime library loading
+    // Note: macOS binaries typically use @rpath/@loader_path, but we set this for safety
+    const existingDyldPath = process.env.DYLD_LIBRARY_PATH || '';
+    env.DYLD_LIBRARY_PATH = libDir + (existingDyldPath ? `:${existingDyldPath}` : '');
+  }
+  // Windows doesn't need this - it uses PATH or side-by-side assemblies
+
+  return env;
 }
 
 export class PostgresManager {
@@ -71,6 +108,8 @@ export class PostgresManager {
     this.creatingDatabases = new Map(); // Track in-progress creations
     this.socketDir = null; // Unix socket directory for faster local connections
     this.adminPool = null; // Connection pool for database admin operations
+    this.useRam = options.useRam || false; // Use /dev/shm for true RAM storage (Linux only)
+    this.isTrueRam = false; // Tracks if we're actually using RAM storage
 
     // Sync/Replication options (for async sync to real PostgreSQL)
     this.syncEnabled = options.syncEnabled || false;
@@ -106,8 +145,27 @@ export class PostgresManager {
         fs.mkdirSync(this.databaseDir, { recursive: true });
       }
     } else {
-      // Memory mode: use temp directory with unique suffix
-      this.databaseDir = path.join(os.tmpdir(), `pgserve-${process.pid}-${Date.now()}`);
+      // Memory mode: use /dev/shm if --ram flag, otherwise /tmp
+      let baseDir = os.tmpdir();
+      this.isTrueRam = false;
+
+      if (this.useRam) {
+        const platform = os.platform();
+        if (platform === 'linux') {
+          const shmDir = '/dev/shm';
+          try {
+            fs.accessSync(shmDir, fs.constants.W_OK);
+            baseDir = shmDir;
+            this.isTrueRam = true;
+          } catch {
+            throw new Error('--ram requires /dev/shm which is not available or not writable. Run without --ram flag.');
+          }
+        } else {
+          throw new Error(`--ram is only supported on Linux. Current platform: ${platform}`);
+        }
+      }
+
+      this.databaseDir = path.join(baseDir, `pgserve-${process.pid}-${Date.now()}`);
       // Clean up if exists from a previous failed run
       if (fs.existsSync(this.databaseDir)) {
         fs.rmSync(this.databaseDir, { recursive: true, force: true });
@@ -125,8 +183,9 @@ export class PostgresManager {
     this.logger.info({
       databaseDir: this.databaseDir,
       persistent: this.persistent,
+      trueRam: this.isTrueRam,
       port: this.port
-    }, 'Starting embedded PostgreSQL');
+    }, this.isTrueRam ? 'PostgreSQL using RAM storage (/dev/shm)' : 'Starting embedded PostgreSQL');
 
     // Check if data directory is already initialized
     const pgVersionFile = path.join(this.databaseDir, 'PG_VERSION');
@@ -170,7 +229,7 @@ export class PostgresManager {
         `--username=${this.user}`,
         `--pwfile=${passwordFile}`,
       ], {
-        env: { ...process.env, LC_ALL: 'C', LANG: 'C' }
+        env: buildSpawnEnv(this.binaries.libDir)
       });
 
       let stdout = '';
@@ -279,7 +338,7 @@ export class PostgresManager {
       }
 
       this.process = spawn(this.binaries.postgres, pgArgs, {
-        env: { ...process.env, LC_ALL: 'C', LANG: 'C' }
+        env: buildSpawnEnv(this.binaries.libDir)
       });
 
       let started = false;

@@ -1,0 +1,165 @@
+name: Build All Platforms
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to publish'
+        required: true
+        type: string
+      npm_tag:
+        description: 'npm dist-tag (next or latest)'
+        required: false
+        type: string
+        default: 'next'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (leave empty for build-only)'
+        required: false
+        type: string
+      npm_tag:
+        description: 'npm dist-tag'
+        required: false
+        type: choice
+        options:
+          - next
+          - latest
+        default: 'next'
+
+concurrency:
+  group: build-all-platforms-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bun-linux-x64
+            platform: linux-x64
+            output: pgserve-linux-x64
+          - target: bun-linux-arm64
+            platform: linux-arm64
+            output: pgserve-linux-arm64
+          - target: bun-darwin-x64
+            platform: darwin-x64
+            output: pgserve-darwin-x64
+          - target: bun-darwin-arm64
+            platform: darwin-arm64
+            output: pgserve-darwin-arm64
+          - target: bun-windows-x64
+            platform: windows-x64
+            output: pgserve-windows-x64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build for ${{ matrix.platform }}
+        run: |
+          mkdir -p dist
+          bun build --compile --target=${{ matrix.target }} bin/pglite-server.js --outfile dist/${{ matrix.output }}
+          ls -lh dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.platform }}
+          path: dist/${{ matrix.output }}*
+          retention-days: 7
+
+  publish:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    if: inputs.version != ''
+    environment: npm-publish
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Verify binaries
+        run: |
+          echo "Downloaded binaries:"
+          ls -la dist/
+
+          MISSING=""
+          for platform in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+            if [ ! -f "dist/pgserve-$platform" ]; then
+              MISSING="$MISSING pgserve-$platform"
+            fi
+          done
+          if [ ! -f "dist/pgserve-windows-x64.exe" ]; then
+            MISSING="$MISSING pgserve-windows-x64.exe"
+          fi
+
+          if [ -n "$MISSING" ]; then
+            echo "Missing binaries:$MISSING"
+            exit 1
+          fi
+
+          echo "All binaries present!"
+
+      - name: Check if version already published
+        id: check
+        run: |
+          VERSION="${{ inputs.version }}"
+          if npm view pgserve@$VERSION version >/dev/null 2>&1; then
+            echo "Version $VERSION already published"
+            echo "published=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version $VERSION not yet published"
+            echo "published=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish to npm
+        if: steps.check.outputs.published == 'false'
+        run: |
+          echo "Publishing version ${{ inputs.version }} with tag ${{ inputs.npm_tag }}"
+          npm publish --access public --tag ${{ inputs.npm_tag }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify publish
+        if: steps.check.outputs.published == 'false'
+        run: |
+          sleep 5
+          npm view pgserve@${{ inputs.version }} version
+          echo "Successfully published pgserve@${{ inputs.version }} with tag @${{ inputs.npm_tag }}"

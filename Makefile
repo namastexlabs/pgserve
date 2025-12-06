@@ -1,5 +1,5 @@
 # ==========================================
-# 📦 PGlite Embedded Server - Makefile
+# 📦 pgserve - Embedded PostgreSQL Server
 # ==========================================
 
 .DEFAULT_GOAL := help
@@ -24,14 +24,26 @@ VERSION := $(shell grep '"version"' package.json | head -1 | sed 's/.*"version":
 .PHONY: help
 help: ## Show this help
 	@echo ""
-	@echo "$(PURPLE)$(BOLD)📦 PGlite Embedded Server$(RESET) - v$(VERSION)"
-	@echo "$(CYAN)Multi-instance PostgreSQL server using PGlite$(RESET)"
+	@echo "$(PURPLE)$(BOLD)📦 pgserve$(RESET) - v$(VERSION)"
+	@echo "$(CYAN)Embedded PostgreSQL server with multi-tenant support$(RESET)"
 	@echo ""
 	@echo "$(BOLD)Quick Commands:$(RESET)"
-	@echo "  $(PURPLE)publish$(RESET)        Publish to npm (auto-checks, builds, publishes)"
+	@echo "  $(PURPLE)release-rc$(RESET)     Create RC release locally"
+	@echo "  $(PURPLE)release-stable$(RESET) Promote RC to stable"
 	@echo "  $(PURPLE)test-local$(RESET)     Test server locally"
 	@echo "  $(PURPLE)pm2-start$(RESET)      Start server with PM2"
-	@echo "  $(PURPLE)pm2-stop$(RESET)       Stop PM2 instance"
+	@echo ""
+	@echo "$(BOLD)CI/CD Workflow:$(RESET)"
+	@echo "  1. Create PR with changes"
+	@echo "  2. Add 'rc' label → auto-publishes to npm @next"
+	@echo "  3. Add 'stable' label → promotes to npm @latest"
+	@echo ""
+	@echo "$(BOLD)Build Executables:$(RESET)"
+	@echo "  $(PURPLE)build$(RESET)          Build for current platform"
+	@echo "  $(PURPLE)build-all$(RESET)      Build for all platforms (Linux, macOS, Windows)"
+	@echo "  $(PURPLE)build-linux$(RESET)    Build for Linux (x64 + arm64)"
+	@echo "  $(PURPLE)build-macos$(RESET)    Build for macOS (x64 + arm64)"
+	@echo "  $(PURPLE)build-windows$(RESET)  Build for Windows (x64)"
 	@echo ""
 	@echo "$(BOLD)Development:$(RESET)"
 	@echo "  $(PURPLE)install$(RESET)        Install dependencies"
@@ -48,8 +60,20 @@ help: ## Show this help
 .PHONY: install
 install: ## Install dependencies
 	@echo "$(CYAN)📦 Installing dependencies...$(RESET)"
-	@npm install
+	@bun install
 	@echo "$(GREEN)✅ Dependencies installed!$(RESET)"
+
+.PHONY: test
+test: ## Run tests
+	@echo "$(CYAN)🧪 Running tests...$(RESET)"
+	@bun test
+	@echo "$(GREEN)✅ Tests passed!$(RESET)"
+
+.PHONY: bench
+bench: ## Run benchmarks
+	@echo "$(CYAN)📊 Running benchmarks...$(RESET)"
+	@bun tests/benchmarks/runner.js
+	@echo "$(GREEN)✅ Benchmarks complete!$(RESET)"
 
 # ==========================================
 # 🧪 Testing
@@ -78,21 +102,21 @@ pm2-start: ## Start server with PM2
 
 pm2-stop: ## Stop PM2 instance
 	@echo "$(CYAN)🛑 Stopping PM2 instance...$(RESET)"
-	@pm2 stop "PGlite Local Server" 2>/dev/null || true
-	@pm2 delete "PGlite Local Server" 2>/dev/null || true
+	@pm2 stop "pgserve" 2>/dev/null || true
+	@pm2 delete "pgserve" 2>/dev/null || true
 	@pm2 save
 	@echo "$(GREEN)✅ PM2 instance stopped!$(RESET)"
 
 pm2-restart: ## Restart PM2 instance
 	@echo "$(CYAN)🔄 Restarting PM2 instance...$(RESET)"
-	@pm2 restart "PGlite Local Server" 2>/dev/null || $(MAKE) pm2-start
+	@pm2 restart "pgserve" 2>/dev/null || $(MAKE) pm2-start
 	@echo "$(GREEN)✅ PM2 instance restarted!$(RESET)"
 
 pm2-logs: ## Show PM2 logs
-	@pm2 logs "PGlite Local Server" --lines 50
+	@pm2 logs "pgserve" --lines 50
 
 pm2-status: ## Show PM2 status
-	@pm2 status "PGlite Local Server"
+	@pm2 status "pgserve"
 
 # ==========================================
 # 🔍 Pre-publish Checks
@@ -139,7 +163,86 @@ check-files: ## Check required files exist
 	@echo "$(GREEN)✅ All required files present$(RESET)"
 
 # ==========================================
-# 📦 Build & Publish
+# 🔨 Build Standalone Executables
+# ==========================================
+DIST_DIR := dist
+
+.PHONY: build build-linux build-macos build-windows build-all clean-dist
+
+$(DIST_DIR):
+	@mkdir -p $(DIST_DIR)
+
+build: $(DIST_DIR) ## Build standalone executable for current platform
+	@echo "$(CYAN)🔨 Building standalone executable...$(RESET)"
+	@bun build --compile bin/pglite-server.js --outfile $(DIST_DIR)/pgserve
+	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve$(RESET)"
+
+build-linux: $(DIST_DIR) ## Build for Linux (x64 + arm64)
+	@echo "$(CYAN)🐧 Building for Linux...$(RESET)"
+	@bun build --compile --target=bun-linux-x64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-linux-x64
+	@bun build --compile --target=bun-linux-arm64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-linux-arm64
+	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-linux-x64$(RESET)"
+	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-linux-arm64$(RESET)"
+
+build-macos: $(DIST_DIR) ## Build for macOS (x64 + arm64)
+	@echo "$(CYAN)🍎 Building for macOS...$(RESET)"
+	@bun build --compile --target=bun-darwin-x64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-darwin-x64
+	@bun build --compile --target=bun-darwin-arm64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-darwin-arm64
+	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-darwin-x64$(RESET)"
+	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-darwin-arm64$(RESET)"
+
+build-windows: $(DIST_DIR) ## Build for Windows (x64)
+	@echo "$(CYAN)🪟 Building for Windows...$(RESET)"
+	@bun build --compile --target=bun-windows-x64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-windows-x64.exe
+	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-windows-x64.exe$(RESET)"
+
+build-all: build-linux build-macos build-windows ## Build for all platforms
+	@echo ""
+	@echo "$(GREEN)$(BOLD)╔═══════════════════════════════════════════════════╗$(RESET)"
+	@echo "$(GREEN)$(BOLD)║  🎉 All platform builds complete!                ║$(RESET)"
+	@echo "$(GREEN)$(BOLD)╚═══════════════════════════════════════════════════╝$(RESET)"
+	@echo ""
+	@ls -lh $(DIST_DIR)/
+	@echo ""
+
+clean-dist: ## Clean build artifacts
+	@echo "$(CYAN)🧹 Cleaning dist...$(RESET)"
+	@rm -rf $(DIST_DIR)
+	@echo "$(GREEN)✅ Dist cleaned!$(RESET)"
+
+# ==========================================
+# 🚀 CI/CD Release (Automated)
+# ==========================================
+# Releases are triggered by GitHub Actions when PRs are merged with labels:
+#   - 'rc' label → Creates RC release (1.0.8 → 1.0.9-rc.1)
+#   - 'stable' label → Promotes RC to stable (1.0.9-rc.1 → 1.0.9)
+#
+# See .github/workflows/release.yml for full automation.
+# ==========================================
+.PHONY: release-rc release-stable release-dry
+
+release-rc: ## Create RC release locally (for testing)
+	@echo "$(CYAN)🔢 Creating RC release...$(RESET)"
+	@node scripts/release.cjs --action bump-rc
+	@echo ""
+	@echo "$(GREEN)✅ RC release created!$(RESET)"
+	@echo "$(YELLOW)Push with: git push && git push --tags$(RESET)"
+
+release-stable: ## Promote RC to stable locally (for testing)
+	@echo "$(CYAN)🎉 Promoting to stable...$(RESET)"
+	@node scripts/release.cjs --action promote
+	@echo ""
+	@echo "$(GREEN)✅ Stable release created!$(RESET)"
+	@echo "$(YELLOW)Push with: git push && git push --tags$(RESET)"
+
+release-dry: ## Dry-run release (no changes)
+	@echo "$(CYAN)🔍 Dry-run release...$(RESET)"
+	@node scripts/release.cjs --action bump-rc --dry-run
+	@echo ""
+	@echo "$(GREEN)✅ Dry-run complete (no changes made)$(RESET)"
+
+# ==========================================
+# 📦 Manual Publish (Deprecated)
 # ==========================================
 .PHONY: pre-publish publish publish-dry
 pre-publish: check-git check-npm check-version check-files ## Run all pre-publish checks
@@ -151,57 +254,21 @@ publish-dry: pre-publish ## Dry-run publish (test without actually publishing)
 	@echo "$(GREEN)✅ Dry-run successful!$(RESET)"
 	@echo "$(YELLOW)To actually publish, run: make publish$(RESET)"
 
-publish: check-git check-npm check-files ## 🚀 Publish to npm (auto-bumps version)
+publish: ## ⚠️ [DEPRECATED] Use PR labels instead
 	@echo ""
-	@echo "$(PURPLE)$(BOLD)╔═══════════════════════════════════════════════════╗$(RESET)"
-	@echo "$(PURPLE)$(BOLD)║  📦 Publishing $(PACKAGE_NAME)  ║$(RESET)"
-	@echo "$(PURPLE)$(BOLD)╚═══════════════════════════════════════════════════╝$(RESET)"
+	@echo "$(YELLOW)$(BOLD)╔═══════════════════════════════════════════════════════════════╗$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║  ⚠️  Manual publish is DEPRECATED                            ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║                                                               ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║  Use PR labels for automated releases:                       ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║    • Add 'rc' label → RC release (npm @next)                 ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║    • Add 'stable' label → Promote to stable (npm @latest)   ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║                                                               ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║  Local testing:                                              ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║    make release-rc      Create RC locally                    ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║    make release-stable  Promote locally                      ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║    make release-dry     Dry-run (no changes)                 ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)╚═══════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
-	@echo "$(CYAN)Current version: v$(VERSION)$(RESET)"
-	@echo ""
-	@echo "$(CYAN)📈 Bumping patch version...$(RESET)"
-	@NEW_VER=$$(node -e "const p=require('./package.json'); const v=p.version.split('.'); v[2]=parseInt(v[2])+1; console.log(v.join('.'))"); \
-	git tag -d "v$$NEW_VER" 2>/dev/null || true; \
-	git push origin --delete "v$$NEW_VER" 2>/dev/null || true
-	@npm version patch -m "chore: bump version to %s"
-	@NEW_VERSION=$$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\(.*\)".*/\1/'); \
-	echo "$(GREEN)✅ Version bumped to $$NEW_VERSION$(RESET)"; \
-	echo ""; \
-	echo "$(CYAN)📤 Pushing to GitHub...$(RESET)"; \
-	git push && git push --tags; \
-	echo "$(GREEN)✅ Pushed to GitHub!$(RESET)"; \
-	echo ""; \
-	echo "$(CYAN)Package: $(PACKAGE_NAME)@$$NEW_VERSION$(RESET)"; \
-	echo ""; \
-	read -p "$(YELLOW)Confirm publish? [y/N] $(RESET)" -n 1 -r; \
-	echo; \
-	if [[ ! $$REPLY =~ ^[Yy]$$ ]]; then \
-		echo "$(YELLOW)⚠️  Publish cancelled$(RESET)"; \
-		exit 1; \
-	fi; \
-	echo ""; \
-	echo "$(CYAN)📦 Publishing to npm...$(RESET)"; \
-	npm publish --access public || { echo "$(RED)❌ npm publish failed! Run manually: npm publish --access public$(RESET)"; exit 1; }; \
-	echo "$(GREEN)✅ Published to npm!$(RESET)"; \
-	echo ""; \
-	if command -v gh >/dev/null 2>&1; then \
-		echo "$(CYAN)🎉 Creating GitHub release...$(RESET)"; \
-		gh release create "v$$NEW_VERSION" \
-			--title "v$$NEW_VERSION" \
-			--notes "Multi-instance PostgreSQL embedded server - See README.md for details" \
-			|| echo "$(YELLOW)⚠️  GitHub release creation failed (may already exist)$(RESET)"; \
-		echo ""; \
-	fi; \
-	echo "$(GREEN)$(BOLD)╔═══════════════════════════════════════════════════╗$(RESET)"; \
-	echo "$(GREEN)$(BOLD)║  🍾 SUCCESS! Package published!                  ║$(RESET)"; \
-	echo "$(GREEN)$(BOLD)╚═══════════════════════════════════════════════════╝$(RESET)"; \
-	echo ""; \
-	echo "$(CYAN)📦 Install with:$(RESET)"; \
-	echo "   npm install -g $(PACKAGE_NAME)"; \
-	echo ""; \
-	echo "$(CYAN)🔗 View on npm:$(RESET)"; \
-	echo "   https://www.npmjs.com/package/$(PACKAGE_NAME)"; \
-	echo ""
 
 # ==========================================
 # 🧹 Maintenance
@@ -215,7 +282,7 @@ clean: ## Clean generated files
 
 clean-all: clean ## Deep clean (including node_modules)
 	@echo "$(CYAN)🧹 Deep cleaning...$(RESET)"
-	@rm -rf node_modules package-lock.json pnpm-lock.yaml
+	@rm -rf node_modules package-lock.json pnpm-lock.yaml bun.lock
 	@echo "$(GREEN)✅ Deep clean complete!$(RESET)"
 
 # ==========================================

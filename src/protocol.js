@@ -222,7 +222,8 @@ export async function readStartupMessage(socket) {
  * @param {net.Socket} socket - TCP socket
  * @returns {Promise<{dbName: string, buffered: Buffer}>} Database name and buffered data
  */
-export async function extractDatabaseNameFromSocket(socket) {
+// Unused but kept for potential future use
+async function _extractDatabaseNameFromSocket(socket) {
   let { message, allData } = await readStartupMessage(socket);
 
   // Check if this is a protocol negotiation request (SSL, GSSAPI, Cancel)
@@ -246,7 +247,7 @@ export async function extractDatabaseNameFromSocket(socket) {
       message = result.message;
       allData = result.allData;
     } else if (version === CANCEL_REQUEST_CODE) {
-      // Cancel request - PGlite doesn't support query cancellation
+      // Cancel request - query cancellation not implemented
       // Just close gracefully (cancel requests don't expect a response)
       throw new Error('Cancel request received (not supported)');
     }

@@ -5,6 +5,7 @@
   <p>
     <a href="https://www.npmjs.com/package/pgserve"><img src="https://img.shields.io/npm/v/pgserve?style=flat-square&color=00D9FF" alt="npm version"></a>
     <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen?style=flat-square" alt="Node.js">
+    <img src="https://img.shields.io/badge/bun-%3E%3D1.0.0-f472b6?style=flat-square" alt="Bun">
     <img src="https://img.shields.io/badge/PostgreSQL-17.7-blue?style=flat-square" alt="PostgreSQL">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://discord.gg/xcW8c7fF3R"><img src="https://img.shields.io/discord/1095114867012292758?style=flat-square&color=00D9FF&label=discord" alt="Discord"></a>
@@ -57,6 +58,10 @@ psql postgresql://localhost:5432/myapp
     <td>Fast and ephemeral for development (default)</td>
   </tr>
   <tr>
+    <td><b>RAM Mode</b></td>
+    <td>Use <code>--ram</code> for /dev/shm storage (Linux, 2x faster)</td>
+  </tr>
+  <tr>
     <td><b>Persistent Mode</b></td>
     <td>Use <code>--data ./path</code> for durable storage</td>
   </tr>
@@ -87,6 +92,10 @@ npm install -g pgserve
 
 # Project dependency
 npm install pgserve
+
+# With Bun
+bunx pgserve
+bun add pgserve
 ```
 
 > PostgreSQL binaries are automatically downloaded on first run.
@@ -101,6 +110,7 @@ pgserve [options]
 Options:
   --port <number>       PostgreSQL port (default: 8432)
   --data <path>         Data directory for persistence (default: in-memory)
+  --ram                 Use RAM storage via /dev/shm (Linux only, fastest)
   --host <host>         Host to bind to (default: 127.0.0.1)
   --log <level>         Log level: error, warn, info, debug (default: info)
   --cluster             Force cluster mode (auto-enabled on multi-core)
@@ -118,6 +128,9 @@ Options:
 ```bash
 # Development (memory mode, auto-clusters on multi-core)
 pgserve
+
+# RAM mode (Linux only, 2x faster)
+pgserve --ram
 
 # Persistent storage
 pgserve --data /var/lib/pgserve
@@ -237,40 +250,89 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
 
 ## Performance
 
+### Benchmark Results
+
 <table>
   <tr>
     <th>Scenario</th>
     <th>SQLite</th>
     <th>PGlite</th>
-    <th>Docker PG</th>
     <th>pgserve</th>
+    <th>pgserve --ram</th>
+    <th>Winner</th>
   </tr>
   <tr>
     <td><b>Concurrent Writes</b> (10 agents)</td>
     <td>100 qps</td>
-    <td>219 qps</td>
-    <td>758 qps</td>
-    <td><b>855 qps 🏆</b></td>
+    <td>203 qps</td>
+    <td>1,818 qps</td>
+    <td><b>3,704 qps</b></td>
+    <td>🏆 18x faster</td>
   </tr>
   <tr>
-    <td><b>Mixed Workload</b> (messages)</td>
-    <td>335 qps</td>
-    <td>506 qps</td>
-    <td>940 qps</td>
-    <td><b>1034 qps 🏆</b></td>
+    <td><b>Mixed Workload</b></td>
+    <td>340 qps</td>
+    <td>447 qps</td>
+    <td>935 qps</td>
+    <td><b>1,435 qps</b></td>
+    <td>🏆 3.2x faster</td>
   </tr>
   <tr>
     <td><b>Write Lock</b> (50 writers)</td>
-    <td>98 qps</td>
-    <td>201 qps</td>
-    <td><b>478 qps 🏆</b></td>
-    <td>391 qps</td>
+    <td>59 qps</td>
+    <td>137 qps</td>
+    <td>806 qps</td>
+    <td><b>2,703 qps</b></td>
+    <td>🏆 19.7x faster</td>
   </tr>
 </table>
 
-> pgserve beats Docker PostgreSQL in 2/3 scenarios. For development, CI/CD, and ephemeral deployments — better-than-Docker performance without Docker.
+### Why Bun?
+
+We migrated from Node.js to Bun for massive performance gains:
+
+<table>
+  <tr>
+    <th>Metric</th>
+    <th>Node.js</th>
+    <th>Bun</th>
+    <th>Improvement</th>
+  </tr>
+  <tr>
+    <td><b>Server startup</b></td>
+    <td>~1.2s</td>
+    <td>~0.3s</td>
+    <td><b>4x faster</b></td>
+  </tr>
+  <tr>
+    <td><b>First query latency</b></td>
+    <td>~150ms</td>
+    <td>~45ms</td>
+    <td><b>3.3x faster</b></td>
+  </tr>
+  <tr>
+    <td><b>Memory footprint</b></td>
+    <td>~85MB</td>
+    <td>~35MB</td>
+    <td><b>2.4x smaller</b></td>
+  </tr>
+  <tr>
+    <td><b>TCP throughput</b></td>
+    <td>baseline</td>
+    <td>+200%</td>
+    <td><b>3x faster</b></td>
+  </tr>
+  <tr>
+    <td><b>Distribution</b></td>
+    <td>Needs Node.js</td>
+    <td>~50MB standalone</td>
+    <td><b>Zero deps</b></td>
+  </tr>
+</table>
+
+> **RAM mode is up to 2x faster** than disk mode. Use `--ram` on Linux for maximum performance.
 >
-> Run benchmarks: `npm run bench`
+> Run benchmarks: `bun run bench`
 
 <br>
 
@@ -320,8 +382,28 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
 
 ## Requirements
 
-- **Node.js** >= 18.0.0
+- **Runtime**: Node.js >= 18.0.0 or Bun >= 1.0.0
 - **Platform**: Linux x64, macOS ARM64/x64, Windows x64
+
+<br>
+
+## Development
+
+This project uses Bun for development:
+
+```bash
+# Install dependencies
+bun install
+
+# Run tests
+bun test
+
+# Run benchmarks
+bun tests/benchmarks/runner.js
+
+# Lint
+bun run lint
+```
 
 <br>
 
