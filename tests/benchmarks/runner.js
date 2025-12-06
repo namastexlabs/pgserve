@@ -1,11 +1,13 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 /**
  * Benchmark Runner
  * Compares SQLite, PGlite, PostgreSQL Server, and pgserve performance
+ *
+ * 100% Bun-native: Uses bun:sqlite instead of better-sqlite3
  */
 
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { PGlite } from '@electric-sql/pglite';
 import { startMultiTenantServer } from '../../src/index.js';
 import fs from 'fs';

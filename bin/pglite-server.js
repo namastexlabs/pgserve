@@ -185,6 +185,9 @@ function parseArgs() {
 async function main() {
   const options = parseArgs();
   const memoryMode = !options.dataDir;
+  const storageType = options.dataDir
+    ? options.dataDir
+    : (options.useRam ? '/dev/shm (RAM)' : '(temp directory)');
 
   // Only print header if not a cluster worker (workers get PGSERVE_WORKER env)
   if (!process.env.PGSERVE_WORKER) {
@@ -212,9 +215,6 @@ pgserve - Embedded PostgreSQL Server
       // Only primary process shows full startup message
       if (server.workers) {
         const stats = server.getStats();
-        const storageType = options.dataDir
-          ? options.dataDir
-          : (options.useRam ? '/dev/shm (RAM)' : '(temp directory)');
 
         console.log(`
 Cluster started successfully!
@@ -251,10 +251,6 @@ Press Ctrl+C to stop
       const syncStatus = options.syncTo
         ? `Enabled → ${options.syncTo.replace(/:[^:@]+@/, ':***@')}`
         : 'Disabled';
-
-      const storageType = options.dataDir
-        ? options.dataDir
-        : (options.useRam ? '/dev/shm (RAM)' : '(temp directory)');
 
       console.log(`
 Server started successfully!
