@@ -19,50 +19,63 @@ import fs from 'fs';
 import crypto from 'crypto';
 
 /**
- * Ensure ICU library symlinks exist in the lib directory.
- * The @embedded-postgres package ships versioned libraries (e.g., libicuuc.so.60.2 or libicuuc.68.2.dylib)
- * but the binaries look for soname versions (e.g., libicuuc.so.60 or libicuuc.68.dylib).
- * This function creates the necessary symlinks if they don't exist.
+ * Ensure library symlinks exist in the lib directory.
+ * The @embedded-postgres package ships versioned libraries but binaries look for soname versions.
+ * This function scans for versioned libs and creates missing soname symlinks.
+ *
+ * Examples:
+ * - Linux: libicuuc.so.60.2 -> libicuuc.so.60
+ * - macOS: libicuuc.68.2.dylib -> libicuuc.68.dylib, libzstd.1.5.6.dylib -> libzstd.1.dylib
  *
  * @param {string} libDir - Path to the lib directory
  * @param {string} platform - Platform name ('linux' or 'darwin')
  */
-function ensureIcuSymlinks(libDir, platform) {
-  // Libraries that need symlinks: libicuuc, libicudata, libicui18n
-  const icuLibs = ['libicuuc', 'libicudata', 'libicui18n'];
+function ensureLibrarySymlinks(libDir, platform) {
+  try {
+    const files = fs.readdirSync(libDir);
 
-  if (platform === 'linux') {
-    // Linux: libicuuc.so.60 -> libicuuc.so.60.2
-    for (const lib of icuLibs) {
-      const soname = `${lib}.so.60`;
-      const versioned = `${lib}.so.60.2`;
-      const sonameLink = path.join(libDir, soname);
-      const versionedLib = path.join(libDir, versioned);
-
-      if (!fs.existsSync(sonameLink) && fs.existsSync(versionedLib)) {
-        try {
-          fs.symlinkSync(versioned, sonameLink);
-        } catch (err) {
-          console.error(`Warning: Could not create symlink ${soname} -> ${versioned}: ${err.message}`);
+    if (platform === 'linux') {
+      // Linux versioned libs: libname.so.X.Y -> libname.so.X
+      // Pattern: libxxx.so.MAJOR.MINOR -> need libxxx.so.MAJOR
+      for (const file of files) {
+        const match = file.match(/^(lib.+\.so\.\d+)\.(\d+)$/);
+        if (match) {
+          const soname = match[1]; // e.g., libicuuc.so.60
+          const sonameLink = path.join(libDir, soname);
+          if (!fs.existsSync(sonameLink)) {
+            try {
+              fs.symlinkSync(file, sonameLink);
+            } catch {
+              // Non-fatal, might work with LD_LIBRARY_PATH anyway
+            }
+          }
+        }
+      }
+    } else if (platform === 'darwin') {
+      // macOS versioned libs have several patterns:
+      // 1. libname.MAJOR.MINOR.dylib -> libname.MAJOR.dylib (ICU style)
+      // 2. libname.MAJOR.MINOR.PATCH.dylib -> libname.MAJOR.dylib (zstd style)
+      for (const file of files) {
+        // Match libxxx.MAJOR.MINOR.dylib or libxxx.MAJOR.MINOR.PATCH.dylib
+        const match = file.match(/^(lib.+)\.(\d+)\.\d+(?:\.\d+)?\.dylib$/);
+        if (match) {
+          const basename = match[1]; // e.g., libicuuc or libzstd
+          const major = match[2]; // e.g., 68 or 1
+          const soname = `${basename}.${major}.dylib`;
+          const sonameLink = path.join(libDir, soname);
+          if (!fs.existsSync(sonameLink)) {
+            try {
+              fs.symlinkSync(file, sonameLink);
+            } catch {
+              // Non-fatal
+            }
+          }
         }
       }
     }
-  } else if (platform === 'darwin') {
-    // macOS: libicuuc.68.dylib -> libicuuc.68.2.dylib
-    for (const lib of icuLibs) {
-      const soname = `${lib}.68.dylib`;
-      const versioned = `${lib}.68.2.dylib`;
-      const sonameLink = path.join(libDir, soname);
-      const versionedLib = path.join(libDir, versioned);
-
-      if (!fs.existsSync(sonameLink) && fs.existsSync(versionedLib)) {
-        try {
-          fs.symlinkSync(versioned, sonameLink);
-        } catch (err) {
-          console.error(`Warning: Could not create symlink ${soname} -> ${versioned}: ${err.message}`);
-        }
-      }
-    }
+  } catch {
+    // If we can't read the lib directory, continue anyway
+    // The binary might still work if RPATH is set correctly
   }
 }
 
@@ -103,10 +116,10 @@ function getBinaryPaths() {
       // lib directory is sibling to bin (contains bundled ICU libraries)
       const libDir = path.join(realBinDir, '..', 'lib');
 
-      // Ensure ICU library symlinks exist (Linux and macOS)
+      // Ensure library symlinks exist (Linux and macOS)
       // The package ships versioned libs (e.g., .60.2) but binaries look for sonames (e.g., .60)
       if ((platform === 'linux' || platform === 'darwin') && fs.existsSync(libDir)) {
-        ensureIcuSymlinks(libDir, platform);
+        ensureLibrarySymlinks(libDir, platform);
       }
 
       return { initdb: realInitdb, postgres: realPostgres, binDir: realBinDir, libDir };
