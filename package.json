@@ -18,8 +18,8 @@
     "lint": "eslint src/ bin/",
     "lint:fix": "eslint src/ bin/ --fix",
     "deadcode": "knip",
-    "test:npx": "scripts/test-npx.sh",
-    "prepublishOnly": "npm run lint && npm run deadcode && npm run test:npx",
+    "test:bunx": "scripts/test-bunx.sh",
+    "prepublishOnly": "npm run lint && npm run deadcode",
     "prepare": "husky"
   },
   "keywords": [
@@ -56,8 +56,7 @@
     "pg": "^8.16.3"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "bun": ">=1.0.0"
+    "bun": ">=1.1.0"
   },
   "lint-staged": {
     "src/**/*.js": [
