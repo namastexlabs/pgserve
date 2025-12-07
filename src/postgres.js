@@ -18,6 +18,37 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 
+/**
+ * Ensure ICU library symlinks exist in the lib directory.
+ * The @embedded-postgres package ships versioned libraries (e.g., libicuuc.so.60.2)
+ * but the binaries look for soname versions (e.g., libicuuc.so.60).
+ * This function creates the necessary symlinks if they don't exist.
+ *
+ * @param {string} libDir - Path to the lib directory
+ */
+function ensureIcuSymlinks(libDir) {
+  // Libraries that need symlinks: libicuuc, libicudata, libicui18n
+  const icuLibs = ['libicuuc', 'libicudata', 'libicui18n'];
+
+  for (const lib of icuLibs) {
+    const soname = `${lib}.so.60`;
+    const versioned = `${lib}.so.60.2`;
+    const sonameLink = path.join(libDir, soname);
+    const versionedLib = path.join(libDir, versioned);
+
+    // Create symlink if versioned lib exists but soname doesn't
+    if (!fs.existsSync(sonameLink) && fs.existsSync(versionedLib)) {
+      try {
+        fs.symlinkSync(versioned, sonameLink);
+      } catch (err) {
+        // Symlink might fail if file system doesn't support it or permissions issue
+        // This is non-fatal, the binary might still work with LD_LIBRARY_PATH
+        console.error(`Warning: Could not create symlink ${soname} -> ${versioned}: ${err.message}`);
+      }
+    }
+  }
+}
+
 // Resolve binary paths from embedded-postgres platform packages
 function getBinaryPaths() {
   const platform = os.platform();
@@ -55,24 +86,10 @@ function getBinaryPaths() {
       // lib directory is sibling to bin (contains bundled ICU libraries)
       const libDir = path.join(realBinDir, '..', 'lib');
 
-      // Verify lib directory exists (debug for CI issues)
-      if (!fs.existsSync(libDir)) {
-        console.error(`[DEBUG] lib directory not found at: ${libDir}`);
-        console.error(`[DEBUG] realBinDir: ${realBinDir}`);
-        console.error(`[DEBUG] binDir: ${binDir}`);
-      } else if (platform === 'linux') {
-        // Verify ICU library exists
-        const icuLib = path.join(libDir, 'libicuuc.so.60');
-        if (!fs.existsSync(icuLib)) {
-          console.error(`[DEBUG] ICU library not found at: ${icuLib}`);
-          // Try to list what's in the lib directory
-          try {
-            const files = fs.readdirSync(libDir);
-            console.error(`[DEBUG] lib directory contents: ${files.join(', ')}`);
-          } catch (e) {
-            console.error(`[DEBUG] Failed to list lib directory: ${e.message}`);
-          }
-        }
+      // On Linux, ensure ICU library symlinks exist
+      // The package ships libicuuc.so.60.2 but binaries look for libicuuc.so.60
+      if (platform === 'linux' && fs.existsSync(libDir)) {
+        ensureIcuSymlinks(libDir);
       }
 
       return { initdb: realInitdb, postgres: realPostgres, binDir: realBinDir, libDir };
@@ -132,9 +149,7 @@ function buildCommand(cmd, libDir) {
     // Use shell to explicitly export LD_LIBRARY_PATH before running the command
     // This is more reliable than passing env to spawn on some systems
     const cmdStr = cmd.map(arg => `'${arg.replace(/'/g, "'\\''")}'`).join(' ');
-    const shellCmd = `export LD_LIBRARY_PATH="${libDir}:$LD_LIBRARY_PATH" && exec ${cmdStr}`;
-    console.error(`[DEBUG] Shell command: ${shellCmd}`);
-    return ['/bin/sh', '-c', shellCmd];
+    return ['/bin/sh', '-c', `export LD_LIBRARY_PATH="${libDir}:$LD_LIBRARY_PATH" && exec ${cmdStr}`];
   }
 
   // On other platforms, return command as-is (env passing works fine)
