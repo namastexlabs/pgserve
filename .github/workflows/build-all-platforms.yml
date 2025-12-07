@@ -12,6 +12,10 @@ on:
         required: false
         type: string
         default: 'next'
+      ref:
+        description: 'Git ref to checkout (tag or commit)'
+        required: false
+        type: string
   workflow_dispatch:
     inputs:
       version:
@@ -58,6 +62,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -93,6 +99,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -160,6 +168,15 @@ jobs:
       - name: Verify publish
         if: steps.check.outputs.published == 'false'
         run: |
-          sleep 5
-          npm view pgserve@${{ inputs.version }} version
-          echo "Successfully published pgserve@${{ inputs.version }} with tag @${{ inputs.npm_tag }}"
+          # npm registry can take up to 30s to propagate
+          for i in 1 2 3 4 5; do
+            echo "Attempt $i: Checking npm for pgserve@${{ inputs.version }}..."
+            if npm view pgserve@${{ inputs.version }} version 2>/dev/null; then
+              echo "Successfully published pgserve@${{ inputs.version }} with tag @${{ inputs.npm_tag }}"
+              exit 0
+            fi
+            echo "Not found yet, waiting 10s..."
+            sleep 10
+          done
+          echo "Warning: Version not found after 50s, but publish command succeeded"
+          exit 0

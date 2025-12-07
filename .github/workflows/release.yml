@@ -114,6 +114,7 @@ jobs:
     with:
       version: ${{ needs.version.outputs.version }}
       npm_tag: ${{ needs.version.outputs.npm_tag }}
+      ref: ${{ needs.version.outputs.tag }}
     secrets: inherit
 
   # Promote: Just update npm tags (no rebuild)
