@@ -54,6 +54,27 @@ function getBinaryPaths() {
       const realBinDir = path.dirname(realInitdb);
       // lib directory is sibling to bin (contains bundled ICU libraries)
       const libDir = path.join(realBinDir, '..', 'lib');
+
+      // Verify lib directory exists (debug for CI issues)
+      if (!fs.existsSync(libDir)) {
+        console.error(`[DEBUG] lib directory not found at: ${libDir}`);
+        console.error(`[DEBUG] realBinDir: ${realBinDir}`);
+        console.error(`[DEBUG] binDir: ${binDir}`);
+      } else if (platform === 'linux') {
+        // Verify ICU library exists
+        const icuLib = path.join(libDir, 'libicuuc.so.60');
+        if (!fs.existsSync(icuLib)) {
+          console.error(`[DEBUG] ICU library not found at: ${icuLib}`);
+          // Try to list what's in the lib directory
+          try {
+            const files = fs.readdirSync(libDir);
+            console.error(`[DEBUG] lib directory contents: ${files.join(', ')}`);
+          } catch (e) {
+            console.error(`[DEBUG] Failed to list lib directory: ${e.message}`);
+          }
+        }
+      }
+
       return { initdb: realInitdb, postgres: realPostgres, binDir: realBinDir, libDir };
     }
   }
@@ -111,7 +132,9 @@ function buildCommand(cmd, libDir) {
     // Use shell to explicitly export LD_LIBRARY_PATH before running the command
     // This is more reliable than passing env to spawn on some systems
     const cmdStr = cmd.map(arg => `'${arg.replace(/'/g, "'\\''")}'`).join(' ');
-    return ['/bin/sh', '-c', `export LD_LIBRARY_PATH="${libDir}:$LD_LIBRARY_PATH" && exec ${cmdStr}`];
+    const shellCmd = `export LD_LIBRARY_PATH="${libDir}:$LD_LIBRARY_PATH" && exec ${cmdStr}`;
+    console.error(`[DEBUG] Shell command: ${shellCmd}`);
+    return ['/bin/sh', '-c', shellCmd];
   }
 
   // On other platforms, return command as-is (env passing works fine)
