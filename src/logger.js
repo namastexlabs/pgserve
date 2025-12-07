@@ -1,39 +1,87 @@
 /**
- * Shared Logger Configuration
+ * Native Logger - Zero Dependencies
  *
- * Provides colorful, human-readable logging via pino-pretty.
+ * Provides colorful, human-readable logging with pino-compatible API.
  * All modules should use createLogger() for consistent output.
  */
 
-import pino from 'pino';
+const COLORS = {
+  reset: '\x1b[0m',
+  dim: '\x1b[2m',
+  info: '\x1b[32m',    // green
+  warn: '\x1b[33m',    // yellow
+  error: '\x1b[31m',   // red
+  debug: '\x1b[36m',   // cyan
+};
+
+const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+
+function formatTime() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+}
+
+function formatData(data) {
+  if (!data || Object.keys(data).length === 0) return '';
+  // Clone to avoid mutating original
+  const formatted = { ...data };
+  // Format error objects specially - preserve stack traces for debugging
+  if (formatted.err instanceof Error) {
+    formatted.err = { message: formatted.err.message, stack: formatted.err.stack };
+  } else if (formatted.err) {
+    formatted.err = String(formatted.err);
+  }
+  return ` ${JSON.stringify(formatted)}`;
+}
 
 /**
- * Create a configured pino logger with pretty output
+ * Create a configured logger with pretty output
  * @param {Object} options - Logger options
  * @param {string} options.level - Log level (default: 'info')
  * @param {string} options.component - Component name for log context
- * @returns {pino.Logger} Configured pino logger
+ * @param {Object} options.context - Additional context to merge into all logs
+ * @returns {Object} Logger with info, debug, warn, error, child methods
  */
 export function createLogger(options = {}) {
-  const level = options.level || process.env.LOG_LEVEL || 'info';
+  const minLevel = LEVELS[options.level || process.env.LOG_LEVEL || 'info'] || LEVELS.info;
+  const context = options.context || {};
 
-  const logger = pino({
-    level,
-    transport: {
-      target: 'pino-pretty',
-      options: {
-        colorize: true,
-        ignore: 'pid,hostname',           // Remove noise
-        translateTime: 'HH:MM:ss',        // Short timestamp
-        singleLine: false,                // Multi-line for readable objects
-      }
-    }
-  });
-
-  // Return child logger with component if specified
-  if (options.component) {
-    return logger.child({ component: options.component });
+  // Add component to context if specified
+  if (options.component && !context.component) {
+    context.component = options.component;
   }
 
-  return logger;
+  const log = (level, levelName, data, msg) => {
+    if (level < minLevel) return;
+
+    // Handle (msg) or (data, msg) calling conventions
+    if (typeof data === 'string') {
+      msg = data;
+      data = {};
+    }
+
+    const merged = { ...context, ...data };
+    const timestamp = formatTime();
+    const color = COLORS[levelName];
+    const label = levelName.toUpperCase().padEnd(5);
+
+    const output = `${COLORS.dim}${timestamp}${COLORS.reset} ${color}${label}${COLORS.reset}${formatData(merged)} ${msg || ''}`;
+
+    if (levelName === 'error') {
+      console.error(output);
+    } else {
+      console.log(output);
+    }
+  };
+
+  return {
+    debug: (data, msg) => log(LEVELS.debug, 'debug', data, msg),
+    info: (data, msg) => log(LEVELS.info, 'info', data, msg),
+    warn: (data, msg) => log(LEVELS.warn, 'warn', data, msg),
+    error: (data, msg) => log(LEVELS.error, 'error', data, msg),
+    child: (childContext) => createLogger({
+      ...options,
+      context: { ...context, ...childContext }
+    }),
+  };
 }

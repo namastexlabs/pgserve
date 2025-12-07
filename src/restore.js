@@ -3,18 +3,14 @@
  *
  * High-performance restore using:
  * - Parallel database restore (Promise.all)
- * - COPY protocol for bulk data transfer (pg-copy-streams)
+ * - Native wire protocol for bulk COPY transfer (pg-wire.js)
  * - Unix sockets for local connections (~30% faster)
  * - Binary format COPY (~2x faster than text)
  *
- * Tech Council Design Principles:
- * - nayr: Question assumptions, root cause focus
- * - oettam: Benchmark-driven, measure p99 latency
- * - jt: Ship simple, delete complexity
+ * 100% Bun-native: Uses PgWirePool for all database operations.
  */
 
-import pg from 'pg';
-import { from as copyFrom, to as copyTo } from 'pg-copy-streams';
+import { PgWirePool } from './pg-wire.js';
 import { createLogger } from './logger.js';
 
 /**
@@ -148,11 +144,14 @@ export class RestoreManager {
    */
   async _initSourcePool() {
     try {
-      this.sourcePool = new pg.Pool({
-        connectionString: this.sourceUrl,
-        max: 3, // Small pool - just for discovery
-        connectionTimeoutMillis: 5000,
-        idleTimeoutMillis: 10000
+      const url = new URL(this.sourceUrl);
+      this.sourcePool = new PgWirePool({
+        hostname: url.hostname,
+        port: parseInt(url.port) || 5432,
+        database: url.pathname.slice(1) || 'postgres',
+        username: url.username || 'postgres',
+        password: url.password || 'postgres',
+        max: 3  // Small pool - just for discovery
       });
 
       // Test connection
@@ -276,55 +275,51 @@ export class RestoreManager {
   /**
    * Create connection pool to specific database on external PostgreSQL
    * @param {string} dbName - Database name
-   * @returns {Promise<pg.Pool>}
+   * @returns {Promise<PgWirePool>}
    */
   async _createSourceDbPool(dbName) {
     const url = new URL(this.sourceUrl);
-    url.pathname = `/${dbName}`;
 
-    const pool = new pg.Pool({
-      connectionString: url.toString(),
-      max: this.maxParallelTables,
-      connectionTimeoutMillis: 5000,
-      idleTimeoutMillis: 10000
+    return new PgWirePool({
+      hostname: url.hostname,
+      port: parseInt(url.port) || 5432,
+      database: dbName,
+      username: url.username || 'postgres',
+      password: url.password || 'postgres',
+      max: this.maxParallelTables
     });
-
-    return pool;
   }
 
   /**
    * Create connection pool to specific database on local embedded PostgreSQL
    * Uses Unix socket when available for ~30% faster connections
    * @param {string} dbName - Database name
-   * @returns {Promise<pg.Pool>}
+   * @returns {Promise<PgWirePool>}
    */
   async _createTargetDbPool(dbName) {
     const config = {
       database: dbName,
-      user: 'postgres',
+      username: 'postgres',
       password: 'postgres',
-      max: this.maxParallelTables,
-      connectionTimeoutMillis: 5000,
-      idleTimeoutMillis: 10000
+      max: this.maxParallelTables
     };
 
     // Prefer Unix socket for faster local connections
     if (this.targetSocketPath) {
-      config.host = this.targetSocketPath.replace(/\/\.s\.PGSQL\.\d+$/, '');
-      config.port = this.targetPort;
+      config.unix = this.targetSocketPath;
     } else {
-      config.host = '127.0.0.1';
+      config.hostname = '127.0.0.1';
       config.port = this.targetPort;
     }
 
-    return new pg.Pool(config);
+    return new PgWirePool(config);
   }
 
   /**
    * Restore schema: ENUMs, tables, indexes, foreign keys
    * Order matters: types → tables → indexes → FKs
-   * @param {pg.Pool} sourcePool - External database pool
-   * @param {pg.Pool} targetPool - Local database pool
+   * @param {PgWirePool} sourcePool - External database pool
+   * @param {PgWirePool} targetPool - Local database pool
    * @param {string} dbName - Database name (for logging)
    */
   async _restoreSchema(sourcePool, targetPool, dbName) {
@@ -388,7 +383,7 @@ export class RestoreManager {
 
   /**
    * Generate CREATE TABLE statement from information_schema
-   * @param {pg.Pool} sourcePool - Source database pool
+   * @param {PgWirePool} sourcePool - Source database pool
    * @param {string} tableName - Table name
    * @returns {Promise<string>} CREATE TABLE SQL
    */
@@ -452,7 +447,7 @@ export class RestoreManager {
 
   /**
    * Discover tables in the database
-   * @param {pg.Pool} sourcePool - Source database pool
+   * @param {PgWirePool} sourcePool - Source database pool
    * @returns {Promise<string[]>} Table names
    */
   async _discoverTables(sourcePool) {
@@ -467,8 +462,8 @@ export class RestoreManager {
 
   /**
    * Restore table data in parallel using COPY protocol
-   * @param {pg.Pool} sourcePool - Source database pool
-   * @param {pg.Pool} targetPool - Target database pool
+   * @param {PgWirePool} sourcePool - Source database pool
+   * @param {PgWirePool} targetPool - Target database pool
    * @param {string[]} tables - Table names
    */
   async _restoreTablesParallel(sourcePool, targetPool, tables) {
@@ -487,8 +482,9 @@ export class RestoreManager {
 
   /**
    * Copy table data using binary COPY protocol (high performance)
-   * @param {pg.Pool} sourcePool - Source database pool
-   * @param {pg.Pool} targetPool - Target database pool
+   * Uses async generator pattern for streaming data between connections.
+   * @param {PgWirePool} sourcePool - Source database pool
+   * @param {PgWirePool} targetPool - Target database pool
    * @param {string} tableName - Table name
    */
   async _copyTableData(sourcePool, targetPool, tableName) {
@@ -503,41 +499,32 @@ export class RestoreManager {
       return;
     }
 
-    // Stream COPY: source → target
+    // Get connections for COPY streaming
     const sourceClient = await sourcePool.connect();
     const targetClient = await targetPool.connect();
 
+    let bytesTransferred = 0;
+
     try {
-      const copyToStream = sourceClient.query(
-        copyTo(`COPY "${tableName}" TO STDOUT WITH (FORMAT binary)`)
-      );
-      const copyFromStream = targetClient.query(
-        copyFrom(`COPY "${tableName}" FROM STDIN WITH (FORMAT binary)`)
-      );
-
-      // Track bytes transferred
-      let bytesTransferred = 0;
-
-      await new Promise((resolve, reject) => {
-        copyToStream.on('error', reject);
-        copyFromStream.on('error', reject);
-
-        copyToStream.on('data', chunk => {
+      // Create byte-tracking wrapper for the async generator
+      async function* trackBytes(source) {
+        for await (const chunk of source) {
           bytesTransferred += chunk.length;
-          copyFromStream.write(chunk);
-        });
+          yield chunk;
+        }
+      }
 
-        copyToStream.on('end', () => {
-          copyFromStream.end();
-        });
+      // Stream COPY: source → target using async generators
+      const copyToSql = `COPY "${tableName}" TO STDOUT WITH (FORMAT binary)`;
+      const copyFromSql = `COPY "${tableName}" FROM STDIN WITH (FORMAT binary)`;
 
-        copyFromStream.on('finish', () => {
-          this.metrics.bytesTransferred += bytesTransferred;
-          this.metrics.rowsRestored += rowCount;
-          this.metrics.tablesRestored++;
-          resolve();
-        });
-      });
+      const sourceStream = sourceClient.copyTo(copyToSql);
+      await targetClient.copyFrom(copyFromSql, trackBytes(sourceStream));
+
+      // Update metrics
+      this.metrics.bytesTransferred += bytesTransferred;
+      this.metrics.rowsRestored += rowCount;
+      this.metrics.tablesRestored++;
 
       this.logger.debug({ tableName, rows: rowCount, bytes: bytesTransferred }, 'Table data copied');
 
@@ -552,15 +539,15 @@ export class RestoreManager {
       });
 
     } finally {
-      sourceClient.release();
-      targetClient.release();
+      sourcePool.release(sourceClient);
+      targetPool.release(targetClient);
     }
   }
 
   /**
    * Restore sequences to correct values (after data restore)
-   * @param {pg.Pool} sourcePool - Source database pool
-   * @param {pg.Pool} targetPool - Target database pool
+   * @param {PgWirePool} sourcePool - Source database pool
+   * @param {PgWirePool} targetPool - Target database pool
    */
   async _restoreSequences(sourcePool, targetPool) {
     // Get all sequences

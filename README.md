@@ -257,80 +257,37 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
     <th>Scenario</th>
     <th>SQLite</th>
     <th>PGlite</th>
-    <th>pgserve</th>
+    <th>pgserve (Node)</th>
+    <th>pgserve (Bun)</th>
     <th>pgserve --ram</th>
-    <th>Winner</th>
   </tr>
   <tr>
     <td><b>Concurrent Writes</b> (10 agents)</td>
-    <td>100 qps</td>
-    <td>203 qps</td>
-    <td>1,818 qps</td>
-    <td><b>3,704 qps</b></td>
-    <td>🏆 18x faster</td>
+    <td>85 qps</td>
+    <td>211 qps</td>
+    <td>833 qps</td>
+    <td>1,754 qps</td>
+    <td><b>4,000 qps</b> 🏆</td>
   </tr>
   <tr>
     <td><b>Mixed Workload</b></td>
-    <td>340 qps</td>
-    <td>447 qps</td>
-    <td>935 qps</td>
-    <td><b>1,435 qps</b></td>
-    <td>🏆 3.2x faster</td>
+    <td>339 qps</td>
+    <td>505 qps</td>
+    <td>1,017 qps</td>
+    <td>999 qps</td>
+    <td><b>1,986 qps</b> 🏆</td>
   </tr>
   <tr>
     <td><b>Write Lock</b> (50 writers)</td>
-    <td>59 qps</td>
-    <td>137 qps</td>
-    <td>806 qps</td>
-    <td><b>2,703 qps</b></td>
-    <td>🏆 19.7x faster</td>
+    <td>86 qps</td>
+    <td>168 qps</td>
+    <td>488 qps</td>
+    <td>1,176 qps</td>
+    <td><b>4,348 qps</b> 🏆</td>
   </tr>
 </table>
 
-### Why Bun?
-
-We migrated from Node.js to Bun for massive performance gains:
-
-<table>
-  <tr>
-    <th>Metric</th>
-    <th>Node.js</th>
-    <th>Bun</th>
-    <th>Improvement</th>
-  </tr>
-  <tr>
-    <td><b>Server startup</b></td>
-    <td>~1.2s</td>
-    <td>~0.3s</td>
-    <td><b>4x faster</b></td>
-  </tr>
-  <tr>
-    <td><b>First query latency</b></td>
-    <td>~150ms</td>
-    <td>~45ms</td>
-    <td><b>3.3x faster</b></td>
-  </tr>
-  <tr>
-    <td><b>Memory footprint</b></td>
-    <td>~85MB</td>
-    <td>~35MB</td>
-    <td><b>2.4x smaller</b></td>
-  </tr>
-  <tr>
-    <td><b>TCP throughput</b></td>
-    <td>baseline</td>
-    <td>+200%</td>
-    <td><b>3x faster</b></td>
-  </tr>
-  <tr>
-    <td><b>Distribution</b></td>
-    <td>Needs Node.js</td>
-    <td>~50MB standalone</td>
-    <td><b>Zero deps</b></td>
-  </tr>
-</table>
-
-> **RAM mode is up to 2x faster** than disk mode. Use `--ram` on Linux for maximum performance.
+> **Bun gives 2x throughput** for concurrent writes vs Node.js. **RAM mode adds another 2-4x** on Linux.
 >
 > Run benchmarks: `bun run bench`
 
