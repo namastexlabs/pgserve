@@ -4,8 +4,7 @@
 
   <p>
     <a href="https://www.npmjs.com/package/pgserve"><img src="https://img.shields.io/npm/v/pgserve?style=flat-square&color=00D9FF" alt="npm version"></a>
-    <img src="https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen?style=flat-square" alt="Node.js">
-    <img src="https://img.shields.io/badge/bun-%3E%3D1.0.0-f472b6?style=flat-square" alt="Bun">
+    <img src="https://img.shields.io/badge/bun-%3E%3D1.1.0-f472b6?style=flat-square" alt="Bun">
     <img src="https://img.shields.io/badge/PostgreSQL-17.7-blue?style=flat-square" alt="PostgreSQL">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://discord.gg/xcW8c7fF3R"><img src="https://img.shields.io/discord/1095114867012292758?style=flat-square&color=00D9FF&label=discord" alt="Discord"></a>
@@ -26,14 +25,16 @@
 
 ## Quick Start
 
+**Requires Bun runtime** ([install from bun.sh](https://bun.sh))
+
 ```bash
-npx pgserve
+bunx pgserve
 ```
 
 Connect from any PostgreSQL client — databases auto-create on first connection:
 
 ```bash
-psql postgresql://localhost:5432/myapp
+psql postgresql://localhost:8432/myapp
 ```
 
 <br>
@@ -85,19 +86,17 @@ psql postgresql://localhost:5432/myapp
 
 ```bash
 # Zero install (recommended)
-npx pgserve
+bunx pgserve
 
 # Global install
-npm install -g pgserve
+npm install -g pgserve  # Requires Bun to run
 
 # Project dependency
-npm install pgserve
-
-# With Bun
-bunx pgserve
 bun add pgserve
 ```
 
+> **Note:** pgserve requires Bun runtime to execute. Install Bun from [bun.sh](https://bun.sh)
+>
 > PostgreSQL binaries are automatically downloaded on first run.
 
 <br>
@@ -179,7 +178,7 @@ await server.stop();
 import pg from 'pg';
 
 const client = new pg.Client({
-  connectionString: 'postgresql://localhost:5432/myapp'
+  connectionString: 'postgresql://localhost:8432/myapp'
 });
 
 await client.connect();
@@ -205,7 +204,7 @@ datasource db {
 
 ```bash
 # .env
-DATABASE_URL="postgresql://localhost:5432/myapp"
+DATABASE_URL="postgresql://localhost:8432/myapp"
 
 # Run migrations
 npx prisma migrate dev
@@ -221,7 +220,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 
 const pool = new Pool({
-  connectionString: 'postgresql://localhost:5432/myapp'
+  connectionString: 'postgresql://localhost:8432/myapp'
 });
 
 const db = drizzle(pool);
@@ -244,7 +243,7 @@ pgserve --sync-to "postgresql://user:pass@db.example.com:5432/mydb"
 pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
 ```
 
-> Replication is handled by PostgreSQL's WAL writer process, completely off the Node.js event loop. Sync failures don't affect main server operation.
+> Replication is handled by PostgreSQL's WAL writer process, completely off the runtime event loop. Sync failures don't affect main server operation.
 
 <br>
 
@@ -339,7 +338,7 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
 
 ## Requirements
 
-- **Runtime**: Node.js >= 18.0.0 or Bun >= 1.0.0
+- **Runtime**: Bun >= 1.1.0 ([install from bun.sh](https://bun.sh))
 - **Platform**: Linux x64, macOS ARM64/x64, Windows x64
 
 <br>
