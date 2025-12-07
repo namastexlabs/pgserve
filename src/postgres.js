@@ -55,17 +55,31 @@ function ensureLibrarySymlinks(libDir, platform) {
       // macOS versioned libs have several patterns:
       // 1. libname.MAJOR.MINOR.dylib -> libname.MAJOR.dylib (ICU style)
       // 2. libname.MAJOR.MINOR.PATCH.dylib -> libname.MAJOR.dylib (zstd style)
+      // 3. Also need libname.dylib -> libname.MAJOR.dylib for some libs
       for (const file of files) {
         // Match libxxx.MAJOR.MINOR.dylib or libxxx.MAJOR.MINOR.PATCH.dylib
         const match = file.match(/^(lib.+)\.(\d+)\.\d+(?:\.\d+)?\.dylib$/);
         if (match) {
           const basename = match[1]; // e.g., libicuuc or libzstd
           const major = match[2]; // e.g., 68 or 1
-          const soname = `${basename}.${major}.dylib`;
-          const sonameLink = path.join(libDir, soname);
-          if (!fs.existsSync(sonameLink)) {
+
+          // Create libname.MAJOR.dylib -> libname.MAJOR.MINOR.dylib
+          const majorSoname = `${basename}.${major}.dylib`;
+          const majorLink = path.join(libDir, majorSoname);
+          if (!fs.existsSync(majorLink)) {
             try {
-              fs.symlinkSync(file, sonameLink);
+              fs.symlinkSync(file, majorLink);
+            } catch {
+              // Non-fatal
+            }
+          }
+
+          // Create libname.dylib -> libname.MAJOR.dylib (base symlink)
+          const baseSoname = `${basename}.dylib`;
+          const baseLink = path.join(libDir, baseSoname);
+          if (!fs.existsSync(baseLink)) {
+            try {
+              fs.symlinkSync(majorSoname, baseLink);
             } catch {
               // Non-fatal
             }
