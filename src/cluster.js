@@ -72,6 +72,7 @@ class ClusterRouter extends EventEmitter {
     this.server = Bun.listen({
       hostname: this.host,
       port: this.port,
+      reusePort: true,  // Enable SO_REUSEPORT for multi-worker port sharing (Linux)
       socket: {
         data(socket, data) {
           router.handleSocketData(socket, data);
