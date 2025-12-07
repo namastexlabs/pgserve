@@ -1,0 +1,16 @@
+# GitGuardian Ignore File
+# Files containing default development passwords (not real secrets)
+
+# PostgreSQL wire protocol client with example code containing default password
+src/pg-wire.js
+
+# All test files use default postgres password
+tests/**
+**/*.test.js
+**/*.spec.js
+**/*.bench.js
+
+# Other source files with default connection settings
+src/sync.js
+src/postgres.js
+src/restore.js

@@ -4,6 +4,8 @@
 version: 2
 
 secret:
+  # Don't show actual secret values in output
+  show_secrets: false
   # Ignore files containing default development passwords
   # These are well-known defaults for local PostgreSQL testing, not real secrets
   ignored_paths:
