@@ -25,9 +25,11 @@ function formatData(data) {
   if (!data || Object.keys(data).length === 0) return '';
   // Clone to avoid mutating original
   const formatted = { ...data };
-  // Format error objects specially
-  if (formatted.err) {
-    formatted.err = formatted.err.message || String(formatted.err);
+  // Format error objects specially - preserve stack traces for debugging
+  if (formatted.err instanceof Error) {
+    formatted.err = { message: formatted.err.message, stack: formatted.err.stack };
+  } else if (formatted.err) {
+    formatted.err = String(formatted.err);
   }
   return ` ${JSON.stringify(formatted)}`;
 }

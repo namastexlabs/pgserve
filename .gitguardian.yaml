@@ -1,0 +1,18 @@
+# GitGuardian Configuration
+# https://docs.gitguardian.com/ggshield-docs/reference/gitguardian-yaml
+
+version: 2
+
+secret:
+  # Ignore test files with default development passwords
+  ignored-paths:
+    - tests/**
+    - "**/*.test.js"
+    - "**/*.spec.js"
+
+  # Ignore specific patterns (default postgres password in tests)
+  ignored-matches:
+    - name: "Default postgres test password"
+      match: "password: 'postgres'"
+    - name: "Default postgres password env"
+      match: "password: postgres"

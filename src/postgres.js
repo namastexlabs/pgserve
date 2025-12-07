@@ -49,8 +49,10 @@ function getBinaryPaths() {
     const postgres = path.join(binDir, platform === 'win32' ? 'postgres.exe' : 'postgres');
     if (fs.existsSync(initdb) && fs.existsSync(postgres)) {
       // lib directory is sibling to bin (contains bundled ICU libraries)
-      const libDir = path.join(binDir, '..', 'lib');
-      return { initdb, postgres, binDir, libDir };
+      // Use realpathSync to resolve symlinks - fixes package manager hoisting issues
+      const realBinDir = fs.realpathSync(binDir);
+      const libDir = path.join(realBinDir, '..', 'lib');
+      return { initdb, postgres, binDir: realBinDir, libDir };
     }
   }
 
@@ -219,6 +221,7 @@ export class PostgresManager {
     const randomId = crypto.randomBytes(6).toString('hex');
     const passwordFile = path.join(os.tmpdir(), `pg-password-${randomId}`);
     await Bun.write(passwordFile, this.password + '\n');
+    await fs.promises.chmod(passwordFile, 0o600); // Secure file permissions
 
     this.logger.debug({ databaseDir: this.databaseDir }, 'Initializing PostgreSQL data directory');
 
