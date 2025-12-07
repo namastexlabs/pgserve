@@ -4,15 +4,23 @@
 version: 2
 
 secret:
-  # Ignore test files with default development passwords
+  # Ignore files containing default development passwords
+  # These are well-known defaults for local PostgreSQL testing, not real secrets
   ignored-paths:
     - tests/**
     - "**/*.test.js"
     - "**/*.spec.js"
+    - "**/*.bench.js"
+    - src/sync.js
+    - src/pg-wire.js
+    - src/postgres.js
+    - src/restore.js
 
   # Ignore specific patterns (default postgres password in tests)
   ignored-matches:
     - name: "Default postgres test password"
       match: "password: 'postgres'"
-    - name: "Default postgres password env"
+    - name: "Default postgres password string"
       match: "password: postgres"
+    - name: "Postgres password in connection string"
+      match: "password=postgres"

@@ -48,11 +48,13 @@ function getBinaryPaths() {
     const initdb = path.join(binDir, platform === 'win32' ? 'initdb.exe' : 'initdb');
     const postgres = path.join(binDir, platform === 'win32' ? 'postgres.exe' : 'postgres');
     if (fs.existsSync(initdb) && fs.existsSync(postgres)) {
+      // Resolve the actual binary paths (handles symlinks from package managers)
+      const realInitdb = fs.realpathSync(initdb);
+      const realPostgres = fs.realpathSync(postgres);
+      const realBinDir = path.dirname(realInitdb);
       // lib directory is sibling to bin (contains bundled ICU libraries)
-      // Use realpathSync to resolve symlinks - fixes package manager hoisting issues
-      const realBinDir = fs.realpathSync(binDir);
       const libDir = path.join(realBinDir, '..', 'lib');
-      return { initdb, postgres, binDir: realBinDir, libDir };
+      return { initdb: realInitdb, postgres: realPostgres, binDir: realBinDir, libDir };
     }
   }
 
@@ -92,6 +94,28 @@ function buildSpawnEnv(libDir) {
   // Windows doesn't need this - it uses PATH or side-by-side assemblies
 
   return env;
+}
+
+/**
+ * Build command array with shell wrapper for reliable library path export.
+ * This ensures LD_LIBRARY_PATH is properly inherited by the child process.
+ *
+ * @param {string[]} cmd - Command and arguments
+ * @param {string} libDir - Path to lib directory
+ * @returns {string[]} Command array (may be wrapped in shell)
+ */
+function buildCommand(cmd, libDir) {
+  const platform = os.platform();
+
+  if (platform === 'linux') {
+    // Use shell to explicitly export LD_LIBRARY_PATH before running the command
+    // This is more reliable than passing env to spawn on some systems
+    const cmdStr = cmd.map(arg => `'${arg.replace(/'/g, "'\\''")}'`).join(' ');
+    return ['/bin/sh', '-c', `export LD_LIBRARY_PATH="${libDir}:$LD_LIBRARY_PATH" && exec ${cmdStr}`];
+  }
+
+  // On other platforms, return command as-is (env passing works fine)
+  return cmd;
 }
 
 export class PostgresManager {
@@ -226,13 +250,14 @@ export class PostgresManager {
     this.logger.debug({ databaseDir: this.databaseDir }, 'Initializing PostgreSQL data directory');
 
     try {
-      const proc = Bun.spawn([
+      const initdbCmd = [
         this.binaries.initdb,
         `--pgdata=${this.databaseDir}`,
         '--auth=password',
         `--username=${this.user}`,
         `--pwfile=${passwordFile}`,
-      ], {
+      ];
+      const proc = Bun.spawn(buildCommand(initdbCmd, this.binaries.libDir), {
         env: buildSpawnEnv(this.binaries.libDir),
         stdout: 'pipe',
         stderr: 'pipe'
@@ -334,7 +359,7 @@ export class PostgresManager {
         this.logger.info('Logical replication enabled for sync');
       }
 
-      this.process = Bun.spawn(pgArgs, {
+      this.process = Bun.spawn(buildCommand(pgArgs, this.binaries.libDir), {
         env: buildSpawnEnv(this.binaries.libDir),
         stdout: 'pipe',
         stderr: 'pipe'
