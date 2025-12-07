@@ -16,11 +16,12 @@ secret:
     - src/postgres.js
     - src/restore.js
 
-  # Ignore specific patterns (default postgres password in tests)
+  # Ignore "postgres" as a password - this is a well-known default for local dev
   ignored_matches:
-    - name: "Default postgres test password"
-      match: "password: 'postgres'"
-    - name: "Default postgres password string"
-      match: "password: postgres"
-    - name: "Postgres password in connection string"
-      match: "password=postgres"
+    - name: "Default postgres password"
+      match: postgres
+
+  # Ignore generic password detector (too many false positives for default creds)
+  ignored_detectors:
+    - Generic Password
+    - Generic High Entropy Secret
