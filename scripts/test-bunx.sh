@@ -10,9 +10,10 @@ echo "=== Testing bunx compatibility ==="
 TEST_DIR=$(mktemp -d)
 trap "rm -rf $TEST_DIR" EXIT
 
-# Pack the current package
+# Pack the current package (--ignore-scripts to skip prepare/husky in CI)
 echo "Packing package..."
-PACK_FILE=$(bun pm pack --destination "$TEST_DIR" 2>/dev/null | grep -o '[^ ]*\.tgz' | head -1)
+PACK_FILE=$(bun pm pack --destination "$TEST_DIR" --ignore-scripts --quiet 2>/dev/null)
+PACK_FILE=$(basename "$PACK_FILE" 2>/dev/null)
 
 # If bun pm pack fails, exit with an error
 if [ -z "$PACK_FILE" ] || [ ! -f "$TEST_DIR/$PACK_FILE" ]; then
