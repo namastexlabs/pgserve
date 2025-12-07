@@ -19,7 +19,7 @@
     "lint:fix": "eslint src/ bin/ --fix",
     "deadcode": "knip",
     "test:bunx": "scripts/test-bunx.sh",
-    "prepublishOnly": "npm run lint && npm run deadcode",
+    "prepublishOnly": "npm run lint && npm run deadcode && npm run test:bunx",
     "prepare": "husky"
   },
   "keywords": [

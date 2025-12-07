@@ -14,9 +14,10 @@ trap "rm -rf $TEST_DIR" EXIT
 echo "Packing package..."
 PACK_FILE=$(bun pm pack --destination "$TEST_DIR" 2>/dev/null | grep -o '[^ ]*\.tgz' | head -1)
 
-# If bun pm pack doesn't work, fall back to npm pack
+# If bun pm pack fails, exit with an error
 if [ -z "$PACK_FILE" ] || [ ! -f "$TEST_DIR/$PACK_FILE" ]; then
-  PACK_FILE=$(npm pack --pack-destination "$TEST_DIR" 2>/dev/null | tail -1)
+  echo "✗ Failed to pack package with bun"
+  exit 1
 fi
 
 # Extract and install in isolated environment
