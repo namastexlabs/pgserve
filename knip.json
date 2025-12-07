@@ -3,6 +3,6 @@
   "entry": ["src/index.js", "bin/pglite-server.js"],
   "project": ["src/**/*.js", "bin/**/*.js"],
   "ignore": ["tests/**", "helpers/**", "scripts/**"],
-  "ignoreBinaries": ["scripts/test-npx.sh", "make"],
+  "ignoreBinaries": ["scripts/test-bunx.sh", "make"],
   "ignoreExportsUsedInFile": true
 }
