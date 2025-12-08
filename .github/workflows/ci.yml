@@ -105,7 +105,7 @@ jobs:
       - name: Install deps and pack
         run: |
           bun install
-          bun pm pack --destination /tmp
+          bun pm pack --destination /tmp --ignore-scripts
 
       - name: Test npx install (fresh environment)
         run: |
