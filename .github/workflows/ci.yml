@@ -99,7 +99,7 @@ jobs:
 
       - name: Pack and test npx
         run: |
-          npm pack
+          npm pack --ignore-scripts
           cd /tmp
           mkdir test-pgserve
           cd test-pgserve
