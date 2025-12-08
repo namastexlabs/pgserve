@@ -89,12 +89,20 @@ function bumpRcVersion(currentVersion) {
 }
 
 function promoteToStable(currentVersion) {
-  // 1.0.9-rc.2 -> 1.0.9
-  const match = currentVersion.match(/^(\d+\.\d+\.\d+)-rc\.\d+$/);
-  if (!match) {
-    throw new Error(`Cannot promote: ${currentVersion} is not an RC version`);
+  // If RC version: 1.0.9-rc.2 -> 1.0.9
+  const rcMatch = currentVersion.match(/^(\d+\.\d+\.\d+)-rc\.\d+$/);
+  if (rcMatch) {
+    return rcMatch[1];
   }
-  return match[1];
+
+  // If already stable: 1.1.1 -> 1.1.2 (bump patch for new stable release)
+  const stableMatch = currentVersion.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (stableMatch) {
+    const [, major, minor, patch] = stableMatch;
+    return `${major}.${minor}.${parseInt(patch) + 1}`;
+  }
+
+  throw new Error(`Invalid version format: ${currentVersion}`);
 }
 
 function createTag(version) {
