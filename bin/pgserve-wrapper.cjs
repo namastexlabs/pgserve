@@ -17,16 +17,24 @@ const bunBin = isWindows ? 'bun.exe' : 'bun';
 
 // Try multiple locations for cross-platform compatibility
 // Order matters - most common locations first
+// Note: npm hoists dependencies, so bun may be in parent node_modules
 const locations = [
-  // Standard npm/bun .bin symlink
+  // Hoisted to top-level node_modules (npm default behavior)
+  path.join(__dirname, '..', '..', '.bin', bunBin),
+  // Standard location when not hoisted
   path.join(__dirname, '..', 'node_modules', '.bin', bunBin),
   // Direct bun package location (some npm versions)
   path.join(__dirname, '..', 'node_modules', 'bun', bunBin),
-  // Platform-specific @oven packages
+  // Hoisted bun package
+  path.join(__dirname, '..', '..', 'bun', bunBin),
+  // Platform-specific @oven packages (hoisted)
+  path.join(__dirname, '..', '..', '@oven', `bun-${process.platform}-${process.arch}`, bunBin),
+  // Platform-specific @oven packages (not hoisted)
   path.join(__dirname, '..', 'node_modules', '@oven', `bun-${process.platform}-${process.arch}`, bunBin),
   // Alternative arch naming (darwin-aarch64 vs darwin-arm64)
-  path.join(__dirname, '..', 'node_modules', '@oven', `bun-${process.platform}-${process.arch === 'arm64' ? 'aarch64' : process.arch}`, bunBin),
-  // Windows specific path
+  path.join(__dirname, '..', '..', '@oven', `bun-${process.platform}-${process.arch === 'arm64' ? 'aarch64' : process.arch}`, bunBin),
+  // Windows specific paths
+  isWindows ? path.join(__dirname, '..', '..', '.bin', 'bun.cmd') : null,
   isWindows ? path.join(__dirname, '..', 'node_modules', '.bin', 'bun.cmd') : null,
 ].filter(Boolean);
 
