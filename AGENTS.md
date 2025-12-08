@@ -188,9 +188,16 @@ Before editing ANY implementation file, Base Genie must check:
 
 **Protocol:** `@.genie/spells/orchestration-boundary-protocol.md`
 
+**Release Workflow Protocol:**
+- ❌ Never manually trigger `workflow_dispatch` for releases
+- ❌ Never manually bump version in package.json
+- ✅ Always use PR with `rc` or `stable` label - release.yml auto-triggers on merge
+- ✅ Version bumping is automated by scripts/release.cjs
+
 **Documented Violations:**
 - Bug #168, task b51db539, 2025-10-21 (duplicate implementation)
 - 2025-10-26 (claimed release implementation steps without investigating automation)
+- 2025-12-08 (manually set version to 1.1.0 + triggered workflow_dispatch → version jumped to 1.1.1-rc.1)
 
 ### 4. Task State Optimization - Live State, Not Documentation 🔴 CRITICAL
 **Rule:** Task state is ephemeral runtime data, not permanent documentation
