@@ -1,6 +1,6 @@
 {
   "name": "pgserve",
-  "version": "1.1.0",
+  "version": "1.1.1-rc.1",
   "description": "Embedded PostgreSQL server with true concurrent connections - zero config, auto-provision databases",
   "main": "src/index.js",
   "type": "module",
@@ -55,7 +55,7 @@
     "lint-staged": "^16.2.7",
     "pg": "^8.16.3"
   },
-    "lint-staged": {
+  "lint-staged": {
     "src/**/*.js": [
       "eslint --fix"
     ],
