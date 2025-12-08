@@ -92,18 +92,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Bun (for packing)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js (for testing)
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Pack and test npx
+      - name: Install deps and pack
         run: |
-          npm pack --ignore-scripts
+          bun install
+          bun pm pack --destination /tmp
+
+      - name: Test npx install (fresh environment)
+        run: |
           cd /tmp
           mkdir test-pgserve
           cd test-pgserve
           npm init -y
-          npm install $GITHUB_WORKSPACE/pgserve-*.tgz
-          timeout 30 npx pgserve --help || echo "Help displayed"
+          npm install /tmp/pgserve-*.tgz
+          timeout 30 npx pgserve --help
           echo "npx test passed!"
