@@ -82,3 +82,37 @@ jobs:
         run: |
           ./dist/pgserve --help
           echo "Build successful!"
+
+  # Test npx flow (user experience)
+  test-npx:
+    name: Test npx install
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun (for packing)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node.js (for testing)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps and pack
+        run: |
+          bun install
+          bun pm pack --destination /tmp --ignore-scripts
+
+      - name: Test npx install (fresh environment)
+        run: |
+          cd /tmp
+          mkdir test-pgserve
+          cd test-pgserve
+          npm init -y
+          npm install /tmp/pgserve-*.tgz
+          timeout 30 npx pgserve --help
+          echo "npx test passed!"

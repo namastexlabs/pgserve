@@ -1,8 +1,9 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "entry": ["src/index.js", "bin/pglite-server.js"],
-  "project": ["src/**/*.js", "bin/**/*.js"],
+  "entry": ["src/index.js", "bin/pglite-server.js", "bin/pgserve-wrapper.cjs"],
+  "project": ["src/**/*.js", "bin/**/*.js", "bin/**/*.cjs"],
   "ignore": ["tests/**", "helpers/**", "scripts/**"],
-  "ignoreBinaries": ["scripts/test-bunx.sh", "make"],
+  "ignoreBinaries": ["scripts/test-npx.sh", "make"],
+  "ignoreDependencies": ["bun"],
   "ignoreExportsUsedInFile": true
 }
