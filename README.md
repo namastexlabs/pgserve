@@ -43,6 +43,10 @@ psql postgresql://localhost:8432/myapp
 
 <table>
   <tr>
+    <td><b>Real PostgreSQL 17</b></td>
+    <td>Native binaries, not WASM — full compatibility, extensions support</td>
+  </tr>
+  <tr>
     <td><b>Unlimited Concurrency</b></td>
     <td>Native PostgreSQL process forking — no connection locks</td>
   </tr>
@@ -68,7 +72,7 @@ psql postgresql://localhost:8432/myapp
   </tr>
   <tr>
     <td><b>Async Replication</b></td>
-    <td>Sync to real PostgreSQL with zero performance impact</td>
+    <td>Sync to real PostgreSQL with minimal overhead</td>
   </tr>
   <tr>
     <td><b>Cross-Platform</b></td>
