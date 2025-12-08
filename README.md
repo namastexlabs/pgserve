@@ -4,7 +4,7 @@
 
   <p>
     <a href="https://www.npmjs.com/package/pgserve"><img src="https://img.shields.io/npm/v/pgserve?style=flat-square&color=00D9FF" alt="npm version"></a>
-    <img src="https://img.shields.io/badge/bun-%3E%3D1.1.0-f472b6?style=flat-square" alt="Bun">
+    <img src="https://img.shields.io/badge/node-%3E%3D18-green?style=flat-square" alt="Node.js">
     <img src="https://img.shields.io/badge/PostgreSQL-17.7-blue?style=flat-square" alt="PostgreSQL">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://discord.gg/xcW8c7fF3R"><img src="https://img.shields.io/discord/1095114867012292758?style=flat-square&color=00D9FF&label=discord" alt="Discord"></a>
@@ -25,10 +25,8 @@
 
 ## Quick Start
 
-**Requires Bun runtime** ([install from bun.sh](https://bun.sh))
-
 ```bash
-bunx pgserve
+npx pgserve
 ```
 
 Connect from any PostgreSQL client — databases auto-create on first connection:
@@ -90,18 +88,16 @@ psql postgresql://localhost:8432/myapp
 
 ```bash
 # Zero install (recommended)
-bunx pgserve
+npx pgserve
 
 # Global install
-npm install -g pgserve  # Requires Bun to run
+npm install -g pgserve
 
 # Project dependency
-bun add pgserve
+npm install pgserve
 ```
 
-> **Note:** pgserve requires Bun runtime to execute. Install Bun from [bun.sh](https://bun.sh)
->
-> PostgreSQL binaries are automatically downloaded on first run.
+> PostgreSQL binaries are automatically downloaded on first run (~100MB).
 
 <br>
 
@@ -290,9 +286,9 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
   </tr>
 </table>
 
-> **Bun gives 2x throughput** for concurrent writes vs Node.js. **RAM mode adds another 2-4x** on Linux.
+> pgserve uses Bun runtime internally for 2x throughput. **RAM mode adds another 2-4x** on Linux.
 >
-> Run benchmarks: `bun run bench`
+> Run benchmarks: `bun run bench` (contributors only)
 
 <br>
 
@@ -342,14 +338,14 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
 
 ## Requirements
 
-- **Runtime**: Bun >= 1.1.0 ([install from bun.sh](https://bun.sh))
+- **Runtime**: Node.js >= 18 (npm/npx)
 - **Platform**: Linux x64, macOS ARM64/x64, Windows x64
 
 <br>
 
 ## Development
 
-This project uses Bun for development:
+Contributors: This project uses Bun internally for development:
 
 ```bash
 # Install dependencies

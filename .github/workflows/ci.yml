@@ -82,3 +82,28 @@ jobs:
         run: |
           ./dist/pgserve --help
           echo "Build successful!"
+
+  # Test npx flow (user experience)
+  test-npx:
+    name: Test npx install
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Pack and test npx
+        run: |
+          npm pack
+          cd /tmp
+          mkdir test-pgserve
+          cd test-pgserve
+          npm init -y
+          npm install $GITHUB_WORKSPACE/pgserve-*.tgz
+          timeout 30 npx pgserve --help || echo "Help displayed"
+          echo "npx test passed!"

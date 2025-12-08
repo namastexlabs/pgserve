@@ -1,11 +1,11 @@
 {
   "name": "pgserve",
-  "version": "1.0.9",
+  "version": "1.1.0",
   "description": "Embedded PostgreSQL server with true concurrent connections - zero config, auto-provision databases",
   "main": "src/index.js",
   "type": "module",
   "bin": {
-    "pgserve": "./bin/pglite-server.js"
+    "pgserve": "./bin/pgserve-wrapper.cjs"
   },
   "scripts": {
     "bench": "bun tests/benchmarks/runner.js",
@@ -18,8 +18,8 @@
     "lint": "eslint src/ bin/",
     "lint:fix": "eslint src/ bin/ --fix",
     "deadcode": "knip",
-    "test:bunx": "scripts/test-bunx.sh",
-    "prepublishOnly": "npm run lint && npm run deadcode && npm run test:bunx",
+    "test:npx": "scripts/test-npx.sh",
+    "prepublishOnly": "npm run lint && npm run deadcode && npm run test:npx",
     "prepare": "husky"
   },
   "keywords": [
@@ -55,15 +55,15 @@
     "lint-staged": "^16.2.7",
     "pg": "^8.16.3"
   },
-  "engines": {
-    "bun": ">=1.1.0"
-  },
-  "lint-staged": {
+    "lint-staged": {
     "src/**/*.js": [
       "eslint --fix"
     ],
     "bin/**/*.js": [
       "eslint --fix"
     ]
+  },
+  "dependencies": {
+    "bun": "^1.3.4"
   }
 }
