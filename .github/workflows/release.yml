@@ -105,11 +105,10 @@ jobs:
           git push origin HEAD:${{ github.ref_name }}
           git push origin --tags
 
-  # Build: Build all platforms (skip for promote)
+  # Build & Publish: Always build and publish (npm_tag comes from version job)
   build:
     name: Build & Publish
     needs: version
-    if: needs.version.outputs.is_promote != 'true'
     uses: ./.github/workflows/build-all-platforms.yml
     with:
       version: ${{ needs.version.outputs.version }}
@@ -117,48 +116,11 @@ jobs:
       ref: ${{ needs.version.outputs.tag }}
     secrets: inherit
 
-  # Promote: Publish clean version number to npm (no rebuild, just republish)
-  promote:
-    name: Promote to Latest
-    needs: version
-    if: needs.version.outputs.is_promote == 'true'
-    runs-on: ubuntu-latest
-    environment: npm-publish
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.version.outputs.tag }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Publish clean version to npm
-        run: |
-          echo "Publishing pgserve@${{ needs.version.outputs.version }} as @latest"
-          npm publish --tag latest --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Verify promotion
-        run: |
-          sleep 5
-          LATEST=$(npm view pgserve@latest version)
-          echo "Latest version is now: $LATEST"
-          if [ "$LATEST" != "${{ needs.version.outputs.version }}" ]; then
-            echo "Error: Version mismatch - expected ${{ needs.version.outputs.version }}, got $LATEST"
-            exit 1
-          fi
-
   # GitHub Release: Create release with changelog
   github-release:
     name: Create GitHub Release
     needs: [version, build]
-    if: always() && needs.version.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    if: always() && needs.version.result == 'success' && needs.build.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
