@@ -55,15 +55,28 @@ const scriptPath = path.join(__dirname, 'pglite-server.js');
 // Spawn bun with the actual script, inherit all stdio
 const child = spawn(bunPath, [scriptPath, ...process.argv.slice(2)], {
   stdio: 'inherit',
-  windowsHide: true
+  windowsHide: true,
+  // Detach on Windows to prevent handle inheritance and EBUSY errors during npx cleanup
+  detached: isWindows
 });
+
+// On Windows, unreference the child to allow wrapper to exit independently
+if (isWindows) {
+  child.unref();
+}
 
 child.on('error', (err) => {
   console.error('Failed to start pgserve:', err.message);
   process.exit(1);
 });
 
-child.on('exit', (code, signal) => {
+child.on('exit', async (code, signal) => {
+  // On Windows, wait briefly for all file handles to be released
+  // This prevents EBUSY errors when npx tries to clean up the cache
+  if (isWindows) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
   if (signal) {
     process.kill(process.pid, signal);
   } else {
