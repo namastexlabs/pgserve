@@ -1,74 +1,119 @@
 # Windows Debug Context
 
-## Current Issue
-PostgreSQL starts successfully on port 9432, but the router/proxy on port 8432 is NOT listening.
-Clients cannot connect because 8432 isn't bound.
+## RESOLVED (2025-12-12)
 
-## What Works
-- PostgreSQL binary starts fine
-- PostgreSQL reports "ready" on port 9432 (the pgPort = port + 1000)
-- No more connection timeout after the retry fix
+The Windows router binding issue has been fixed. See "Solution Applied" below.
 
-## What's Broken
-- Router/proxy port 8432 is not listening on Windows
-- Only PostgreSQL port 9432 is accessible
+---
 
-## Architecture
+## Original Issue
+PostgreSQL starts successfully on port 9432, but the router/proxy on port 8432 was NOT listening.
+Clients could not connect because 8432 wasn't bound.
+
+## Root Causes Found
+
+### 1. `reusePort: true` - Linux-only feature (PRIMARY CAUSE)
+**Location:** `src/cluster.js:75`
+
+The cluster mode uses `Bun.listen({ reusePort: true })` which maps to `SO_REUSEPORT`.
+This socket option is Linux-only and **silently fails on Windows**.
+
+### 2. Auto-enabled cluster mode on multi-core Windows systems
+**Location:** `bin/pglite-server.js:106`
+
+Windows systems with multiple CPU cores automatically entered cluster mode,
+triggering the `reusePort` failure.
+
+### 3. TCP port opens before PostgreSQL ready for protocol handshakes
+**Location:** `src/postgres.js:803-821`
+
+PostgreSQL was marked "ready" when TCP port opened, but it wasn't actually
+ready for protocol-level handshakes. Admin pool connection timed out.
+
+---
+
+## Solution Applied
+
+### Fix 1: Disable cluster mode on Windows
+**File:** `bin/pglite-server.js:98-108`
+```javascript
+const isWindows = os.platform() === 'win32';
+cluster: cpuCount > 1 && !isWindows,
 ```
-Client -> Router (8432) -> PostgreSQL (9432)
-         ^^^^^^^^^^^^^^^^
-         THIS IS NOT BINDING ON WINDOWS
+
+### Fix 2: Add platform check to reusePort
+**File:** `src/cluster.js:72-76`
+```javascript
+const isWindows = os.platform() === 'win32';
+this.server = Bun.listen({
+  reusePort: !isWindows,  // SO_REUSEPORT only works on Linux/macOS
+  ...
+});
 ```
 
-The router is in `src/router.js` and cluster mode uses `src/cluster.js`.
+### Fix 3: Add port binding verification
+**File:** `src/cluster.js:99-102`
+```javascript
+if (!this.server || !this.server.port) {
+  throw new Error(`Failed to bind to port ${this.port} - reusePort may not be supported`);
+}
+```
 
-## Files to Investigate
-1. `src/cluster.js` - Cluster mode orchestration (32 workers shown in output)
-2. `src/router.js` - Router/proxy that should listen on 8432
-3. `bin/pglite-server.js` - Entry point, decides cluster vs single mode
+### Fix 4: Add Windows readiness delay
+**File:** `src/postgres.js:813-817`
+```javascript
+if (isWindows) {
+  await Bun.sleep(2000); // 2 second delay for Windows
+}
+```
 
-## Key Code Locations
-- `src/cluster.js:299-301` - Port configuration: `pgPort = port + 1000`
-- `src/router.js:45` - Same port offset logic
-- `src/router.js` - `_startServer()` method that creates the TCP server
+### Fix 5: Increase admin pool retry for Windows
+**File:** `src/postgres.js:598-599`
+```javascript
+const maxRetries = isWindows ? 10 : 5;
+const baseDelay = isWindows ? 2000 : 1000;
+```
 
-## Recent Fix Applied
-`src/postgres.js:576-623` - Added retry logic with exponential backoff for admin pool initialization.
-This fixed the "Connection timeout after 5s" error.
+---
+
+## Verification
+
+After applying fixes, server runs correctly on Windows:
+- Router: `127.0.0.1:7432` ✅
+- PostgreSQL: `127.0.0.1:8432` ✅
+- Database auto-provisioning: ✅
+- Query execution: ✅
+
+```
+Server started successfully!
+
+  Endpoint:    postgresql://127.0.0.1:7432/<database>
+  Mode:        In-memory (ephemeral)
+  PostgreSQL:  Port 8432 (internal)
+  Auto-create: Enabled
+```
+
+---
 
 ## Test Commands (Run from Windows)
 ```cmd
-# Start server
-pgserve-windows-x64.exe
+# Build binary
+bun build --compile bin/pglite-server.js --outfile dist/pgserve-windows-x64.exe
 
-# Check what ports are listening
+# Start server
+dist\pgserve-windows-x64.exe
+
+# Check ports are listening (should see BOTH)
 netstat -an | findstr "LISTEN" | findstr "8432 9432"
 
-# Try connecting to PostgreSQL directly (bypassing router)
-psql postgresql://localhost:9432/postgres
-
-# Try connecting through router (this fails currently)
+# Test connection
 psql postgresql://localhost:8432/testdb
 ```
 
-## Debug Steps
-1. Check if router TCP server is created: Look for `Bun.listen()` or `net.createServer()` in router.js
-2. Check if cluster workers are binding correctly on Windows
-3. Check if there's a Windows-specific networking issue with the proxy
+---
 
-## Hypothesis
-The cluster mode may not be properly starting the router on Windows. The PostgreSQL process starts (child process), but the main Node/Bun process that handles the router proxy may be failing silently.
-
-## User's Windows Output
-```
-C:\> C:\Users\namastex\Desktop\pgserve-windows-x64.exe
-
-pgserve - Embedded PostgreSQL Server
-=====================================
-
-[pgserve] Cluster mode: 32 workers
-14:11:00 INFO  {"component":"postgres","databaseDir":"C:\\Users\\namastex\\AppData\\Local\\Temp\\pgserve-20288-1765559460347","persistent":false,"trueRam":false,"port":9432} Starting embedded PostgreSQL
-14:11:07 INFO  {"component":"postgres","port":9432,"method":"tcp"} PostgreSQL ready
-```
-
-Note: No log showing router started on 8432!
+## Related Files
+- `bin/pglite-server.js` - Entry point, cluster mode decision
+- `src/cluster.js` - Cluster mode with reusePort
+- `src/router.js` - Single-process mode (works on Windows)
+- `src/postgres.js` - PostgreSQL startup and admin pool

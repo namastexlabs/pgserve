@@ -69,10 +69,11 @@ class ClusterRouter extends EventEmitter {
 
     // Create TCP server using Bun.listen() for 2-3x throughput
     const router = this;
+    const isWindows = os.platform() === 'win32';
     this.server = Bun.listen({
       hostname: this.host,
       port: this.port,
-      reusePort: true,  // Enable SO_REUSEPORT for multi-worker port sharing (Linux)
+      reusePort: !isWindows,  // SO_REUSEPORT for multi-worker port sharing (Linux/macOS only)
       socket: {
         data(socket, data) {
           router.handleSocketData(socket, data);
@@ -94,6 +95,11 @@ class ClusterRouter extends EventEmitter {
         }
       }
     });
+
+    // Verify port actually bound (detect silent failures on Windows)
+    if (!this.server || !this.server.port) {
+      throw new Error(`Failed to bind to port ${this.port} - reusePort may not be supported on this platform`);
+    }
 
     this.emit('listening');
   }

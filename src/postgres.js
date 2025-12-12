@@ -595,8 +595,8 @@ export class PostgresManager {
     // TCP port being open doesn't mean PostgreSQL protocol is ready
     // This handles the race condition on Windows where the port binds
     // before the server is fully ready to accept protocol handshakes
-    const maxRetries = 5;
-    const baseDelay = 1000; // 1 second
+    const maxRetries = isWindows ? 10 : 5;  // More retries on Windows
+    const baseDelay = isWindows ? 2000 : 1000; // Longer delay on Windows
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -803,12 +803,18 @@ export class PostgresManager {
       const pollConnection = async () => {
         const startTime = Date.now();
         const timeoutMs = 30000;
+        const isWindows = process.platform === 'win32';
 
         while (Date.now() - startTime < timeoutMs && !started) {
           if (processExited) return;
 
           try {
             await tryConnect();
+            // On Windows, TCP port opens before PostgreSQL is fully ready for protocol handshakes
+            // Add delay to let PostgreSQL complete its startup sequence
+            if (isWindows) {
+              await Bun.sleep(2000); // 2 second delay for Windows
+            }
             markReady('tcp');
             return;
           } catch {
