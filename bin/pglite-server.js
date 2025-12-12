@@ -94,7 +94,9 @@ FEATURES:
  */
 function parseArgs() {
   // Auto-enable cluster mode on multi-core systems for best performance
+  // Note: Cluster mode uses SO_REUSEPORT which is not supported on Windows
   const cpuCount = os.cpus().length;
+  const isWindows = os.platform() === 'win32';
 
   const options = {
     port: 8432,
@@ -103,7 +105,7 @@ function parseArgs() {
     useRam: false, // Use /dev/shm for true RAM storage (Linux only)
     logLevel: 'info',
     autoProvision: true,
-    cluster: cpuCount > 1,  // Auto-enable on multi-core (use --no-cluster to disable)
+    cluster: cpuCount > 1 && !isWindows,  // Auto-enable on multi-core (disabled on Windows - no SO_REUSEPORT)
     workers: null, // null = use CPU count
     syncTo: null,  // Sync target PostgreSQL URL
     syncDatabases: null // Database patterns to sync (comma-separated)

@@ -575,9 +575,11 @@ export class PostgresManager {
    */
   async _initAdminPool() {
     const { SQL } = await import('bun');
+    const isWindows = process.platform === 'win32';
 
     // Bun.sql config - uses TCP connections (Unix sockets not directly supported)
     // This is fine for admin queries (low volume, local connection)
+    // Windows needs longer timeout due to higher network stack latency
     this.adminPool = new SQL({
       hostname: '127.0.0.1',
       port: this.port,
@@ -586,16 +588,38 @@ export class PostgresManager {
       password: this.password,
       max: 5, // Small pool - only for CREATE DATABASE operations
       idleTimeout: 30,
-      connectionTimeout: 5,
+      connectionTimeout: isWindows ? 15 : 5,
     });
 
-    // Verify connection is working with a simple query
-    await this.adminPool`SELECT 1`;
+    // Verify connection with retry logic
+    // TCP port being open doesn't mean PostgreSQL protocol is ready
+    // This handles the race condition on Windows where the port binds
+    // before the server is fully ready to accept protocol handshakes
+    const maxRetries = isWindows ? 10 : 5;  // More retries on Windows
+    const baseDelay = isWindows ? 2000 : 1000; // Longer delay on Windows
 
-    this.logger.debug({
-      host: '127.0.0.1',
-      maxConnections: 5
-    }, 'Admin connection pool initialized (Bun.sql)');
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.adminPool`SELECT 1`;
+        this.logger.debug({
+          host: '127.0.0.1',
+          maxConnections: 5,
+          attempt
+        }, 'Admin connection pool initialized (Bun.sql)');
+        return; // Success
+      } catch (err) {
+        if (attempt === maxRetries) {
+          throw new Error(`Failed to initialize admin pool after ${maxRetries} attempts: ${err.message}`);
+        }
+        this.logger.debug({
+          attempt,
+          maxRetries,
+          error: err.message
+        }, 'Admin pool connection failed, retrying...');
+        // Exponential backoff: 1s, 2s, 3s, 4s
+        await new Promise(resolve => setTimeout(resolve, baseDelay * attempt));
+      }
+    }
   }
 
   /**
@@ -672,12 +696,9 @@ export class PostgresManager {
       const portStr = this.port.toString();
 
       // Hybrid startup detection:
-      // 1. Log-based: "ready to accept connections" (most reliable - PostgreSQL says it's ready)
-      // 2. Fallback: port number in logs + 1s delay (locale-independent)
-      // 3. TCP polling: only as last resort with 2s delay after port is listening
-      //
-      // The key insight: TCP port being open does NOT mean PostgreSQL protocol is ready.
-      // We must wait for PostgreSQL to finish initializing before attempting connections.
+      // 1. TCP connection polling (works on Linux/macOS)
+      // 2. Log-based detection (fallback for Windows where Bun.connect may fail)
+      // Whichever succeeds first wins
 
       const markReady = (method) => {
         if (!started) {
@@ -687,9 +708,7 @@ export class PostgresManager {
         }
       };
 
-      let tcpReady = false; // TCP port is listening (but protocol may not be ready)
-
-      // Read stderr - detect startup messages in logs
+      // Read stderr - detect port binding in logs (locale-independent: just look for port number)
       const readStream = async (stream) => {
         const reader = stream.getReader();
         const decoder = new TextDecoder();
@@ -701,24 +720,16 @@ export class PostgresManager {
             startupOutput += message;
             this.logger.debug({ pgOutput: message.trim() }, 'PostgreSQL output');
 
-            // Method 1 (BEST): PostgreSQL says it's ready to accept connections
-            // This works on English systems and is the most reliable indicator
-            if (!started && (message.includes('database system is ready to accept connections') ||
-                message.includes('ready to accept connections'))) {
-              markReady('log-ready-message');
-              continue;
-            }
-
-            // Method 2 (FALLBACK): Detect port binding - look for our port number in log output
+            // Detect port binding - look for our port number in log output
             // This is locale-independent (numbers are universal)
-            // Wait longer (1s) since we're not 100% sure it's ready
             if (!portBindingSeen && message.includes(portStr)) {
               portBindingSeen = true;
+              // Give PostgreSQL 500ms after port binding to finish startup
               setTimeout(() => {
                 if (!started && !processExited) {
                   markReady('log-port-binding');
                 }
-              }, 1000); // 1s delay for safety
+              }, 500);
             }
           }
         } catch {
@@ -792,23 +803,19 @@ export class PostgresManager {
       const pollConnection = async () => {
         const startTime = Date.now();
         const timeoutMs = 30000;
+        const isWindows = process.platform === 'win32';
 
         while (Date.now() - startTime < timeoutMs && !started) {
           if (processExited) return;
 
           try {
             await tryConnect();
-            // TCP port is listening, but DON'T mark ready immediately!
-            // PostgreSQL protocol layer may not be ready yet.
-            // Wait 2s after TCP is up as a last resort fallback.
-            if (!tcpReady) {
-              tcpReady = true;
-              setTimeout(() => {
-                if (!started && !processExited) {
-                  markReady('tcp-delayed');
-                }
-              }, 2000); // 2s delay - only if log detection fails
+            // On Windows, TCP port opens before PostgreSQL is fully ready for protocol handshakes
+            // Add delay to let PostgreSQL complete its startup sequence
+            if (isWindows) {
+              await Bun.sleep(2000); // 2 second delay for Windows
             }
+            markReady('tcp');
             return;
           } catch {
             await Bun.sleep(200);
