@@ -672,9 +672,12 @@ export class PostgresManager {
       const portStr = this.port.toString();
 
       // Hybrid startup detection:
-      // 1. TCP connection polling (works on Linux/macOS)
-      // 2. Log-based detection (fallback for Windows where Bun.connect may fail)
-      // Whichever succeeds first wins
+      // 1. Log-based: "ready to accept connections" (most reliable - PostgreSQL says it's ready)
+      // 2. Fallback: port number in logs + 1s delay (locale-independent)
+      // 3. TCP polling: only as last resort with 2s delay after port is listening
+      //
+      // The key insight: TCP port being open does NOT mean PostgreSQL protocol is ready.
+      // We must wait for PostgreSQL to finish initializing before attempting connections.
 
       const markReady = (method) => {
         if (!started) {
@@ -684,7 +687,9 @@ export class PostgresManager {
         }
       };
 
-      // Read stderr - detect port binding in logs (locale-independent: just look for port number)
+      let tcpReady = false; // TCP port is listening (but protocol may not be ready)
+
+      // Read stderr - detect startup messages in logs
       const readStream = async (stream) => {
         const reader = stream.getReader();
         const decoder = new TextDecoder();
@@ -696,16 +701,24 @@ export class PostgresManager {
             startupOutput += message;
             this.logger.debug({ pgOutput: message.trim() }, 'PostgreSQL output');
 
-            // Detect port binding - look for our port number in log output
+            // Method 1 (BEST): PostgreSQL says it's ready to accept connections
+            // This works on English systems and is the most reliable indicator
+            if (!started && (message.includes('database system is ready to accept connections') ||
+                message.includes('ready to accept connections'))) {
+              markReady('log-ready-message');
+              continue;
+            }
+
+            // Method 2 (FALLBACK): Detect port binding - look for our port number in log output
             // This is locale-independent (numbers are universal)
+            // Wait longer (1s) since we're not 100% sure it's ready
             if (!portBindingSeen && message.includes(portStr)) {
               portBindingSeen = true;
-              // Give PostgreSQL 500ms after port binding to finish startup
               setTimeout(() => {
                 if (!started && !processExited) {
                   markReady('log-port-binding');
                 }
-              }, 500);
+              }, 1000); // 1s delay for safety
             }
           }
         } catch {
@@ -785,7 +798,17 @@ export class PostgresManager {
 
           try {
             await tryConnect();
-            markReady('tcp');
+            // TCP port is listening, but DON'T mark ready immediately!
+            // PostgreSQL protocol layer may not be ready yet.
+            // Wait 2s after TCP is up as a last resort fallback.
+            if (!tcpReady) {
+              tcpReady = true;
+              setTimeout(() => {
+                if (!started && !processExited) {
+                  markReady('tcp-delayed');
+                }
+              }, 2000); // 2s delay - only if log detection fails
+            }
             return;
           } catch {
             await Bun.sleep(200);
