@@ -5,9 +5,12 @@
  * This wrapper enables `npx pgserve` to work without requiring
  * users to install bun globally. The bun runtime is bundled as
  * an npm dependency and this wrapper finds and invokes it.
+ *
+ * Windows EBUSY fix: Uses synchronous waiting and taskkill for
+ * reliable process termination and file handle cleanup.
  */
 
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -53,42 +56,97 @@ if (!bunPath) {
 const scriptPath = path.join(__dirname, 'pglite-server.js');
 
 // Spawn bun with the actual script, inherit all stdio
+// IMPORTANT: Do NOT use detached mode - wrapper must wait for child to fully terminate
+// Using detached with stdio:'inherit' causes file handle inheritance issues on Windows
 const child = spawn(bunPath, [scriptPath, ...process.argv.slice(2)], {
   stdio: 'inherit',
-  windowsHide: true,
-  // Detach on Windows to prevent handle inheritance and EBUSY errors during npx cleanup
-  detached: isWindows
+  windowsHide: true
 });
-
-// On Windows, unreference the child to allow wrapper to exit independently
-if (isWindows) {
-  child.unref();
-}
 
 child.on('error', (err) => {
   console.error('Failed to start pgserve:', err.message);
   process.exit(1);
 });
 
-child.on('exit', async (code, signal) => {
-  // On Windows, wait briefly for all file handles to be released
+// Safety timeout: force exit if 'close' event never fires after 'exit'
+let forceExitTimeout = null;
+
+child.on('exit', () => {
+  // Give 5 seconds for 'close' event after 'exit'
+  forceExitTimeout = setTimeout(() => {
+    console.error('Warning: Child process did not close cleanly, forcing exit');
+    process.exit(1);
+  }, 5000);
+});
+
+// Use 'close' event instead of 'exit' - fires AFTER all stdio streams are closed
+// This is critical for Windows where file handles may remain locked after 'exit' fires
+child.on('close', (code, signal) => {
+  // Clear the safety timeout
+  if (forceExitTimeout) {
+    clearTimeout(forceExitTimeout);
+  }
+
+  // On Windows, use SYNCHRONOUS delay to ensure all file handles are released
   // This prevents EBUSY errors when npx tries to clean up the cache
+  // NOTE: async/await does NOT work in EventEmitter callbacks - Node ignores the Promise
   if (isWindows) {
-    await new Promise(resolve => setTimeout(resolve, 100));
+    const delay = 200; // ms - enough for Windows kernel to release handles
+    const start = Date.now();
+    while (Date.now() - start < delay) {
+      // Synchronous busy-wait - actually blocks unlike async setTimeout
+    }
   }
 
   if (signal) {
-    process.kill(process.pid, signal);
+    // On Windows, can't reliably re-raise Unix signals
+    if (isWindows) {
+      process.exit(1);
+    } else {
+      process.kill(process.pid, signal);
+    }
   } else {
     process.exit(code ?? 0);
   }
 });
 
-// Forward signals to child process
-['SIGINT', 'SIGTERM', 'SIGHUP'].forEach(signal => {
-  process.on(signal, () => {
+// Platform-specific signal handling
+if (isWindows) {
+  // Windows: use taskkill for reliable process termination
+  // process.kill(pid, 'SIGINT') does NOT work properly on Windows
+  process.on('SIGINT', () => {
     if (child.pid) {
-      process.kill(child.pid, signal);
+      try {
+        // /T = terminate child processes (tree), /F = force
+        execSync(`taskkill /PID ${child.pid} /T /F`, {
+          stdio: 'ignore',
+          windowsHide: true
+        });
+      } catch {
+        // Process may have already exited, ignore errors
+      }
     }
   });
-});
+
+  // Handle Ctrl+C via readline for Windows terminal compatibility
+  // Some Windows terminals don't emit SIGINT properly
+  const readline = require('readline');
+  if (process.stdin.isTTY) {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+    rl.on('SIGINT', () => {
+      process.emit('SIGINT');
+    });
+  }
+} else {
+  // Unix: forward signals to child process normally
+  ['SIGINT', 'SIGTERM', 'SIGHUP'].forEach(signal => {
+    process.on(signal, () => {
+      if (child.pid) {
+        process.kill(child.pid, signal);
+      }
+    });
+  });
+}
