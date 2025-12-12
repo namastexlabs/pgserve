@@ -74,8 +74,8 @@ jobs:
       - name: Build for Windows (with branding)
         if: matrix.platform == 'windows-x64'
         run: |
-          mkdir -p dist
-          VERSION=$(node -p "require('./package.json').version")
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $VERSION = node -p "require('./package.json').version"
           bun build --compile `
             --windows-icon=assets/icon.ico `
             --windows-title="pgserve" `
@@ -84,7 +84,7 @@ jobs:
             --windows-version="$VERSION" `
             --windows-copyright="Copyright (c) 2025 Namastex Labs" `
             bin/pglite-server.js --outfile dist/${{ matrix.output }}
-          ls -lh dist/
+          Get-ChildItem dist/
         shell: pwsh
 
       # Linux/macOS: native build
