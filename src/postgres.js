@@ -701,10 +701,59 @@ export class PostgresManager {
 
       // Language-agnostic startup detection: poll TCP connection
       // This works regardless of system locale (fixes Portuguese, Chinese, etc.)
+      const tryConnect = () => {
+        return new Promise((resolveConn, rejectConn) => {
+          let resolved = false;
+          const timeout = setTimeout(() => {
+            if (!resolved) {
+              resolved = true;
+              rejectConn(new Error('Connection timeout'));
+            }
+          }, 1000); // 1s per-attempt timeout
+
+          Bun.connect({
+            hostname: '127.0.0.1',
+            port: this.port,
+            socket: {
+              open(socket) {
+                if (!resolved) {
+                  resolved = true;
+                  clearTimeout(timeout);
+                  socket.end();
+                  resolveConn(true);
+                }
+              },
+              connectError(_socket, error) {
+                if (!resolved) {
+                  resolved = true;
+                  clearTimeout(timeout);
+                  rejectConn(error);
+                }
+              },
+              error(_socket, error) {
+                if (!resolved) {
+                  resolved = true;
+                  clearTimeout(timeout);
+                  rejectConn(error);
+                }
+              },
+              data() {},
+              close() {},
+            },
+          }).catch((err) => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              rejectConn(err);
+            }
+          });
+        });
+      };
+
       const pollConnection = async () => {
         const startTime = Date.now();
         const timeoutMs = 30000;
-        const pollIntervalMs = 100;
+        const pollIntervalMs = 200;
 
         while (Date.now() - startTime < timeoutMs) {
           // Check if process died
@@ -713,13 +762,7 @@ export class PostgresManager {
           }
 
           try {
-            // Try to connect to PostgreSQL port
-            const conn = await Bun.connect({
-              hostname: '127.0.0.1',
-              port: this.port,
-            });
-            conn.end();
-
+            await tryConnect();
             // Connection successful - PostgreSQL is ready!
             started = true;
             this.logger.info({ port: this.port }, 'PostgreSQL ready (connection test passed)');
