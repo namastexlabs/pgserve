@@ -70,14 +70,22 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      # Windows: native build with custom icon
-      - name: Build for Windows (with icon)
+      # Windows: native build with icon and proper metadata
+      - name: Build for Windows (with branding)
         if: matrix.platform == 'windows-x64'
         run: |
           mkdir -p dist
-          bun build --compile --windows-icon=assets/icon.ico bin/pglite-server.js --outfile dist/${{ matrix.output }}
+          VERSION=$(node -p "require('./package.json').version")
+          bun build --compile `
+            --windows-icon=assets/icon.ico `
+            --windows-title="pgserve" `
+            --windows-publisher="Namastex Labs" `
+            --windows-description="Embedded PostgreSQL Server - Zero config, auto-provision, unlimited connections" `
+            --windows-version="$VERSION" `
+            --windows-copyright="Copyright (c) 2025 Namastex Labs" `
+            bin/pglite-server.js --outfile dist/${{ matrix.output }}
           ls -lh dist/
-        shell: bash
+        shell: pwsh
 
       # Linux/macOS: native build
       - name: Build for ${{ matrix.platform }}

@@ -668,8 +668,23 @@ export class PostgresManager {
       let started = false;
       let startupOutput = '';
       let processExited = false;
+      let portBindingSeen = false;
+      const portStr = this.port.toString();
 
-      // Read stderr in streaming fashion for debugging (NOT for startup detection)
+      // Hybrid startup detection:
+      // 1. TCP connection polling (works on Linux/macOS)
+      // 2. Log-based detection (fallback for Windows where Bun.connect may fail)
+      // Whichever succeeds first wins
+
+      const markReady = (method) => {
+        if (!started) {
+          started = true;
+          this.logger.info({ port: this.port, method }, 'PostgreSQL ready');
+          resolve();
+        }
+      };
+
+      // Read stderr - detect port binding in logs (locale-independent: just look for port number)
       const readStream = async (stream) => {
         const reader = stream.getReader();
         const decoder = new TextDecoder();
@@ -680,13 +695,25 @@ export class PostgresManager {
             const message = decoder.decode(value);
             startupOutput += message;
             this.logger.debug({ pgOutput: message.trim() }, 'PostgreSQL output');
+
+            // Detect port binding - look for our port number in log output
+            // This is locale-independent (numbers are universal)
+            if (!portBindingSeen && message.includes(portStr)) {
+              portBindingSeen = true;
+              // Give PostgreSQL 500ms after port binding to finish startup
+              setTimeout(() => {
+                if (!started && !processExited) {
+                  markReady('log-port-binding');
+                }
+              }, 500);
+            }
           }
         } catch {
           // Stream closed
         }
       };
 
-      // Start reading both streams for logging
+      // Start reading both streams
       readStream(this.process.stderr);
       readStream(this.process.stdout);
 
@@ -699,8 +726,7 @@ export class PostgresManager {
         this.process = null;
       });
 
-      // Language-agnostic startup detection: poll TCP connection
-      // This works regardless of system locale (fixes Portuguese, Chinese, etc.)
+      // Method 1: TCP connection polling (preferred, works on Linux/macOS)
       const tryConnect = () => {
         return new Promise((resolveConn, rejectConn) => {
           let resolved = false;
@@ -709,7 +735,7 @@ export class PostgresManager {
               resolved = true;
               rejectConn(new Error('Connection timeout'));
             }
-          }, 1000); // 1s per-attempt timeout
+          }, 500);
 
           Bun.connect({
             hostname: '127.0.0.1',
@@ -753,35 +779,33 @@ export class PostgresManager {
       const pollConnection = async () => {
         const startTime = Date.now();
         const timeoutMs = 30000;
-        const pollIntervalMs = 200;
 
-        while (Date.now() - startTime < timeoutMs) {
-          // Check if process died
-          if (processExited) {
-            return; // Exit handled by exited.then() above
-          }
+        while (Date.now() - startTime < timeoutMs && !started) {
+          if (processExited) return;
 
           try {
             await tryConnect();
-            // Connection successful - PostgreSQL is ready!
-            started = true;
-            this.logger.info({ port: this.port }, 'PostgreSQL ready (connection test passed)');
-            resolve();
+            markReady('tcp');
             return;
           } catch {
-            // Not ready yet, wait and retry
-            await Bun.sleep(pollIntervalMs);
+            await Bun.sleep(200);
           }
-        }
-
-        // Timeout reached
-        if (!started && !processExited) {
-          reject(new Error(`PostgreSQL startup timed out after 30s. Output: ${startupOutput}`));
         }
       };
 
-      // Start connection polling
+      // Start TCP polling (log detection is handled inline above via setTimeout)
       pollConnection();
+
+      // Overall timeout with helpful error for Windows firewall
+      setTimeout(() => {
+        if (!started && !processExited) {
+          const isWindows = process.platform === 'win32';
+          const hint = isWindows
+            ? '\n\nOn Windows, this may be caused by Windows Firewall blocking localhost connections.\nTry: netsh advfirewall firewall add rule name="pgserve" dir=in action=allow protocol=TCP localport=' + this.port
+            : '';
+          reject(new Error(`PostgreSQL startup timed out after 30s.${hint}\n\nOutput: ${startupOutput}`));
+        }
+      }, 30000);
     });
   }
 
