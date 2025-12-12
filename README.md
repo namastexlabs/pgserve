@@ -99,6 +99,17 @@ npm install pgserve
 
 > PostgreSQL binaries are automatically downloaded on first run (~100MB).
 
+### Windows
+
+Download `pgserve-windows-x64.exe` from [GitHub Releases](https://github.com/namastexlabs/pgserve/releases).
+
+Double-click to run, or use CLI:
+
+```cmd
+pgserve-windows-x64.exe --port 5432
+pgserve-windows-x64.exe --data C:\pgserve-data
+```
+
 <br>
 
 ## CLI Reference

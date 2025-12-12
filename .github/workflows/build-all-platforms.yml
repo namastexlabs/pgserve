@@ -38,26 +38,33 @@ concurrency:
 jobs:
   build:
     name: Build ${{ matrix.platform }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Linux/macOS: cross-compile on ubuntu (faster)
           - target: bun-linux-x64
             platform: linux-x64
             output: pgserve-linux-x64
+            os: ubuntu-latest
           - target: bun-linux-arm64
             platform: linux-arm64
             output: pgserve-linux-arm64
+            os: ubuntu-latest
           - target: bun-darwin-x64
             platform: darwin-x64
             output: pgserve-darwin-x64
+            os: ubuntu-latest
           - target: bun-darwin-arm64
             platform: darwin-arm64
             output: pgserve-darwin-arm64
+            os: ubuntu-latest
+          # Windows: native build required for --windows-icon
           - target: bun-windows-x64
             platform: windows-x64
             output: pgserve-windows-x64.exe
+            os: windows-latest
 
     steps:
       - name: Checkout
@@ -73,7 +80,18 @@ jobs:
       - name: Install dependencies
         run: bun install
 
+      # Windows: native build with custom icon
+      - name: Build for Windows (with icon)
+        if: matrix.platform == 'windows-x64'
+        run: |
+          mkdir -p dist
+          bun build --compile --windows-icon=assets/icon.ico bin/pglite-server.js --outfile dist/${{ matrix.output }}
+          ls -lh dist/
+        shell: bash
+
+      # Linux/macOS: cross-compile
       - name: Build for ${{ matrix.platform }}
+        if: matrix.platform != 'windows-x64'
         run: |
           mkdir -p dist
           bun build --compile --target=${{ matrix.target }} bin/pglite-server.js --outfile dist/${{ matrix.output }}
