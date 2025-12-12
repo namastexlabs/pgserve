@@ -308,6 +308,12 @@ export class PostgresManager {
     // Initialize admin connection pool (for database creation operations)
     await this._initAdminPool();
 
+    // For persistent mode, load existing databases into createdDatabases
+    // This prevents "database already exists" errors when reusing data directories
+    if (this.persistent) {
+      await this._loadExistingDatabases();
+    }
+
     this.logger.info({
       databaseDir: this.databaseDir,
       port: this.port,
@@ -405,6 +411,33 @@ export class PostgresManager {
       host: '127.0.0.1',
       maxConnections: 5
     }, 'Admin connection pool initialized (Bun.sql)');
+  }
+
+  /**
+   * Load existing databases into createdDatabases Set (for persistent mode)
+   * This allows pgserve to reuse existing data directories without
+   * attempting to CREATE DATABASE for databases that already exist.
+   */
+  async _loadExistingDatabases() {
+    try {
+      const result = await this.adminPool`
+        SELECT datname FROM pg_database
+        WHERE datistemplate = false
+        AND datname NOT IN ('postgres', 'template0', 'template1')
+      `;
+
+      for (const row of result) {
+        this.createdDatabases.add(row.datname);
+      }
+
+      this.logger.info({
+        databases: Array.from(this.createdDatabases),
+        count: this.createdDatabases.size
+      }, 'Loaded existing databases from persistent storage');
+    } catch (error) {
+      // Non-fatal - if we can't load existing DBs, createDatabase will handle it
+      this.logger.warn({ error: error.message }, 'Failed to load existing databases');
+    }
   }
 
   /**
@@ -543,7 +576,11 @@ export class PostgresManager {
     } catch (error) {
       // Database might already exist (from previous persistent session or race condition)
       // 42P04 = duplicate_database, 23505 = unique_violation
-      if (error.code === '42P04' || error.code === '23505') {
+      // Also check error.message for Bun.sql compatibility (may not expose SQLSTATE codes)
+      const isAlreadyExists = error.code === '42P04' ||
+                              error.code === '23505' ||
+                              error.message?.includes('already exists');
+      if (isAlreadyExists) {
         this.createdDatabases.add(dbName);
         this.logger.debug({ dbName }, 'Database already exists');
       } else {
