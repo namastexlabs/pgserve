@@ -19,6 +19,124 @@ import fs from 'fs';
 import crypto from 'crypto';
 
 /**
+ * Get platform key for binary lookup (e.g., 'windows-x64', 'linux-x64', 'darwin-arm64')
+ * @returns {string} Platform key
+ */
+function getPlatformKey() {
+  const platform = os.platform();
+  const arch = os.arch();
+
+  if (platform === 'win32') return 'windows-x64';
+  if (platform === 'linux' && arch === 'x64') return 'linux-x64';
+  if (platform === 'darwin' && arch === 'arm64') return 'darwin-arm64';
+  if (platform === 'darwin' && arch === 'x64') return 'darwin-x64';
+  if (platform === 'linux' && arch === 'arm64') return 'linux-arm64';
+
+  throw new Error(`Unsupported platform: ${platform}-${arch}`);
+}
+
+/**
+ * Get the directory where extracted binaries are cached
+ * @returns {string} Cache directory path
+ */
+function getBinaryCacheDir() {
+  const platformKey = getPlatformKey();
+  return path.join(os.homedir(), '.pgserve', 'bin', platformKey);
+}
+
+/**
+ * Check if bundled PostgreSQL binaries exist (standalone exe mode)
+ * When compiled with `bun build --compile`, the embedded-postgres folder
+ * should be bundled alongside the executable.
+ * @returns {string|null} Path to bundled binaries or null if not found
+ */
+function getBundledBinaryDir() {
+  // Check for embedded-postgres folder relative to the module
+  // This works when binaries are bundled during build
+  const bundledDir = path.join(import.meta.dirname, '..', 'embedded-postgres');
+  if (fs.existsSync(path.join(bundledDir, 'bin'))) {
+    return bundledDir;
+  }
+  return null;
+}
+
+/**
+ * Extract bundled PostgreSQL binaries to cache directory.
+ * Bun-compiled binaries can read embedded files but cannot execute them directly.
+ * We extract to ~/.pgserve/bin/{platform}/ for execution.
+ *
+ * @returns {Promise<string>} Path to extracted bin directory
+ */
+async function extractBundledBinaries() {
+  const platform = os.platform();
+  const cacheDir = getBinaryCacheDir();
+  const cacheBinDir = path.join(cacheDir, 'bin');
+  const initdbName = platform === 'win32' ? 'initdb.exe' : 'initdb';
+  const postgresName = platform === 'win32' ? 'postgres.exe' : 'postgres';
+
+  // Check if already extracted
+  if (fs.existsSync(path.join(cacheBinDir, initdbName)) &&
+      fs.existsSync(path.join(cacheBinDir, postgresName))) {
+    return cacheDir;
+  }
+
+  // Get bundled directory
+  const bundledDir = getBundledBinaryDir();
+  if (!bundledDir) {
+    return null;
+  }
+
+  console.log('[pgserve] Extracting PostgreSQL binaries...');
+
+  // Create cache directory
+  fs.mkdirSync(cacheDir, { recursive: true });
+
+  // Copy bundled binaries to cache
+  // Use recursive copy to get bin/, lib/, share/ directories
+  await copyRecursive(bundledDir, cacheDir);
+
+  // Make executables executable (Unix only)
+  if (platform !== 'win32') {
+    const binDir = path.join(cacheDir, 'bin');
+    const files = fs.readdirSync(binDir);
+    for (const file of files) {
+      const filePath = path.join(binDir, file);
+      try {
+        fs.chmodSync(filePath, 0o755);
+      } catch {
+        // Ignore permission errors for non-executables
+      }
+    }
+  }
+
+  console.log(`[pgserve] Binaries extracted to ${cacheDir}`);
+  return cacheDir;
+}
+
+/**
+ * Recursively copy a directory
+ * @param {string} src - Source directory
+ * @param {string} dest - Destination directory
+ */
+async function copyRecursive(src, dest) {
+  const entries = fs.readdirSync(src, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+
+    if (entry.isDirectory()) {
+      fs.mkdirSync(destPath, { recursive: true });
+      await copyRecursive(srcPath, destPath);
+    } else {
+      // Read and write file (works with Bun's virtual filesystem)
+      const content = fs.readFileSync(srcPath);
+      fs.writeFileSync(destPath, content);
+    }
+  }
+}
+
+/**
  * Ensure library symlinks exist in the lib directory.
  * The @embedded-postgres package ships versioned libraries but binaries look for soname versions.
  * This function scans for versioned libs and creates missing soname symlinks.
@@ -94,10 +212,47 @@ function ensureLibrarySymlinks(libDir, platform) {
 }
 
 // Resolve binary paths from embedded-postgres platform packages
-function getBinaryPaths() {
+// Now async to support bundled binary extraction
+async function getBinaryPaths() {
   const platform = os.platform();
   const arch = os.arch();
+  const exeSuffix = platform === 'win32' ? '.exe' : '';
 
+  // Priority 1: Check extracted cache directory (standalone exe mode)
+  // This is where bundled binaries are extracted on first run
+  const cacheDir = getBinaryCacheDir();
+  const cacheBinDir = path.join(cacheDir, 'bin');
+  const cachedInitdb = path.join(cacheBinDir, 'initdb' + exeSuffix);
+  const cachedPostgres = path.join(cacheBinDir, 'postgres' + exeSuffix);
+
+  if (fs.existsSync(cachedInitdb) && fs.existsSync(cachedPostgres)) {
+    const libDir = path.join(cacheDir, 'lib');
+    if ((platform === 'linux' || platform === 'darwin') && fs.existsSync(libDir)) {
+      ensureLibrarySymlinks(libDir, platform);
+    }
+    return { initdb: cachedInitdb, postgres: cachedPostgres, binDir: cacheBinDir, libDir };
+  }
+
+  // Priority 2: Check for bundled binaries and extract if found (standalone exe mode)
+  const bundledDir = getBundledBinaryDir();
+  if (bundledDir) {
+    const extractedDir = await extractBundledBinaries();
+    if (extractedDir) {
+      const extractedBinDir = path.join(extractedDir, 'bin');
+      const extractedInitdb = path.join(extractedBinDir, 'initdb' + exeSuffix);
+      const extractedPostgres = path.join(extractedBinDir, 'postgres' + exeSuffix);
+
+      if (fs.existsSync(extractedInitdb) && fs.existsSync(extractedPostgres)) {
+        const libDir = path.join(extractedDir, 'lib');
+        if ((platform === 'linux' || platform === 'darwin') && fs.existsSync(libDir)) {
+          ensureLibrarySymlinks(libDir, platform);
+        }
+        return { initdb: extractedInitdb, postgres: extractedPostgres, binDir: extractedBinDir, libDir };
+      }
+    }
+  }
+
+  // Priority 3: Find the package in node_modules (npm install case)
   let pkgName;
   if (platform === 'linux' && arch === 'x64') {
     pkgName = '@embedded-postgres/linux-x64';
@@ -111,7 +266,6 @@ function getBinaryPaths() {
     throw new Error(`Unsupported platform: ${platform}-${arch}`);
   }
 
-  // Find the package in node_modules (check multiple locations for npx/pnpm/npm compatibility)
   const possiblePaths = [
     path.join(process.cwd(), 'node_modules', pkgName, 'native', 'bin'),
     path.join(import.meta.dirname, '..', 'node_modules', pkgName, 'native', 'bin'),
@@ -120,8 +274,8 @@ function getBinaryPaths() {
   ];
 
   for (const binDir of possiblePaths) {
-    const initdb = path.join(binDir, platform === 'win32' ? 'initdb.exe' : 'initdb');
-    const postgres = path.join(binDir, platform === 'win32' ? 'postgres.exe' : 'postgres');
+    const initdb = path.join(binDir, 'initdb' + exeSuffix);
+    const postgres = path.join(binDir, 'postgres' + exeSuffix);
     if (fs.existsSync(initdb) && fs.existsSync(postgres)) {
       // Resolve the actual binary paths (handles symlinks from package managers)
       const realInitdb = fs.realpathSync(initdb);
@@ -237,8 +391,8 @@ export class PostgresManager {
    * Start the embedded PostgreSQL instance
    */
   async start() {
-    // Get binary paths
-    this.binaries = getBinaryPaths();
+    // Get binary paths (may extract bundled binaries on first run)
+    this.binaries = await getBinaryPaths();
 
     // Make binaries executable
     await fs.promises.chmod(this.binaries.initdb, '755');
