@@ -45,17 +45,14 @@ jobs:
         include:
           # Linux x64
           - platform: linux-x64
-            pg_pkg: linux-x64
             output: pgserve-linux-x64
             os: ubuntu-latest
-          # macOS ARM64 (Apple Silicon) - must build on macOS for native binaries
+          # macOS ARM64 (Apple Silicon)
           - platform: darwin-arm64
-            pg_pkg: darwin-arm64
             output: pgserve-darwin-arm64
             os: macos-latest
           # Windows x64 - must build on Windows for --windows-icon
           - platform: windows-x64
-            pg_pkg: windows-x64
             output: pgserve-windows-x64.exe
             os: windows-latest
 
@@ -72,18 +69,6 @@ jobs:
 
       - name: Install dependencies
         run: bun install
-
-      # Bundle PostgreSQL binaries for standalone exe
-      - name: Bundle PostgreSQL binaries
-        run: |
-          echo "Installing @embedded-postgres/${{ matrix.pg_pkg }}..."
-          npm install @embedded-postgres/${{ matrix.pg_pkg }}
-          mkdir -p embedded-postgres
-          cp -r node_modules/@embedded-postgres/${{ matrix.pg_pkg }}/native/* embedded-postgres/
-          echo "Bundled PostgreSQL binaries:"
-          ls -la embedded-postgres/
-          ls -la embedded-postgres/bin/ || true
-        shell: bash
 
       # Windows: native build with custom icon
       - name: Build for Windows (with icon)
