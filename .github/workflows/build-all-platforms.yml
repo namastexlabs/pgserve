@@ -43,27 +43,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux/macOS: cross-compile on ubuntu (faster)
-          - target: bun-linux-x64
-            platform: linux-x64
+          # Linux x64
+          - platform: linux-x64
             pg_pkg: linux-x64
             output: pgserve-linux-x64
             os: ubuntu-latest
-          # Note: linux-arm64 skipped - no @embedded-postgres/linux-arm64 package available
-          # Users on Linux ARM64 should use: npx pgserve (npm will install correct binaries)
-          - target: bun-darwin-x64
-            platform: darwin-x64
-            pg_pkg: darwin-x64
-            output: pgserve-darwin-x64
-            os: ubuntu-latest
-          - target: bun-darwin-arm64
-            platform: darwin-arm64
+          # macOS ARM64 (Apple Silicon) - must build on macOS for native binaries
+          - platform: darwin-arm64
             pg_pkg: darwin-arm64
             output: pgserve-darwin-arm64
-            os: ubuntu-latest
-          # Windows: native build required for --windows-icon
-          - target: bun-windows-x64
-            platform: windows-x64
+            os: macos-latest
+          # Windows x64 - must build on Windows for --windows-icon
+          - platform: windows-x64
             pg_pkg: windows-x64
             output: pgserve-windows-x64.exe
             os: windows-latest
@@ -103,12 +94,12 @@ jobs:
           ls -lh dist/
         shell: bash
 
-      # Linux/macOS: cross-compile
+      # Linux/macOS: native build
       - name: Build for ${{ matrix.platform }}
         if: matrix.platform != 'windows-x64'
         run: |
           mkdir -p dist
-          bun build --compile --target=${{ matrix.target }} bin/pglite-server.js --outfile dist/${{ matrix.output }}
+          bun build --compile bin/pglite-server.js --outfile dist/${{ matrix.output }}
           ls -lh dist/
 
       - name: Upload artifact
@@ -161,8 +152,8 @@ jobs:
           ls -la dist/
 
           MISSING=""
-          # Note: linux-arm64 not included - no @embedded-postgres/linux-arm64 package
-          for platform in linux-x64 darwin-x64 darwin-arm64; do
+          # Supported platforms: linux-x64, darwin-arm64, windows-x64
+          for platform in linux-x64 darwin-arm64; do
             if [ ! -f "dist/pgserve-$platform" ]; then
               MISSING="$MISSING pgserve-$platform"
             fi
