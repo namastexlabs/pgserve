@@ -41,11 +41,6 @@
   },
   "homepage": "https://github.com/namastexlabs/pgserve#readme",
   "optionalDependencies": {
-    "@pgserve/darwin-arm64": "1.1.3-rc.2",
-    "@pgserve/darwin-x64": "1.1.3-rc.2",
-    "@pgserve/linux-arm64": "1.1.3-rc.2",
-    "@pgserve/linux-x64": "1.1.3-rc.2",
-    "@pgserve/windows-x64": "1.1.3-rc.2",
     "@embedded-postgres/darwin-arm64": "17.7.0-beta.15",
     "@embedded-postgres/darwin-x64": "17.7.0-beta.15",
     "@embedded-postgres/linux-x64": "17.7.0-beta.15",
@@ -68,5 +63,7 @@
       "eslint --fix"
     ]
   },
-  "dependencies": {}
+  "dependencies": {
+    "bun": "^1.3.4"
+  }
 }

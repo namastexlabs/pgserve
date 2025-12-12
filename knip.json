@@ -4,6 +4,6 @@
   "project": ["src/**/*.js", "bin/**/*.js", "bin/**/*.cjs"],
   "ignore": ["tests/**", "helpers/**", "scripts/**"],
   "ignoreBinaries": ["scripts/test-npx.sh", "make"],
-  "ignoreDependencies": [],
+  "ignoreDependencies": ["bun"],
   "ignoreExportsUsedInFile": true
 }
