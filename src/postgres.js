@@ -575,9 +575,11 @@ export class PostgresManager {
    */
   async _initAdminPool() {
     const { SQL } = await import('bun');
+    const isWindows = process.platform === 'win32';
 
     // Bun.sql config - uses TCP connections (Unix sockets not directly supported)
     // This is fine for admin queries (low volume, local connection)
+    // Windows needs longer timeout due to higher network stack latency
     this.adminPool = new SQL({
       hostname: '127.0.0.1',
       port: this.port,
@@ -586,16 +588,38 @@ export class PostgresManager {
       password: this.password,
       max: 5, // Small pool - only for CREATE DATABASE operations
       idleTimeout: 30,
-      connectionTimeout: 5,
+      connectionTimeout: isWindows ? 15 : 5,
     });
 
-    // Verify connection is working with a simple query
-    await this.adminPool`SELECT 1`;
+    // Verify connection with retry logic
+    // TCP port being open doesn't mean PostgreSQL protocol is ready
+    // This handles the race condition on Windows where the port binds
+    // before the server is fully ready to accept protocol handshakes
+    const maxRetries = 5;
+    const baseDelay = 1000; // 1 second
 
-    this.logger.debug({
-      host: '127.0.0.1',
-      maxConnections: 5
-    }, 'Admin connection pool initialized (Bun.sql)');
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.adminPool`SELECT 1`;
+        this.logger.debug({
+          host: '127.0.0.1',
+          maxConnections: 5,
+          attempt
+        }, 'Admin connection pool initialized (Bun.sql)');
+        return; // Success
+      } catch (err) {
+        if (attempt === maxRetries) {
+          throw new Error(`Failed to initialize admin pool after ${maxRetries} attempts: ${err.message}`);
+        }
+        this.logger.debug({
+          attempt,
+          maxRetries,
+          error: err.message
+        }, 'Admin pool connection failed, retrying...');
+        // Exponential backoff: 1s, 2s, 3s, 4s
+        await new Promise(resolve => setTimeout(resolve, baseDelay * attempt));
+      }
+    }
   }
 
   /**
