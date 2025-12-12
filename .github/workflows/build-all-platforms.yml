@@ -75,13 +75,16 @@ jobs:
         if: matrix.platform == 'windows-x64'
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $VERSION = node -p "require('./package.json').version"
+          $RAW_VERSION = node -p "require('./package.json').version"
+          # Convert 1.1.3-rc.10 to 1.1.3.10 (Windows requires X.Y.Z.W format)
+          $WIN_VERSION = $RAW_VERSION -replace '-rc\.', '.'
+          Write-Host "Raw version: $RAW_VERSION -> Windows version: $WIN_VERSION"
           bun build --compile `
             --windows-icon=assets/icon.ico `
             --windows-title="pgserve" `
             --windows-publisher="Namastex Labs" `
             --windows-description="Embedded PostgreSQL Server - Zero config, auto-provision, unlimited connections" `
-            --windows-version="$VERSION" `
+            --windows-version="$WIN_VERSION" `
             --windows-copyright="Copyright (c) 2025 Namastex Labs" `
             bin/pglite-server.js --outfile dist/${{ matrix.output }}
           Get-ChildItem dist/
