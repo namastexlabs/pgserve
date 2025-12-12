@@ -667,8 +667,9 @@ export class PostgresManager {
 
       let started = false;
       let startupOutput = '';
+      let processExited = false;
 
-      // Read stderr in streaming fashion to detect startup
+      // Read stderr in streaming fashion for debugging (NOT for startup detection)
       const readStream = async (stream) => {
         const reader = stream.getReader();
         const decoder = new TextDecoder();
@@ -679,37 +680,65 @@ export class PostgresManager {
             const message = decoder.decode(value);
             startupOutput += message;
             this.logger.debug({ pgOutput: message.trim() }, 'PostgreSQL output');
-
-            // Check for ready message
-            if (!started && (message.includes('database system is ready to accept connections') ||
-                message.includes('ready to accept connections'))) {
-              started = true;
-              resolve();
-            }
           }
         } catch {
           // Stream closed
         }
       };
 
-      // Start reading both streams
+      // Start reading both streams for logging
       readStream(this.process.stderr);
       readStream(this.process.stdout);
 
       // Handle process exit
       this.process.exited.then((code) => {
+        processExited = true;
         if (!started) {
           reject(new Error(`PostgreSQL exited with code ${code} before starting: ${startupOutput}`));
         }
         this.process = null;
       });
 
-      // Timeout after 30 seconds
-      setTimeout(() => {
-        if (!started) {
+      // Language-agnostic startup detection: poll TCP connection
+      // This works regardless of system locale (fixes Portuguese, Chinese, etc.)
+      const pollConnection = async () => {
+        const startTime = Date.now();
+        const timeoutMs = 30000;
+        const pollIntervalMs = 100;
+
+        while (Date.now() - startTime < timeoutMs) {
+          // Check if process died
+          if (processExited) {
+            return; // Exit handled by exited.then() above
+          }
+
+          try {
+            // Try to connect to PostgreSQL port
+            const conn = await Bun.connect({
+              hostname: '127.0.0.1',
+              port: this.port,
+            });
+            conn.end();
+
+            // Connection successful - PostgreSQL is ready!
+            started = true;
+            this.logger.info({ port: this.port }, 'PostgreSQL ready (connection test passed)');
+            resolve();
+            return;
+          } catch {
+            // Not ready yet, wait and retry
+            await Bun.sleep(pollIntervalMs);
+          }
+        }
+
+        // Timeout reached
+        if (!started && !processExited) {
           reject(new Error(`PostgreSQL startup timed out after 30s. Output: ${startupOutput}`));
         }
-      }, 30000);
+      };
+
+      // Start connection polling
+      pollConnection();
     });
   }
 
