@@ -55,63 +55,61 @@ if (!bunPath) {
 
 const scriptPath = path.join(__dirname, 'pglite-server.js');
 
-// Spawn bun with the actual script, inherit all stdio
-// IMPORTANT: Do NOT use detached mode - wrapper must wait for child to fully terminate
-// Using detached with stdio:'inherit' causes file handle inheritance issues on Windows
-const child = spawn(bunPath, [scriptPath, ...process.argv.slice(2)], {
-  stdio: 'inherit',
-  windowsHide: true
-});
+// Platform-specific spawning strategy:
+// - Windows: Use pipes for explicit handle control (prevents EBUSY errors)
+// - Unix: Use inherit for simplicity (works fine)
 
-child.on('error', (err) => {
-  console.error('Failed to start pgserve:', err.message);
-  process.exit(1);
-});
-
-// Safety timeout: force exit if 'close' event never fires after 'exit'
-let forceExitTimeout = null;
-
-child.on('exit', () => {
-  // Give 5 seconds for 'close' event after 'exit'
-  forceExitTimeout = setTimeout(() => {
-    console.error('Warning: Child process did not close cleanly, forcing exit');
-    process.exit(1);
-  }, 5000);
-});
-
-// Use 'close' event instead of 'exit' - fires AFTER all stdio streams are closed
-// This is critical for Windows where file handles may remain locked after 'exit' fires
-child.on('close', (code, signal) => {
-  // Clear the safety timeout
-  if (forceExitTimeout) {
-    clearTimeout(forceExitTimeout);
-  }
-
-  // On Windows, use SYNCHRONOUS delay to ensure all file handles are released
-  // This prevents EBUSY errors when npx tries to clean up the cache
-  // NOTE: async/await does NOT work in EventEmitter callbacks - Node ignores the Promise
-  if (isWindows) {
-    const delay = 200; // ms - enough for Windows kernel to release handles
-    const start = Date.now();
-    while (Date.now() - start < delay) {
-      // Synchronous busy-wait - actually blocks unlike async setTimeout
-    }
-  }
-
-  if (signal) {
-    // On Windows, can't reliably re-raise Unix signals
-    if (isWindows) {
-      process.exit(1);
-    } else {
-      process.kill(process.pid, signal);
-    }
-  } else {
-    process.exit(code ?? 0);
-  }
-});
-
-// Platform-specific signal handling
 if (isWindows) {
+  // WINDOWS PATH: Explicit pipe control to prevent EBUSY errors
+  // Using stdio: 'inherit' causes file handle inheritance that we cannot release,
+  // leading to npm cleanup failures. With pipes, we control when handles are destroyed.
+
+  const child = spawn(bunPath, [scriptPath, ...process.argv.slice(2)], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true
+  });
+
+  // Manually pipe stdio - we now control the handles
+  // Handle stdin errors gracefully (may not be connected in some environments)
+  process.stdin.on('error', () => {});
+  child.stdin.on('error', () => {});
+
+  // Only pipe stdin if it's readable
+  if (process.stdin.readable) {
+    process.stdin.pipe(child.stdin);
+  }
+  child.stdout.pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
+
+  child.on('error', (err) => {
+    console.error('Failed to start pgserve:', err.message);
+    process.exit(1);
+  });
+
+  child.on('close', (code, signal) => {
+    // CRITICAL: Explicitly destroy ALL streams to release file handles
+    // This must happen BEFORE process.exit() to prevent EBUSY
+    try {
+      if (process.stdin.readable) {
+        process.stdin.unpipe(child.stdin);
+      }
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+    } catch {
+      // Ignore stream destruction errors
+    }
+
+    // Remove all listeners to prevent memory leaks
+    child.removeAllListeners();
+
+    // Use setImmediate to ensure stream destruction completes before exit
+    // This gives the event loop one tick to process pending I/O cleanup
+    setImmediate(() => {
+      process.exit(signal ? 1 : (code ?? 0));
+    });
+  });
+
   // Windows: use taskkill for reliable process termination
   // process.kill(pid, 'SIGINT') does NOT work properly on Windows
   process.on('SIGINT', () => {
@@ -139,13 +137,37 @@ if (isWindows) {
     rl.on('SIGINT', () => {
       process.emit('SIGINT');
     });
+    // Clean up readline on close
+    child.on('close', () => {
+      rl.close();
+    });
   }
+
 } else {
+  // UNIX PATH: Simple stdio inheritance (works fine, no EBUSY issues)
+  const child = spawn(bunPath, [scriptPath, ...process.argv.slice(2)], {
+    stdio: 'inherit',
+    windowsHide: true
+  });
+
+  child.on('error', (err) => {
+    console.error('Failed to start pgserve:', err.message);
+    process.exit(1);
+  });
+
+  child.on('close', (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+    } else {
+      process.exit(code ?? 0);
+    }
+  });
+
   // Unix: forward signals to child process normally
-  ['SIGINT', 'SIGTERM', 'SIGHUP'].forEach(signal => {
-    process.on(signal, () => {
+  ['SIGINT', 'SIGTERM', 'SIGHUP'].forEach(sig => {
+    process.on(sig, () => {
       if (child.pid) {
-        process.kill(child.pid, signal);
+        process.kill(child.pid, sig);
       }
     });
   });
