@@ -106,7 +106,7 @@ function getBinaryPaths() {
   } else if (platform === 'darwin' && arch === 'x64') {
     pkgName = '@embedded-postgres/darwin-x64';
   } else if (platform === 'win32' && arch === 'x64') {
-    pkgName = '@embedded-postgres/win32-x64';
+    pkgName = '@embedded-postgres/windows-x64';
   } else {
     throw new Error(`Unsupported platform: ${platform}-${arch}`);
   }

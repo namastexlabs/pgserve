@@ -44,7 +44,7 @@
     "@embedded-postgres/darwin-arm64": "17.7.0-beta.15",
     "@embedded-postgres/darwin-x64": "17.7.0-beta.15",
     "@embedded-postgres/linux-x64": "17.7.0-beta.15",
-    "@embedded-postgres/win32-x64": "17.7.0-beta.15"
+    "@embedded-postgres/windows-x64": "17.7.0-beta.15"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",
