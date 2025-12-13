@@ -80,6 +80,7 @@ jobs:
           $WIN_VERSION = $RAW_VERSION -replace '-rc\.', '.'
           Write-Host "Raw version: $RAW_VERSION -> Windows version: $WIN_VERSION"
           bun build --compile `
+            --define BUILD_VERSION="'$RAW_VERSION'" `
             --windows-icon=assets/icon.ico `
             --windows-title="pgserve" `
             --windows-publisher="Namastex Labs" `
@@ -95,7 +96,8 @@ jobs:
         if: matrix.platform != 'windows-x64'
         run: |
           mkdir -p dist
-          bun build --compile bin/pglite-server.js --outfile dist/${{ matrix.output }}
+          VERSION=$(node -p "require('./package.json').version")
+          bun build --compile --define BUILD_VERSION="'$VERSION'" bin/pglite-server.js --outfile dist/${{ matrix.output }}
           ls -lh dist/
 
       - name: Upload artifact

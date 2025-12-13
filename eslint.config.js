@@ -24,6 +24,8 @@ export default [
         TextDecoder: 'readonly',
         TextEncoder: 'readonly',
         Response: 'readonly',
+        // Build-time constants (injected via --define)
+        BUILD_VERSION: 'readonly',
       },
     },
     rules: {

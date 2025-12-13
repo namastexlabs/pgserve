@@ -13,12 +13,18 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-// Get package version
+// Get package version - BUILD_VERSION is injected at compile time via --define
+// Falls back to reading package.json for development mode
 let version = '1.0.0';
 try {
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
-  version = pkg.version;
+  // Check for build-time injected version first
+  if (typeof BUILD_VERSION !== 'undefined') {
+    version = BUILD_VERSION;
+  } else {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
+    version = pkg.version;
+  }
 } catch {
   // Fallback version
 }
