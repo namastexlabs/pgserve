@@ -53,6 +53,7 @@ OPTIONS:
   --no-provision     Disable auto-provisioning of databases
   --sync-to <url>    Sync to real PostgreSQL (async replication)
   --sync-databases   Database patterns to sync (comma-separated, e.g. "myapp,tenant_*")
+  --no-stats         Disable real-time stats dashboard (enabled by default)
   --help             Show this help message
 
 MODES:
@@ -108,7 +109,8 @@ function parseArgs() {
     cluster: cpuCount > 1 && !isWindows,  // Auto-enable on multi-core (disabled on Windows - no SO_REUSEPORT)
     workers: null, // null = use CPU count
     syncTo: null,  // Sync target PostgreSQL URL
-    syncDatabases: null // Database patterns to sync (comma-separated)
+    syncDatabases: null, // Database patterns to sync (comma-separated)
+    showStats: true // Show real-time stats dashboard (default: enabled)
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -161,6 +163,14 @@ function parseArgs() {
 
       case '--sync-databases':
         options.syncDatabases = args[++i];
+        break;
+
+      case '--stats':
+        options.showStats = true;
+        break;
+
+      case '--no-stats':
+        options.showStats = false;
         break;
 
       case '--help':
@@ -222,7 +232,7 @@ pgserve - Embedded PostgreSQL Server
 Cluster started successfully!
 
   Endpoint:    postgresql://${options.host}:${options.port}/<database>
-  Mode:        ${memoryMode ? 'In-memory (ephemeral)' : 'Persistent'} (Cluster)
+  Mode:        ${memoryMode ? (options.useRam ? 'RAM (/dev/shm)' : 'Ephemeral (temp)') : 'Persistent'} (Cluster)
   Workers:     ${stats.workers} processes
   Data:        ${storageType}
   Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
@@ -258,7 +268,7 @@ Press Ctrl+C to stop
 Server started successfully!
 
   Endpoint:    postgresql://${options.host}:${options.port}/<database>
-  Mode:        ${memoryMode ? 'In-memory (ephemeral)' : 'Persistent'}
+  Mode:        ${memoryMode ? (options.useRam ? 'RAM (/dev/shm)' : 'Ephemeral (temp)') : 'Persistent'}
   Data:        ${storageType}
   PostgreSQL:  Port ${router.pgPort} (internal)
   Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
@@ -270,6 +280,29 @@ Examples:
 
 Press Ctrl+C to stop
 `);
+    }
+
+    // Start stats dashboard if requested (only for primary/single-process)
+    if (options.showStats && !process.env.PGSERVE_WORKER) {
+      const { StatsDashboard } = await import('../src/stats-dashboard.js');
+      const { StatsCollector } = await import('../src/stats-collector.js');
+
+      // Create stats collector with appropriate sources
+      const collector = new StatsCollector({
+        router: options.cluster ? null : server,
+        pgManager: options.cluster ? server.pgManager : server.pgManager,
+        clusterStats: options.cluster ? () => server.getStats() : null,
+        logger: server.logger,
+        port: options.port,
+        host: options.host
+      });
+
+      const dashboard = new StatsDashboard({
+        refreshInterval: 2000, // 2 second refresh for real-time feel
+        statsProvider: () => collector.collect()
+      });
+
+      dashboard.start();
     }
 
     // Graceful shutdown (only for primary/single-process, workers handle via IPC)

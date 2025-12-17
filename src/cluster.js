@@ -44,6 +44,12 @@ class ClusterRouter extends EventEmitter {
     this.server = null;
     this.connections = new Set();
     this.setMaxListeners(this.maxConnections + 10);
+
+    // Connection stats tracking for IPC reporting
+    this.connectionStats = {
+      totalConnected: 0,
+      totalDisconnected: 0
+    };
   }
 
   /**
@@ -134,6 +140,7 @@ class ClusterRouter extends EventEmitter {
       handshakeComplete: false
     });
     this.connections.add(socket);
+    this.connectionStats.totalConnected++;
   }
 
   /**
@@ -259,6 +266,19 @@ class ClusterRouter extends EventEmitter {
     }
     this.connections.delete(socket);
     this.socketState.delete(socket);
+    this.connectionStats.totalDisconnected++;
+  }
+
+  /**
+   * Get router stats for IPC reporting
+   */
+  getStats() {
+    return {
+      connections: this.connections.size,
+      totalConnected: this.connectionStats.totalConnected,
+      totalDisconnected: this.connectionStats.totalDisconnected,
+      pid: process.pid
+    };
   }
 
   /**
@@ -298,6 +318,32 @@ class ClusterRouter extends EventEmitter {
 }
 
 /**
+ * Check if a port is already in use
+ */
+async function isPortInUse(port, host = '127.0.0.1') {
+  try {
+    const server = Bun.listen({
+      hostname: host,
+      port: port,
+      reusePort: false, // Explicitly disable to detect conflicts
+      socket: {
+        data() {},
+        open() {},
+        close() {},
+        error() {}
+      }
+    });
+    server.stop();
+    return false; // Port is free
+  } catch (err) {
+    if (err.code === 'EADDRINUSE') {
+      return true; // Port in use
+    }
+    throw err; // Re-throw unexpected errors
+  }
+}
+
+/**
  * Start pgserve in cluster mode
  */
 export async function startClusterServer(options = {}) {
@@ -307,6 +353,11 @@ export async function startClusterServer(options = {}) {
   const pgPort = options.pgPort || (port + 1000);
 
   if (cluster.isPrimary) {
+    // Check if port is already in use before starting
+    const portInUse = await isPortInUse(port, host);
+    if (portInUse) {
+      throw new Error(`Port ${port} is already in use. Kill existing process or use a different port.`);
+    }
     console.log(`[pgserve] Cluster mode: ${numWorkers} workers`);
 
     // PRIMARY: Start our embedded PostgreSQL (single instance)
@@ -325,6 +376,7 @@ export async function startClusterServer(options = {}) {
     console.log(`[pgserve] Socket: ${pgSocketPath || `TCP port ${pgPort}`}`);
 
     const workers = new Map();
+    const workerStats = new Map(); // Track stats from each worker
 
     // Fork workers with PostgreSQL connection info
     for (let i = 0; i < numWorkers; i++) {
@@ -368,13 +420,19 @@ export async function startClusterServer(options = {}) {
       workers.set(newWorker.id, newWorker);
     });
 
-    // Wait for workers to be ready
+    // Wait for workers to be ready and handle IPC messages
     let readyCount = 0;
     await new Promise((resolve) => {
       cluster.on('message', (worker, message) => {
         if (message.type === 'ready') {
           readyCount++;
           if (readyCount === numWorkers) resolve();
+        } else if (message.type === 'stats') {
+          // Update worker stats from IPC
+          workerStats.set(worker.id, {
+            ...message.data,
+            lastUpdate: Date.now()
+          });
         }
       });
     });
@@ -403,10 +461,35 @@ export async function startClusterServer(options = {}) {
         await pgManager.stop();
         console.log('[pgserve] Cluster stopped');
       },
-      getStats: () => ({
-        workers: workers.size,
-        pids: Array.from(workers.values()).map(w => w.process.pid)
-      })
+      getStats: () => {
+        // Aggregate stats from all workers
+        let totalConnections = 0;
+        let totalConnected = 0;
+        let totalDisconnected = 0;
+        const activeWorkerStats = {};
+
+        for (const [id, stats] of workerStats) {
+          // Only include recent stats (last 10 seconds)
+          if (Date.now() - stats.lastUpdate < 10000) {
+            totalConnections += stats.connections || 0;
+            totalConnected += stats.totalConnected || 0;
+            totalDisconnected += stats.totalDisconnected || 0;
+            activeWorkerStats[id] = stats;
+          }
+        }
+
+        return {
+          workers: workers.size,
+          pids: Array.from(workers.values()).map(w => w.process.pid),
+          connections: {
+            active: totalConnections,
+            totalConnected,
+            totalDisconnected
+          },
+          workerStats: activeWorkerStats
+        };
+      },
+      pgManager
     };
   } else {
     // WORKER: Only run TCP routing, connect to PRIMARY's PostgreSQL
@@ -426,9 +509,19 @@ export async function startClusterServer(options = {}) {
     // Tell PRIMARY we're ready
     process.send({ type: 'ready' });
 
+    // Periodically send stats to PRIMARY (every 4 seconds)
+    const statsInterval = setInterval(() => {
+      try {
+        process.send({ type: 'stats', data: router.getStats() });
+      } catch {
+        // IPC may be closed during shutdown
+      }
+    }, 4000);
+
     // Handle shutdown
     process.on('message', async (message) => {
       if (message.type === 'shutdown') {
+        clearInterval(statsInterval);
         await router.stop();
         process.exit(0);
       }
