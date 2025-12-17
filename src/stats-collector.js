@@ -123,7 +123,9 @@ export class StatsCollector {
     this.lastCpuTime = now;
     this.lastCpuPercent = percent;
 
-    return Math.min(percent, 100); // Cap at 100% for display
+    // Return raw percentage - can exceed 100% on multi-core systems
+    // Consumers (dashboard, etc.) can format/cap as needed for display
+    return percent;
   }
 
   /**

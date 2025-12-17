@@ -23,6 +23,10 @@ const SSL_REQUEST_CODE = 80877103;
 const GSSAPI_REQUEST_CODE = 80877104;
 const CANCEL_REQUEST_CODE = 80877102;
 
+// Stats collection constants
+const WORKER_STATS_TIMEOUT_MS = 10000; // Worker stats older than this are considered stale
+const WORKER_STATS_REPORT_INTERVAL_MS = 4000; // How often workers report stats to primary
+
 /**
  * ClusterRouter - Lightweight TCP router for worker processes
  * Does NOT start PostgreSQL - connects to PRIMARY's PostgreSQL via Unix socket
@@ -469,8 +473,8 @@ export async function startClusterServer(options = {}) {
         const activeWorkerStats = {};
 
         for (const [id, stats] of workerStats) {
-          // Only include recent stats (last 10 seconds)
-          if (Date.now() - stats.lastUpdate < 10000) {
+          // Only include recent stats (within timeout window)
+          if (Date.now() - stats.lastUpdate < WORKER_STATS_TIMEOUT_MS) {
             totalConnections += stats.connections || 0;
             totalConnected += stats.totalConnected || 0;
             totalDisconnected += stats.totalDisconnected || 0;
@@ -509,14 +513,14 @@ export async function startClusterServer(options = {}) {
     // Tell PRIMARY we're ready
     process.send({ type: 'ready' });
 
-    // Periodically send stats to PRIMARY (every 4 seconds)
+    // Periodically send stats to PRIMARY
     const statsInterval = setInterval(() => {
       try {
         process.send({ type: 'stats', data: router.getStats() });
       } catch {
         // IPC may be closed during shutdown
       }
-    }, 4000);
+    }, WORKER_STATS_REPORT_INTERVAL_MS);
 
     // Handle shutdown
     process.on('message', async (message) => {

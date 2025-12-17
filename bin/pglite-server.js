@@ -290,7 +290,7 @@ Press Ctrl+C to stop
       // Create stats collector with appropriate sources
       const collector = new StatsCollector({
         router: options.cluster ? null : server,
-        pgManager: options.cluster ? server.pgManager : server.pgManager,
+        pgManager: server.pgManager,
         clusterStats: options.cluster ? () => server.getStats() : null,
         logger: server.logger,
         port: options.port,
