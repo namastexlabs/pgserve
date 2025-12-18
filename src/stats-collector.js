@@ -43,6 +43,10 @@ export class StatsCollector {
     this.pgvectorCache = null;
     this.pgvectorCacheTime = 0;
     this.pgvectorCacheTTL = 5000; // 5s cache for pgvector stats
+
+    // Connection pool reuse for pgvector stats (avoids TCP handshake overhead per collection)
+    this.pgvectorDbPools = new Map(); // dbName -> SQL pool
+    this.pgvectorExtCache = new Map(); // dbName -> boolean (vector extension exists)
   }
 
   /**
@@ -307,9 +311,12 @@ export class StatsCollector {
       const dimensions = new Set();
       let dbsWithVectors = 0;
 
-      // Query each database for vector columns
-      for (const dbName of databases) {
-        const dbStats = await this.queryDatabaseVectorStats(dbName);
+      // Query each database for vector columns (parallel for performance)
+      const allDbStats = await Promise.all(
+        databases.map(dbName => this.queryDatabaseVectorStats(dbName))
+      );
+
+      for (const dbStats of allDbStats) {
         if (dbStats && dbStats.tableCount > 0) {
           dbsWithVectors++;
           totalTables += dbStats.tableCount;
@@ -348,37 +355,45 @@ export class StatsCollector {
    * @returns {Promise<{tableCount: number, rowCount: number, dimensions: number[]}>}
    */
   async queryDatabaseVectorStats(dbName) {
-    const { SQL } = await import('bun');
-    let dbPool = null;
-
     try {
-      // Create temporary connection to the specific database
-      dbPool = new SQL({
-        hostname: '127.0.0.1',
-        port: this.pgManager?.port || 5433,
-        database: dbName,
-        username: 'postgres',
-        password: 'postgres',
-        max: 1,
-        idleTimeout: 5,
-        connectionTimeout: 3,
-      });
+      // Reuse connection pool (avoids TCP handshake + auth overhead per collection)
+      let dbPool = this.pgvectorDbPools.get(dbName);
+      if (!dbPool) {
+        const { SQL } = await import('bun');
+        dbPool = new SQL({
+          hostname: '127.0.0.1',
+          port: this.pgManager?.port || 5433,
+          database: dbName,
+          username: 'postgres',
+          password: 'postgres',
+          max: 2, // Allow some concurrency
+          idleTimeout: 30, // Keep alive longer for reuse
+          connectionTimeout: 3,
+        });
+        this.pgvectorDbPools.set(dbName, dbPool);
+      }
 
-      // Check if vector extension exists
-      const extCheck = await dbPool`
-        SELECT 1 FROM pg_extension WHERE extname = 'vector'
-      `;
+      // Check cached extension status (only query once per DB)
+      if (!this.pgvectorExtCache.has(dbName)) {
+        const extCheck = await dbPool`
+          SELECT 1 FROM pg_extension WHERE extname = 'vector'
+        `;
+        this.pgvectorExtCache.set(dbName, extCheck.length > 0);
+      }
 
-      if (extCheck.length === 0) {
+      if (!this.pgvectorExtCache.get(dbName)) {
         return { tableCount: 0, rowCount: 0, dimensions: [] };
       }
 
-      // Get vector columns with their dimensions
-      const vectorCols = await dbPool`
+      // Single query: get tables, dimensions, and row counts via pg_class.reltuples
+      // Note: reltuples is an estimate (updated by ANALYZE/VACUUM), not exact COUNT(*)
+      // This is acceptable for dashboard stats with 5s cache - avoids expensive full table scans
+      // Trade-off: ~50-100x faster, but counts may be stale after bulk INSERT/DELETE until ANALYZE
+      const vectorInfo = await dbPool`
         SELECT
           c.relname as table_name,
-          a.attname as column_name,
-          a.atttypmod as dimensions
+          a.atttypmod as dimensions,
+          GREATEST(c.reltuples, 0)::bigint AS row_count
         FROM pg_attribute a
         JOIN pg_class c ON a.attrelid = c.oid
         JOIN pg_type t ON a.atttypid = t.oid
@@ -388,44 +403,51 @@ export class StatsCollector {
           AND NOT a.attisdropped
       `;
 
-      if (vectorCols.length === 0) {
+      if (vectorInfo.length === 0) {
         return { tableCount: 0, rowCount: 0, dimensions: [] };
       }
 
-      // Get unique tables and dimensions
-      const tables = new Set();
+      // Aggregate results from single query
+      const tableRows = new Map();
       const dims = [];
-      for (const col of vectorCols) {
-        tables.add(col.table_name);
-        // atttypmod contains the vector dimensions directly
-        if (col.dimensions > 0) {
-          dims.push(col.dimensions);
+
+      for (const row of vectorInfo) {
+        if (!tableRows.has(row.table_name)) {
+          tableRows.set(row.table_name, Number(row.row_count || 0));
+        }
+        if (row.dimensions > 0) {
+          dims.push(row.dimensions);
         }
       }
 
-      // Get total row count across all tables with vector columns
-      let totalRows = 0;
-      for (const tableName of tables) {
-        try {
-          const countResult = await dbPool.unsafe(`SELECT COUNT(*) as cnt FROM "${tableName.replace(/"/g, '""')}"`);
-          totalRows += parseInt(countResult[0]?.cnt || 0, 10);
-        } catch {
-          // Table might not be accessible, skip
-        }
-      }
+      const totalRows = Array.from(tableRows.values()).reduce((sum, count) => sum + count, 0);
 
       return {
-        tableCount: tables.size,
+        tableCount: tableRows.size,
         rowCount: totalRows,
         dimensions: dims
       };
     } catch (err) {
       this.logger?.debug?.({ dbName, err: err.message }, 'Failed to query database vector stats');
-      return { tableCount: 0, rowCount: 0, dimensions: [] };
-    } finally {
-      if (dbPool) {
-        await dbPool.close().catch(() => {});
+      // Invalidate caches on error (DB might have been dropped)
+      this.pgvectorExtCache.delete(dbName);
+      const pool = this.pgvectorDbPools.get(dbName);
+      if (pool) {
+        this.pgvectorDbPools.delete(dbName);
+        await pool.close().catch(() => {});
       }
+      return { tableCount: 0, rowCount: 0, dimensions: [] };
     }
+  }
+
+  /**
+   * Close all pgvector database pools (called on shutdown)
+   */
+  async closePgvectorPools() {
+    for (const [_dbName, pool] of this.pgvectorDbPools) {
+      await pool.close().catch(() => {});
+    }
+    this.pgvectorDbPools.clear();
+    this.pgvectorExtCache.clear();
   }
 }
