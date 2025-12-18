@@ -288,43 +288,18 @@ When `--pgvector` is enabled, every new database automatically has the vector ex
 <details>
 <summary><b>Using pgvector</b></summary>
 
-```javascript
-import pg from 'pg';
+```sql
+-- Create table with vector column (1536 = OpenAI embedding size)
+CREATE TABLE documents (id SERIAL, content TEXT, embedding vector(1536));
 
-const client = new pg.Client({
-  connectionString: 'postgresql://localhost:8432/myapp'
-});
+-- Insert with embedding
+INSERT INTO documents (content, embedding) VALUES ('Hello', '[0.1, 0.2, ...]');
 
-await client.connect();
-
-// Create a table with vector column (1536 dimensions for OpenAI embeddings)
-await client.query(`
-  CREATE TABLE documents (
-    id SERIAL PRIMARY KEY,
-    content TEXT,
-    embedding vector(1536)
-  )
-`);
-
-// Insert a document with its embedding
-const embedding = Array(1536).fill(0).map(() => Math.random());
-await client.query(
-  'INSERT INTO documents (content, embedding) VALUES ($1, $2)',
-  ['Hello world', JSON.stringify(embedding)]
-);
-
-// Find similar documents using k-NN search
-const queryEmbedding = Array(1536).fill(0).map(() => Math.random());
-const result = await client.query(`
-  SELECT content, embedding <-> $1 as distance
-  FROM documents
-  ORDER BY embedding <-> $1
-  LIMIT 10
-`, [JSON.stringify(queryEmbedding)]);
-
-console.log(result.rows);
-await client.end();
+-- k-NN similarity search (L2 distance)
+SELECT content FROM documents ORDER BY embedding <-> $1 LIMIT 10;
 ```
+
+See [pgvector documentation](https://github.com/pgvector/pgvector) for full API reference.
 
 </details>
 
