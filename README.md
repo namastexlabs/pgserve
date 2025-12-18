@@ -258,6 +258,53 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
 
 <br>
 
+## pgvector (Vector Search)
+
+pgvector is **built-in** — no separate installation required. Just enable it:
+
+```bash
+# Auto-enable pgvector on all new databases
+pgserve --pgvector
+
+# Combined with RAM mode for fastest vector operations
+pgserve --ram --pgvector
+```
+
+When `--pgvector` is enabled, every new database automatically has the vector extension installed. No SQL setup required.
+
+<details>
+<summary><b>Using pgvector</b></summary>
+
+```sql
+-- Create table with vector column (1536 = OpenAI embedding size)
+CREATE TABLE documents (id SERIAL, content TEXT, embedding vector(1536));
+
+-- Insert with embedding
+INSERT INTO documents (content, embedding) VALUES ('Hello', '[0.1, 0.2, ...]');
+
+-- k-NN similarity search (L2 distance)
+SELECT content FROM documents ORDER BY embedding <-> $1 LIMIT 10;
+```
+
+See [pgvector documentation](https://github.com/pgvector/pgvector) for full API reference.
+
+</details>
+
+<details>
+<summary><b>Without --pgvector flag</b></summary>
+
+If you don't use `--pgvector`, you can still enable pgvector manually per database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+</details>
+
+> pgvector 0.8.1 is bundled with the PostgreSQL binaries. Supports L2 distance (`<->`), inner product (`<#>`), and cosine distance (`<=>`).
+
+<br>
+
 ## Performance
 
 ### CRUD Benchmarks

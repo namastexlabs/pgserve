@@ -261,6 +261,25 @@ export class StatsDashboard {
       }
     }
 
+    // pgvector section (only if vector data exists)
+    if (stats.pgvector?.enabled && stats.pgvector.tableCount > 0) {
+      const vecLines = [
+        `${ANSI.DIM}Databases:${ANSI.RESET}   ${stats.pgvector.databases} with vectors`,
+        `${ANSI.DIM}Tables:${ANSI.RESET}      ${stats.pgvector.tableCount} total`
+      ];
+
+      if (stats.pgvector.totalRows > 0) {
+        vecLines.push(`${ANSI.DIM}Vectors:${ANSI.RESET}     ${this.formatNumber(stats.pgvector.totalRows)} rows`);
+      }
+
+      if (stats.pgvector.dimensions) {
+        vecLines.push(`${ANSI.DIM}Dimensions:${ANSI.RESET}  ${stats.pgvector.dimensions}`);
+      }
+
+      lines.push(this.section('PGVECTOR', vecLines));
+      lines.push('');
+    }
+
     // System resources section
     const resourceLines = [];
 
