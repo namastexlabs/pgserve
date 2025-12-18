@@ -291,6 +291,7 @@ Press Ctrl+C to stop
     }
 
     // Start stats dashboard if requested (only for primary/single-process)
+    let dashboard = null;
     if (options.showStats && !process.env.PGSERVE_WORKER) {
       const { StatsDashboard } = await import('../src/stats-dashboard.js');
       const { StatsCollector } = await import('../src/stats-collector.js');
@@ -305,7 +306,7 @@ Press Ctrl+C to stop
         host: options.host
       });
 
-      const dashboard = new StatsDashboard({
+      dashboard = new StatsDashboard({
         refreshInterval: 2000, // 2 second refresh for real-time feel
         statsProvider: () => collector.collect()
       });
@@ -316,6 +317,10 @@ Press Ctrl+C to stop
     // Graceful shutdown (only for primary/single-process, workers handle via IPC)
     if (!process.env.PGSERVE_WORKER) {
       const shutdown = async () => {
+        // Stop dashboard first to restore cursor
+        if (dashboard) {
+          dashboard.stop();
+        }
         console.log('\nShutting down...');
         try {
           await server.stop();

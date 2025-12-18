@@ -76,14 +76,13 @@ export class StatsDashboard {
     // Handle terminal resize
     process.stdout.on('resize', () => this.render());
 
-    // Ensure cursor is restored on exit
-    const cleanup = () => {
-      this.stop();
-      process.exit(0);
-    };
-
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
+    // Restore cursor on process exit (non-signal exits)
+    // Note: SIGINT/SIGTERM are handled by the main process for graceful shutdown
+    process.on('exit', () => {
+      if (this.enabled) {
+        process.stdout.write(ANSI.SHOW_CURSOR);
+      }
+    });
   }
 
   /**
