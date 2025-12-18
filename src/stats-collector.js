@@ -8,6 +8,13 @@
  * - Process (memory, uptime)
  */
 
+// CPU sampling threshold - avoid noise from too-frequent calls
+const CPU_SAMPLE_MIN_INTERVAL_MS = 100;
+
+// /proc/diskstats minimum fields per device line
+// Fields: major minor device reads rd_merged rd_sectors rd_ms writes wr_merged wr_sectors wr_ms io_in_progress io_ms weighted_io_ms
+const PROC_DISKSTATS_MIN_FIELDS = 14;
+
 export class StatsCollector {
   constructor(options = {}) {
     this.pgManager = options.pgManager;
@@ -19,10 +26,10 @@ export class StatsCollector {
     this.serverPort = options.port;
     this.serverHost = options.host;
 
-    // Cache to avoid over-querying
+    // Cache to avoid over-querying (configurable for different monitoring needs)
     this.cache = null;
     this.cacheTime = 0;
-    this.cacheTTL = 1000; // 1 second cache
+    this.cacheTTL = options.cacheTTL || 1000; // Default 1s cache
 
     // CPU tracking
     this.lastCpuUsage = process.cpuUsage();
@@ -45,13 +52,15 @@ export class StatsCollector {
 
     const pgStats = this.pgManager?.getStats?.() || {};
     const routerStats = this.router?.getStats?.() || {};
+    // Prefer clusterStats (cluster mode aggregates from all workers)
+    // Fall back to routerStats (single-process mode)
     const clusterStats = this.clusterStats?.() || null;
 
     const snapshot = {
       timestamp: Date.now(),
       uptime: process.uptime(),
 
-      // Connection stats
+      // Connection stats - cluster mode has aggregated stats, single-process uses router directly
       connections: {
         active: clusterStats?.connections?.active ?? routerStats.activeConnections ?? 0,
         totalConnected: clusterStats?.connections?.totalConnected ?? 0,
@@ -110,7 +119,7 @@ export class StatsCollector {
   getCpuUsage() {
     const now = Date.now();
     const elapsed = now - this.lastCpuTime;
-    if (elapsed < 100) return this.lastCpuPercent || 0;
+    if (elapsed < CPU_SAMPLE_MIN_INTERVAL_MS) return this.lastCpuPercent || 0;
 
     const cpuUsage = process.cpuUsage(this.lastCpuUsage);
     const totalMicros = cpuUsage.user + cpuUsage.system;
@@ -162,7 +171,7 @@ export class StatsCollector {
 
           for (const line of diskstats.split('\n')) {
             const parts = line.trim().split(/\s+/);
-            if (parts.length < 14) continue;
+            if (parts.length < PROC_DISKSTATS_MIN_FIELDS) continue;
 
             const device = parts[2];
             // Match main disks (sda, sdb, nvme0n1, vda, etc.) but not partitions
@@ -194,12 +203,14 @@ export class StatsCollector {
 
           this.lastDiskStats = { readSectors, writeSectors, readOps, writeOps };
           this.lastDiskTime = now;
-        } catch {
-          // /proc/diskstats not available
+        } catch (err) {
+          // /proc/diskstats not available (normal on non-Linux or restricted environments)
+          this.logger?.debug?.({ err: err.message }, 'Could not read /proc/diskstats');
         }
       }
-    } catch {
-      // OS module or stats not available
+    } catch (err) {
+      // OS module or stats not available (normal on some platforms)
+      this.logger?.debug?.({ err: err.message }, 'Could not collect system stats');
     }
 
     return stats;

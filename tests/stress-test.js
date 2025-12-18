@@ -120,8 +120,9 @@ ${C.yellow}━━━━━━━━━━━━━━━━━━━━━━━
  */
 function progressBar(current, total, width = 30) {
   const pct = Math.min(1, Math.max(0, current / total || 0));
+  // filled is clamped to [0, width], so (width - filled) is always non-negative
   const filled = Math.max(0, Math.min(width, Math.round(pct * width)));
-  const empty = Math.max(0, width - filled);
+  const empty = width - filled;
   return `[${'█'.repeat(filled)}${'░'.repeat(empty)}] ${(pct * 100).toFixed(0)}%`;
 }
 

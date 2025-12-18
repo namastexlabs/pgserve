@@ -31,11 +31,23 @@ const ANSI = {
   INVERSE: '\x1B[7m'
 };
 
+// Color thresholds for progress bars and values (percentage of max)
+const THRESHOLD_WARN = 0.6;    // Yellow at 60%
+const THRESHOLD_CRITICAL = 0.8; // Red at 80%
+
 export class StatsDashboard {
+  /**
+   * @param {Object} options
+   * @param {number} [options.refreshInterval=2000] - Dashboard refresh interval in ms
+   * @param {() => Promise<StatsSnapshot>} [options.statsProvider] - Async function returning stats object
+   * @param {() => void} [options.onStop] - Callback when dashboard stops
+   */
   constructor(options = {}) {
+    // Respects NO_COLOR env var (https://no-color.org/ standard)
     this.enabled = process.stdout.isTTY && !process.env.NO_COLOR;
-    this.refreshInterval = options.refreshInterval || 5000; // 5 seconds
-    this.statsProvider = options.statsProvider; // Async function that returns stats
+    // Default 2s refresh for real-time feel (trade-off: higher CPU vs fresher data)
+    this.refreshInterval = options.refreshInterval || 2000;
+    this.statsProvider = options.statsProvider;
     this.timer = null;
     this.displayLines = 0;
     this.lastStats = null;
@@ -104,8 +116,13 @@ export class StatsDashboard {
       const stats = await this.statsProvider();
       this.lastStats = stats;
       this.draw(stats);
-    } catch {
-      // Don't crash on stats collection failure
+    } catch (err) {
+      // Don't crash on stats collection failure - use cached stats if available
+      // Only log once to avoid spam during persistent issues
+      if (!this._lastError || this._lastError !== err.message) {
+        this._lastError = err.message;
+        console.error(`[stats] Collection failed: ${err.message}`);
+      }
       if (this.lastStats) {
         this.draw(this.lastStats);
       }
@@ -139,7 +156,8 @@ export class StatsDashboard {
    */
   buildDisplay(stats) {
     const lines = [];
-    const width = Math.min(process.stdout.columns || 80, 80);
+    // Use actual terminal width (no arbitrary cap - users with wide terminals get wider display)
+    const width = process.stdout.columns || 80;
 
     // Header bar
     lines.push(this.headerBar(width));
@@ -166,7 +184,7 @@ export class StatsDashboard {
     const connDisc = stats.connections?.totalDisconnected || 0;
 
     const connLines = [
-      `${ANSI.DIM}Active:${ANSI.RESET}    ${this.colorValue(connActive, connMax * 0.6, connMax * 0.8)} / ${connMax}  ${this.miniBar(connActive, connMax, 20)}`
+      `${ANSI.DIM}Active:${ANSI.RESET}    ${this.colorValue(connActive, connMax * THRESHOLD_WARN, connMax * THRESHOLD_CRITICAL)} / ${connMax}  ${this.miniBar(connActive, connMax, 20)}`
     ];
 
     if (connTotal > 0 || connDisc > 0) {
@@ -226,8 +244,13 @@ export class StatsDashboard {
       if (stats.internals.databases?.length > 0) {
         intLines.push(`${ANSI.DIM}Top DBs by connections:${ANSI.RESET}`);
         for (const db of stats.internals.databases.slice(0, 3)) {
-          const hitRatio = Number(db.blks_hit) + Number(db.blks_read) > 0
-            ? ((Number(db.blks_hit) / (Number(db.blks_hit) + Number(db.blks_read))) * 100).toFixed(1)
+          // Use BigInt for precision on high-traffic systems (PostgreSQL returns 8-byte integers)
+          const blksHit = BigInt(db.blks_hit || 0);
+          const blksRead = BigInt(db.blks_read || 0);
+          const total = blksHit + blksRead;
+          // Calculate ratio safely: multiply by 1000 first, then convert to Number for final formatting
+          const hitRatio = total > 0n
+            ? (Number((blksHit * 1000n) / total) / 10).toFixed(1)
             : '0.0';
           intLines.push(`  ${ANSI.CYAN}${db.datname}${ANSI.RESET}: ${db.numbackends} conn, ${hitRatio}% cache hit`);
         }
@@ -321,12 +344,13 @@ export class StatsDashboard {
     const safeCurrent = Math.max(0, Math.min(Number(current) || 0, safeMax));
 
     const pct = safeCurrent / safeMax;
+    // filled is clamped to [0, width], so (width - filled) is always non-negative
     const filled = Math.max(0, Math.min(width, Math.round(pct * width)));
-    const empty = Math.max(0, width - filled);
+    const empty = width - filled;
 
     let color = ANSI.GREEN;
-    if (pct > 0.8) color = ANSI.RED;
-    else if (pct > 0.6) color = ANSI.YELLOW;
+    if (pct > THRESHOLD_CRITICAL) color = ANSI.RED;
+    else if (pct > THRESHOLD_WARN) color = ANSI.YELLOW;
 
     // Use Unicode block characters for progress bar
     const filledChar = '\u2588'; // Full block

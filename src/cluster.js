@@ -310,7 +310,7 @@ class ClusterRouter extends EventEmitter {
       try {
         await this.sql.close();
       } catch {
-        // Ignore - connection may already be terminated
+        // Expected: connection may already be terminated during cleanup
       }
     }
 
@@ -321,31 +321,6 @@ class ClusterRouter extends EventEmitter {
   }
 }
 
-/**
- * Check if a port is already in use
- */
-async function isPortInUse(port, host = '127.0.0.1') {
-  try {
-    const server = Bun.listen({
-      hostname: host,
-      port: port,
-      reusePort: false, // Explicitly disable to detect conflicts
-      socket: {
-        data() {},
-        open() {},
-        close() {},
-        error() {}
-      }
-    });
-    server.stop();
-    return false; // Port is free
-  } catch (err) {
-    if (err.code === 'EADDRINUSE') {
-      return true; // Port in use
-    }
-    throw err; // Re-throw unexpected errors
-  }
-}
 
 /**
  * Start pgserve in cluster mode
@@ -357,11 +332,8 @@ export async function startClusterServer(options = {}) {
   const pgPort = options.pgPort || (port + 1000);
 
   if (cluster.isPrimary) {
-    // Check if port is already in use before starting
-    const portInUse = await isPortInUse(port, host);
-    if (portInUse) {
-      throw new Error(`Port ${port} is already in use. Kill existing process or use a different port.`);
-    }
+    // Port binding happens in workers via Bun.listen with reusePort
+    // If port is in use, first worker will fail with EADDRINUSE
     console.log(`[pgserve] Cluster mode: ${numWorkers} workers`);
 
     // PRIMARY: Start our embedded PostgreSQL (single instance)
@@ -393,7 +365,8 @@ export async function startClusterServer(options = {}) {
         PGSERVE_PG_USER: 'postgres',
         PGSERVE_PG_PASSWORD: 'postgres',
         PGSERVE_LOG_LEVEL: options.logLevel || 'info',
-        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false'
+        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false',
+        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000)
       });
       workers.set(worker.id, worker);
     }
@@ -419,7 +392,8 @@ export async function startClusterServer(options = {}) {
         PGSERVE_PG_USER: 'postgres',
         PGSERVE_PG_PASSWORD: 'postgres',
         PGSERVE_LOG_LEVEL: options.logLevel || 'info',
-        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false'
+        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false',
+        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000)
       });
       workers.set(newWorker.id, newWorker);
     });
@@ -505,7 +479,8 @@ export async function startClusterServer(options = {}) {
       pgUser: process.env.PGSERVE_PG_USER || 'postgres',
       pgPassword: process.env.PGSERVE_PG_PASSWORD || 'postgres',
       logLevel: process.env.PGSERVE_LOG_LEVEL || 'info',
-      autoProvision: process.env.PGSERVE_AUTO_PROVISION === 'true'
+      autoProvision: process.env.PGSERVE_AUTO_PROVISION === 'true',
+      maxConnections: parseInt(process.env.PGSERVE_MAX_CONNECTIONS) || 1000
     });
 
     await router.start();
@@ -518,7 +493,7 @@ export async function startClusterServer(options = {}) {
       try {
         process.send({ type: 'stats', data: router.getStats() });
       } catch {
-        // IPC may be closed during shutdown
+        // Expected: IPC channel may be closed during shutdown
       }
     }, WORKER_STATS_REPORT_INTERVAL_MS);
 

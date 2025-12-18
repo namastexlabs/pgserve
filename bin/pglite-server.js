@@ -54,6 +54,7 @@ OPTIONS:
   --sync-to <url>    Sync to real PostgreSQL (async replication)
   --sync-databases   Database patterns to sync (comma-separated, e.g. "myapp,tenant_*")
   --no-stats         Disable real-time stats dashboard (enabled by default)
+  --max-connections  Max concurrent connections (default: 1000)
   --help             Show this help message
 
 MODES:
@@ -110,7 +111,8 @@ function parseArgs() {
     workers: null, // null = use CPU count
     syncTo: null,  // Sync target PostgreSQL URL
     syncDatabases: null, // Database patterns to sync (comma-separated)
-    showStats: true // Show real-time stats dashboard (default: enabled)
+    showStats: true, // Show real-time stats dashboard (default: enabled)
+    maxConnections: 1000 // Max concurrent connections (high default for multi-tenant)
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -173,6 +175,10 @@ function parseArgs() {
         options.showStats = false;
         break;
 
+      case '--max-connections':
+        options.maxConnections = parseInt(args[++i], 10);
+        break;
+
       case '--help':
       case 'help':
         printHelp();
@@ -221,7 +227,8 @@ pgserve - Embedded PostgreSQL Server
         useRam: options.useRam,
         logLevel: options.logLevel,
         autoProvision: options.autoProvision,
-        workers: options.workers
+        workers: options.workers,
+        maxConnections: options.maxConnections
       });
 
       // Only primary process shows full startup message
@@ -254,7 +261,8 @@ Press Ctrl+C to stop
         logLevel: options.logLevel,
         autoProvision: options.autoProvision,
         syncTo: options.syncTo,
-        syncDatabases: options.syncDatabases
+        syncDatabases: options.syncDatabases,
+        maxConnections: options.maxConnections
       });
 
       server = router;
@@ -309,8 +317,13 @@ Press Ctrl+C to stop
     if (!process.env.PGSERVE_WORKER) {
       const shutdown = async () => {
         console.log('\nShutting down...');
-        await server.stop();
-        console.log('Server stopped.');
+        try {
+          await server.stop();
+          console.log('Server stopped.');
+        } catch (err) {
+          console.error('Error during shutdown:', err.message);
+          // Still exit - best effort cleanup
+        }
         process.exit(0);
       };
 
