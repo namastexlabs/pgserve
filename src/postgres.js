@@ -406,6 +406,9 @@ export class PostgresManager {
     // Sync/Replication options (for async sync to real PostgreSQL)
     this.syncEnabled = options.syncEnabled || false;
     this.syncManager = null; // Will be set via setSyncManager()
+
+    // pgvector extension auto-enable
+    this.enablePgvector = options.enablePgvector || false;
   }
 
   /**
@@ -880,6 +883,11 @@ export class PostgresManager {
       this.createdDatabases.add(dbName);
       this.logger.info({ dbName }, 'Database created');
 
+      // Auto-enable pgvector extension if configured
+      if (this.enablePgvector) {
+        await this.enablePgvectorExtension(dbName);
+      }
+
       // Trigger async sync setup (non-blocking, doesn't affect hot path)
       if (this.syncManager) {
         this.syncManager.setupDatabaseSync(dbName)
@@ -906,6 +914,42 @@ export class PostgresManager {
 
     if (createError) {
       throw new Error(`Failed to create database '${dbName}': ${createError.message}`);
+    }
+  }
+
+  /**
+   * Enable pgvector extension on a database
+   * Creates a temporary connection to the specific database to run CREATE EXTENSION
+   * @param {string} dbName - Database name to enable pgvector on
+   */
+  async enablePgvectorExtension(dbName) {
+    const { SQL } = await import('bun');
+    let dbPool = null;
+
+    try {
+      // Create temporary connection to the specific database
+      dbPool = new SQL({
+        hostname: '127.0.0.1',
+        port: this.port,
+        database: dbName,
+        username: this.user,
+        password: this.password,
+        max: 1,
+        idleTimeout: 5,
+        connectionTimeout: 5,
+      });
+
+      // Enable pgvector extension
+      await dbPool.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
+      this.logger.info({ dbName }, 'pgvector extension enabled');
+    } catch (error) {
+      // Log but don't fail database creation - pgvector might not be available
+      this.logger.warn({ dbName, err: error.message }, 'Failed to enable pgvector extension (non-fatal)');
+    } finally {
+      // Always close the temporary connection
+      if (dbPool) {
+        await dbPool.close().catch(() => {});
+      }
     }
   }
 

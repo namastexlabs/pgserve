@@ -61,7 +61,8 @@ export class MultiTenantRouter extends EventEmitter {
       port: this.pgPort,
       logger: this.logger.child({ component: 'postgres' }),
       syncEnabled: !!this.syncTo,  // Enable logical replication if sync is configured
-      useRam: options.useRam  // Use /dev/shm for true RAM storage (Linux only)
+      useRam: options.useRam,  // Use /dev/shm for true RAM storage (Linux only)
+      enablePgvector: options.enablePgvector  // Auto-enable pgvector extension on new databases
     });
 
     // TCP server

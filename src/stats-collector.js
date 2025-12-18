@@ -38,6 +38,15 @@ export class StatsCollector {
     // Disk I/O tracking (Linux)
     this.lastDiskStats = null;
     this.lastDiskTime = 0;
+
+    // pgvector stats cache (longer TTL since it requires cross-DB queries)
+    this.pgvectorCache = null;
+    this.pgvectorCacheTime = 0;
+    this.pgvectorCacheTTL = 5000; // 5s cache for pgvector stats
+
+    // Connection pool reuse for pgvector stats (avoids TCP handshake overhead per collection)
+    this.pgvectorDbPools = new Map(); // dbName -> SQL pool
+    this.pgvectorExtCache = new Map(); // dbName -> boolean (vector extension exists)
   }
 
   /**
@@ -96,6 +105,9 @@ export class StatsCollector {
 
       // PostgreSQL internals (pg_stat_*)
       internals: await this.collectPgStats(),
+
+      // pgvector stats (if enabled)
+      pgvector: await this.collectPgvectorStats(),
 
       // Process stats
       process: {
@@ -263,5 +275,179 @@ export class StatsCollector {
       this.logger?.debug?.({ err: err.message }, 'Failed to collect pg_stat_*');
       return null;
     }
+  }
+
+  /**
+   * Collect pgvector statistics across all databases
+   * Uses separate cache with longer TTL due to cross-DB query overhead
+   */
+  async collectPgvectorStats() {
+    // Return cached if recent
+    if (this.pgvectorCache && Date.now() - this.pgvectorCacheTime < this.pgvectorCacheTTL) {
+      return this.pgvectorCache;
+    }
+
+    const adminPool = this.pgManager?.adminPool;
+    if (!adminPool) return null;
+
+    // Query PostgreSQL directly for databases (pgManager.getStats().databases may be empty in cluster mode)
+    let databases = [];
+    try {
+      const dbResult = await adminPool`
+        SELECT datname FROM pg_database
+        WHERE datname NOT IN ('template0', 'template1', 'postgres')
+      `;
+      databases = dbResult.map(row => row.datname);
+    } catch (err) {
+      this.logger?.debug?.({ err: err.message }, 'Failed to query databases for pgvector stats');
+      return null;
+    }
+
+    if (databases.length === 0) return null;
+
+    try {
+      let totalTables = 0;
+      let totalRows = 0;
+      const dimensions = new Set();
+      let dbsWithVectors = 0;
+
+      // Query each database for vector columns (parallel for performance)
+      const allDbStats = await Promise.all(
+        databases.map(dbName => this.queryDatabaseVectorStats(dbName))
+      );
+
+      for (const dbStats of allDbStats) {
+        if (dbStats && dbStats.tableCount > 0) {
+          dbsWithVectors++;
+          totalTables += dbStats.tableCount;
+          totalRows += dbStats.rowCount;
+          dbStats.dimensions.forEach(d => dimensions.add(d));
+        }
+      }
+
+      // Only return stats if vectors exist
+      if (totalTables === 0) {
+        this.pgvectorCache = null;
+        this.pgvectorCacheTime = Date.now();
+        return null;
+      }
+
+      const stats = {
+        enabled: true,
+        databases: dbsWithVectors,
+        tableCount: totalTables,
+        totalRows: totalRows,
+        dimensions: [...dimensions].sort((a, b) => b - a).join(', ') || null
+      };
+
+      this.pgvectorCache = stats;
+      this.pgvectorCacheTime = Date.now();
+      return stats;
+    } catch (err) {
+      this.logger?.debug?.({ err: err.message }, 'Failed to collect pgvector stats');
+      return null;
+    }
+  }
+
+  /**
+   * Query vector column stats for a specific database
+   * @param {string} dbName - Database name to query
+   * @returns {Promise<{tableCount: number, rowCount: number, dimensions: number[]}>}
+   */
+  async queryDatabaseVectorStats(dbName) {
+    try {
+      // Reuse connection pool (avoids TCP handshake + auth overhead per collection)
+      let dbPool = this.pgvectorDbPools.get(dbName);
+      if (!dbPool) {
+        const { SQL } = await import('bun');
+        dbPool = new SQL({
+          hostname: '127.0.0.1',
+          port: this.pgManager?.port || 5433,
+          database: dbName,
+          username: 'postgres',
+          password: 'postgres',
+          max: 2, // Allow some concurrency
+          idleTimeout: 30, // Keep alive longer for reuse
+          connectionTimeout: 3,
+        });
+        this.pgvectorDbPools.set(dbName, dbPool);
+      }
+
+      // Check cached extension status (only query once per DB)
+      if (!this.pgvectorExtCache.has(dbName)) {
+        const extCheck = await dbPool`
+          SELECT 1 FROM pg_extension WHERE extname = 'vector'
+        `;
+        this.pgvectorExtCache.set(dbName, extCheck.length > 0);
+      }
+
+      if (!this.pgvectorExtCache.get(dbName)) {
+        return { tableCount: 0, rowCount: 0, dimensions: [] };
+      }
+
+      // Single query: get tables, dimensions, and row counts via pg_class.reltuples
+      // Note: reltuples is an estimate (updated by ANALYZE/VACUUM), not exact COUNT(*)
+      // This is acceptable for dashboard stats with 5s cache - avoids expensive full table scans
+      // Trade-off: ~50-100x faster, but counts may be stale after bulk INSERT/DELETE until ANALYZE
+      const vectorInfo = await dbPool`
+        SELECT
+          c.relname as table_name,
+          a.atttypmod as dimensions,
+          GREATEST(c.reltuples, 0)::bigint AS row_count
+        FROM pg_attribute a
+        JOIN pg_class c ON a.attrelid = c.oid
+        JOIN pg_type t ON a.atttypid = t.oid
+        WHERE t.typname = 'vector'
+          AND c.relkind = 'r'
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+      `;
+
+      if (vectorInfo.length === 0) {
+        return { tableCount: 0, rowCount: 0, dimensions: [] };
+      }
+
+      // Aggregate results from single query
+      const tableRows = new Map();
+      const dims = [];
+
+      for (const row of vectorInfo) {
+        if (!tableRows.has(row.table_name)) {
+          tableRows.set(row.table_name, Number(row.row_count || 0));
+        }
+        if (row.dimensions > 0) {
+          dims.push(row.dimensions);
+        }
+      }
+
+      const totalRows = Array.from(tableRows.values()).reduce((sum, count) => sum + count, 0);
+
+      return {
+        tableCount: tableRows.size,
+        rowCount: totalRows,
+        dimensions: dims
+      };
+    } catch (err) {
+      this.logger?.debug?.({ dbName, err: err.message }, 'Failed to query database vector stats');
+      // Invalidate caches on error (DB might have been dropped)
+      this.pgvectorExtCache.delete(dbName);
+      const pool = this.pgvectorDbPools.get(dbName);
+      if (pool) {
+        this.pgvectorDbPools.delete(dbName);
+        await pool.close().catch(() => {});
+      }
+      return { tableCount: 0, rowCount: 0, dimensions: [] };
+    }
+  }
+
+  /**
+   * Close all pgvector database pools (called on shutdown)
+   */
+  async closePgvectorPools() {
+    for (const [_dbName, pool] of this.pgvectorDbPools) {
+      await pool.close().catch(() => {});
+    }
+    this.pgvectorDbPools.clear();
+    this.pgvectorExtCache.clear();
   }
 }
