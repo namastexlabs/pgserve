@@ -260,46 +260,140 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
 
 ## Performance
 
-### Benchmark Results
+### CRUD Benchmarks
 
 <table>
   <tr>
     <th>Scenario</th>
     <th>SQLite</th>
     <th>PGlite</th>
-    <th>pgserve (Node)</th>
-    <th>pgserve (Bun)</th>
+    <th>PostgreSQL</th>
+    <th>pgserve</th>
     <th>pgserve --ram</th>
   </tr>
   <tr>
     <td><b>Concurrent Writes</b> (10 agents)</td>
-    <td>85 qps</td>
-    <td>211 qps</td>
-    <td>833 qps</td>
-    <td>1,754 qps</td>
-    <td><b>4,000 qps</b> 🏆</td>
+    <td>91 qps</td>
+    <td>204 qps</td>
+    <td>1,667 qps</td>
+    <td>2,273 qps</td>
+    <td><b>4,167 qps</b> 🏆</td>
   </tr>
   <tr>
     <td><b>Mixed Workload</b></td>
-    <td>339 qps</td>
-    <td>505 qps</td>
-    <td>1,017 qps</td>
-    <td>999 qps</td>
-    <td><b>1,986 qps</b> 🏆</td>
+    <td>383 qps</td>
+    <td>484 qps</td>
+    <td>507 qps</td>
+    <td>1,133 qps</td>
+    <td><b>2,109 qps</b> 🏆</td>
   </tr>
   <tr>
     <td><b>Write Lock</b> (50 writers)</td>
-    <td>86 qps</td>
-    <td>168 qps</td>
-    <td>488 qps</td>
-    <td>1,176 qps</td>
+    <td>111 qps</td>
+    <td>228 qps</td>
+    <td>2,857 qps</td>
+    <td>3,030 qps</td>
     <td><b>4,348 qps</b> 🏆</td>
   </tr>
 </table>
 
-> pgserve uses Bun runtime internally for 2x throughput. **RAM mode adds another 2-4x** on Linux.
+### Vector Benchmarks (pgvector)
+
+<table>
+  <tr>
+    <th>Metric</th>
+    <th>PGlite</th>
+    <th>PostgreSQL</th>
+    <th>pgserve</th>
+    <th>pgserve --ram</th>
+  </tr>
+  <tr>
+    <td><b>Vector INSERT</b> (1000 × 1536-dim)</td>
+    <td>152/sec</td>
+    <td>392/sec</td>
+    <td>387/sec</td>
+    <td><b>1,082/sec</b> 🏆</td>
+  </tr>
+  <tr>
+    <td><b>k-NN Search</b> (k=10, 10k corpus)</td>
+    <td>22 qps</td>
+    <td>33 qps</td>
+    <td>31 qps</td>
+    <td>30 qps</td>
+  </tr>
+  <tr>
+    <td><b>Recall@10</b></td>
+    <td>100%</td>
+    <td>100%</td>
+    <td>100%</td>
+    <td>100%</td>
+  </tr>
+</table>
+
+> <b>Why pgserve wins on writes:</b> RAM mode uses <code>/dev/shm</code> (tmpfs), eliminating fsync latency. Vector search is CPU-bound, so RAM mode shows minimal benefit there.
+
+### Final Score
+
+<table>
+  <tr>
+    <th>Engine</th>
+    <th>CRUD QPS</th>
+    <th>Vec QPS</th>
+    <th>Recall</th>
+    <th>P50</th>
+    <th>P99</th>
+    <th>Score</th>
+  </tr>
+  <tr>
+    <td>SQLite</td>
+    <td>195</td>
+    <td>N/A</td>
+    <td>N/A</td>
+    <td>6.3ms</td>
+    <td>17.3ms</td>
+    <td>117</td>
+  </tr>
+  <tr>
+    <td>PGlite</td>
+    <td>305</td>
+    <td>65</td>
+    <td>100%</td>
+    <td>3.3ms</td>
+    <td>7.0ms</td>
+    <td>209</td>
+  </tr>
+  <tr>
+    <td>PostgreSQL</td>
+    <td>1,677</td>
+    <td>152</td>
+    <td>100%</td>
+    <td>6.0ms</td>
+    <td>19.0ms</td>
+    <td>1,067</td>
+  </tr>
+  <tr>
+    <td>pgserve</td>
+    <td>2,145</td>
+    <td>149</td>
+    <td>100%</td>
+    <td>5.3ms</td>
+    <td>13.0ms</td>
+    <td>1,347</td>
+  </tr>
+  <tr>
+    <td><b>pgserve --ram</b></td>
+    <td><b>3,541</b></td>
+    <td><b>381</b></td>
+    <td><b>100%</b></td>
+    <td><b>3.3ms</b></td>
+    <td><b>10.7ms</b></td>
+    <td><b>2,277</b> 🏆</td>
+  </tr>
+</table>
+
+> <b>Methodology:</b> Recall@k measured against brute-force ground truth (industry standard). PostgreSQL baseline is Docker <code>pgvector/pgvector:pg17</code>. RAM mode available on Linux and WSL2.
 >
-> Run benchmarks: `bun run bench` (contributors only)
+> Run benchmarks yourself: <code>bun tests/benchmarks/runner.js --include-vector</code>
 
 <br>
 

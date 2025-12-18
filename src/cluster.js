@@ -23,6 +23,10 @@ const SSL_REQUEST_CODE = 80877103;
 const GSSAPI_REQUEST_CODE = 80877104;
 const CANCEL_REQUEST_CODE = 80877102;
 
+// Stats collection constants
+const WORKER_STATS_TIMEOUT_MS = 10000; // Worker stats older than this are considered stale
+const WORKER_STATS_REPORT_INTERVAL_MS = 4000; // How often workers report stats to primary
+
 /**
  * ClusterRouter - Lightweight TCP router for worker processes
  * Does NOT start PostgreSQL - connects to PRIMARY's PostgreSQL via Unix socket
@@ -44,6 +48,12 @@ class ClusterRouter extends EventEmitter {
     this.server = null;
     this.connections = new Set();
     this.setMaxListeners(this.maxConnections + 10);
+
+    // Connection stats tracking for IPC reporting
+    this.connectionStats = {
+      totalConnected: 0,
+      totalDisconnected: 0
+    };
   }
 
   /**
@@ -134,6 +144,7 @@ class ClusterRouter extends EventEmitter {
       handshakeComplete: false
     });
     this.connections.add(socket);
+    this.connectionStats.totalConnected++;
   }
 
   /**
@@ -259,6 +270,19 @@ class ClusterRouter extends EventEmitter {
     }
     this.connections.delete(socket);
     this.socketState.delete(socket);
+    this.connectionStats.totalDisconnected++;
+  }
+
+  /**
+   * Get router stats for IPC reporting
+   */
+  getStats() {
+    return {
+      connections: this.connections.size,
+      totalConnected: this.connectionStats.totalConnected,
+      totalDisconnected: this.connectionStats.totalDisconnected,
+      pid: process.pid
+    };
   }
 
   /**
@@ -286,7 +310,7 @@ class ClusterRouter extends EventEmitter {
       try {
         await this.sql.close();
       } catch {
-        // Ignore - connection may already be terminated
+        // Expected: connection may already be terminated during cleanup
       }
     }
 
@@ -296,6 +320,7 @@ class ClusterRouter extends EventEmitter {
     }
   }
 }
+
 
 /**
  * Start pgserve in cluster mode
@@ -307,6 +332,8 @@ export async function startClusterServer(options = {}) {
   const pgPort = options.pgPort || (port + 1000);
 
   if (cluster.isPrimary) {
+    // Port binding happens in workers via Bun.listen with reusePort
+    // If port is in use, first worker will fail with EADDRINUSE
     console.log(`[pgserve] Cluster mode: ${numWorkers} workers`);
 
     // PRIMARY: Start our embedded PostgreSQL (single instance)
@@ -325,6 +352,7 @@ export async function startClusterServer(options = {}) {
     console.log(`[pgserve] Socket: ${pgSocketPath || `TCP port ${pgPort}`}`);
 
     const workers = new Map();
+    const workerStats = new Map(); // Track stats from each worker
 
     // Fork workers with PostgreSQL connection info
     for (let i = 0; i < numWorkers; i++) {
@@ -337,7 +365,8 @@ export async function startClusterServer(options = {}) {
         PGSERVE_PG_USER: 'postgres',
         PGSERVE_PG_PASSWORD: 'postgres',
         PGSERVE_LOG_LEVEL: options.logLevel || 'info',
-        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false'
+        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false',
+        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000)
       });
       workers.set(worker.id, worker);
     }
@@ -363,18 +392,25 @@ export async function startClusterServer(options = {}) {
         PGSERVE_PG_USER: 'postgres',
         PGSERVE_PG_PASSWORD: 'postgres',
         PGSERVE_LOG_LEVEL: options.logLevel || 'info',
-        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false'
+        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false',
+        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000)
       });
       workers.set(newWorker.id, newWorker);
     });
 
-    // Wait for workers to be ready
+    // Wait for workers to be ready and handle IPC messages
     let readyCount = 0;
     await new Promise((resolve) => {
       cluster.on('message', (worker, message) => {
         if (message.type === 'ready') {
           readyCount++;
           if (readyCount === numWorkers) resolve();
+        } else if (message.type === 'stats') {
+          // Update worker stats from IPC
+          workerStats.set(worker.id, {
+            ...message.data,
+            lastUpdate: Date.now()
+          });
         }
       });
     });
@@ -403,10 +439,35 @@ export async function startClusterServer(options = {}) {
         await pgManager.stop();
         console.log('[pgserve] Cluster stopped');
       },
-      getStats: () => ({
-        workers: workers.size,
-        pids: Array.from(workers.values()).map(w => w.process.pid)
-      })
+      getStats: () => {
+        // Aggregate stats from all workers
+        let totalConnections = 0;
+        let totalConnected = 0;
+        let totalDisconnected = 0;
+        const activeWorkerStats = {};
+
+        for (const [id, stats] of workerStats) {
+          // Only include recent stats (within timeout window)
+          if (Date.now() - stats.lastUpdate < WORKER_STATS_TIMEOUT_MS) {
+            totalConnections += stats.connections || 0;
+            totalConnected += stats.totalConnected || 0;
+            totalDisconnected += stats.totalDisconnected || 0;
+            activeWorkerStats[id] = stats;
+          }
+        }
+
+        return {
+          workers: workers.size,
+          pids: Array.from(workers.values()).map(w => w.process.pid),
+          connections: {
+            active: totalConnections,
+            totalConnected,
+            totalDisconnected
+          },
+          workerStats: activeWorkerStats
+        };
+      },
+      pgManager
     };
   } else {
     // WORKER: Only run TCP routing, connect to PRIMARY's PostgreSQL
@@ -418,7 +479,8 @@ export async function startClusterServer(options = {}) {
       pgUser: process.env.PGSERVE_PG_USER || 'postgres',
       pgPassword: process.env.PGSERVE_PG_PASSWORD || 'postgres',
       logLevel: process.env.PGSERVE_LOG_LEVEL || 'info',
-      autoProvision: process.env.PGSERVE_AUTO_PROVISION === 'true'
+      autoProvision: process.env.PGSERVE_AUTO_PROVISION === 'true',
+      maxConnections: parseInt(process.env.PGSERVE_MAX_CONNECTIONS) || 1000
     });
 
     await router.start();
@@ -426,9 +488,19 @@ export async function startClusterServer(options = {}) {
     // Tell PRIMARY we're ready
     process.send({ type: 'ready' });
 
+    // Periodically send stats to PRIMARY
+    const statsInterval = setInterval(() => {
+      try {
+        process.send({ type: 'stats', data: router.getStats() });
+      } catch {
+        // Expected: IPC channel may be closed during shutdown
+      }
+    }, WORKER_STATS_REPORT_INTERVAL_MS);
+
     // Handle shutdown
     process.on('message', async (message) => {
       if (message.type === 'shutdown') {
+        clearInterval(statsInterval);
         await router.stop();
         process.exit(0);
       }

@@ -9,13 +9,217 @@
 
 import { Database } from 'bun:sqlite';
 import { PGlite } from '@electric-sql/pglite';
+import { vector } from '@electric-sql/pglite/vector';
 import { startMultiTenantServer } from '../../src/index.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import pg from 'pg';
+import { loadEmbeddings, generateQueryVectors, formatPgVector, getEmbeddingsPath, getGroundTruth, calculateRecall } from './vector-generator.js';
 
 const { Pool } = pg;
+
+// ============================================================================
+// ANSI Colors and Visual Utilities (stress-test style)
+// ============================================================================
+const C = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  cyan: '\x1b[36m',
+  red: '\x1b[31m',
+  magenta: '\x1b[35m',
+  blue: '\x1b[34m',
+  white: '\x1b[37m',
+};
+
+/**
+ * Print benchmark banner
+ */
+function banner() {
+  console.log(`
+${C.cyan}${C.bold}╔════════════════════════════════════════════════════════════════╗
+║           pgserve UNIFIED BENCHMARK SUITE                      ║
+║                                                                ║
+║  Comparing: SQLite │ PGlite │ PostgreSQL │ pgserve            ║
+╚════════════════════════════════════════════════════════════════╝${C.reset}
+`);
+}
+
+/**
+ * Print section header
+ */
+function section(name, description) {
+  console.log(`
+${C.yellow}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C.reset}
+${C.bold}${C.cyan}▶ ${name}${C.reset}
+${C.dim}  ${description}${C.reset}
+${C.yellow}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C.reset}
+`);
+}
+
+/**
+ * Progress bar
+ */
+function progressBar(current, total, width = 30) {
+  const pct = Math.min(1, Math.max(0, current / total || 0));
+  // filled is clamped to [0, width], so (width - filled) is always non-negative
+  const filled = Math.max(0, Math.min(width, Math.round(pct * width)));
+  const empty = width - filled;
+  return `[${C.green}${'█'.repeat(filled)}${C.dim}${'░'.repeat(empty)}${C.reset}] ${(pct * 100).toFixed(0)}%`;
+}
+
+/**
+ * Calculate score for an engine
+ * Higher is better - weighted combination of throughput and latency
+ */
+function calculateScore(results) {
+  if (results.skipped) return 0;
+
+  // Score formula:
+  // - Base: throughput QPS (main factor)
+  // - Bonus: low latency (P99 < 10ms gets bonus)
+  // - Penalty: errors
+  const throughputScore = results.throughput || 0;
+  const latencyBonus = results.p99 > 0 ? Math.max(0, (10 - results.p99) * 10) : 0;
+  const errorPenalty = (results.errors || 0) * 100;
+
+  return Math.round(throughputScore + latencyBonus - errorPenalty);
+}
+
+/**
+ * Print final results table with scores
+ */
+function printFinalResults(allResults, vectorResults, canUseRam) {
+  console.log(`
+${C.cyan}${C.bold}
+╔════════════════════════════════════════════════════════════════╗
+║                      FINAL RESULTS                             ║
+╚════════════════════════════════════════════════════════════════╝${C.reset}
+`);
+
+  // Aggregate results per engine
+  // Note: recallCount tracks only SEARCH scenarios (INSERT has 'N/A' recall)
+  const engines = {
+    sqlite: { name: 'SQLite', crudQps: 0, vecQps: 0, vecRecall: 0, p50: 0, p99: 0, errors: 0, count: 0, vecCount: 0, recallCount: 0 },
+    pglite: { name: 'PGlite', crudQps: 0, vecQps: 0, vecRecall: 0, p50: 0, p99: 0, errors: 0, count: 0, vecCount: 0, recallCount: 0 },
+    postgres: { name: 'PostgreSQL', crudQps: 0, vecQps: 0, vecRecall: 0, p50: 0, p99: 0, errors: 0, count: 0, vecCount: 0, recallCount: 0, skipped: false },
+    pgserve: { name: 'pgserve (disk)', crudQps: 0, vecQps: 0, vecRecall: 0, p50: 0, p99: 0, errors: 0, count: 0, vecCount: 0, recallCount: 0 },
+    pgserveRam: { name: 'pgserve (RAM)', crudQps: 0, vecQps: 0, vecRecall: 0, p50: 0, p99: 0, errors: 0, count: 0, vecCount: 0, recallCount: 0 },
+  };
+
+  // Aggregate CRUD results
+  for (const r of allResults) {
+    for (const [key, eng] of Object.entries(engines)) {
+      const data = r[key];
+      if (data && !data.skipped) {
+        eng.crudQps += data.throughput || 0;
+        eng.p50 += data.p50 || 0;
+        eng.p99 += data.p99 || 0;
+        eng.errors += data.errors || 0;
+        eng.count++;
+      } else if (data?.skipped) {
+        eng.skipped = true;
+      }
+    }
+  }
+
+  // Aggregate Vector results (with recall)
+  // Note: INSERT scenarios have recall='N/A', only SEARCH scenarios have numeric recall
+  for (const r of vectorResults) {
+    for (const [key, eng] of Object.entries(engines)) {
+      const data = r[key];
+      if (data && !data.skipped) {
+        eng.vecQps += data.throughput || 0;
+        eng.vecCount++;
+        // Only count recall for SEARCH scenarios (not INSERT which has 'N/A')
+        const recallValue = parseFloat(data.recall);
+        if (!isNaN(recallValue)) {
+          eng.vecRecall += recallValue;
+          eng.recallCount++;
+        }
+      }
+    }
+  }
+
+  // Average the results
+  for (const eng of Object.values(engines)) {
+    if (eng.count > 0) {
+      eng.crudQps = Math.round(eng.crudQps / eng.count);
+      eng.p50 = (eng.p50 / eng.count).toFixed(1);
+      eng.p99 = (eng.p99 / eng.count).toFixed(1);
+    }
+    if (eng.vecCount > 0) {
+      eng.vecQps = Math.round(eng.vecQps / eng.vecCount);
+    } else {
+      eng.vecQps = 0;
+    }
+    // Average recall only from SEARCH scenarios (recallCount), not INSERT scenarios
+    if (eng.recallCount > 0) {
+      eng.vecRecall = (eng.vecRecall / eng.recallCount).toFixed(1);
+    } else {
+      eng.vecRecall = 'N/A';
+    }
+    eng.score = Math.round(eng.crudQps * 0.6 + eng.vecQps * 0.4 - eng.errors * 10);
+  }
+
+  // Print table header (with Recall column)
+  const hasVec = vectorResults.length > 0;
+  if (hasVec) {
+    console.log(`${C.bold}Engine            │ CRUD QPS │ Vec QPS │ Recall │   P50   │   P99   │ Errors │  SCORE${C.reset}`);
+    console.log(`${'─'.repeat(90)}`);
+  } else {
+    console.log(`${C.bold}Engine            │ CRUD QPS │   P50   │   P99   │ Errors │  SCORE${C.reset}`);
+    console.log(`${'─'.repeat(70)}`);
+  }
+
+  // Print each engine row
+  const engineOrder = ['sqlite', 'pglite', 'postgres', 'pgserve'];
+  if (canUseRam) engineOrder.push('pgserveRam');
+
+  let maxScore = 0;
+  let winner = '';
+
+  for (const key of engineOrder) {
+    const eng = engines[key];
+    if (eng.skipped) {
+      if (hasVec) {
+        console.log(`${C.dim}${eng.name.padEnd(17)} │ ${'-'.padStart(8)} │ ${'-'.padStart(7)} │ ${'-'.padStart(6)} │ ${'-'.padStart(7)} │ ${'-'.padStart(7)} │ ${'-'.padStart(6)} │ ${'-'.padStart(7)}${C.reset}`);
+      } else {
+        console.log(`${C.dim}${eng.name.padEnd(17)} │ ${'-'.padStart(8)} │ ${'-'.padStart(7)} │ ${'-'.padStart(7)} │ ${'-'.padStart(6)} │ ${'-'.padStart(7)}${C.reset}`);
+      }
+      continue;
+    }
+
+    const color = eng.errors > 0 ? C.yellow : C.green;
+    const scoreColor = eng.score > maxScore ? C.magenta + C.bold : color;
+
+    if (eng.score > maxScore) {
+      maxScore = eng.score;
+      winner = eng.name;
+    }
+
+    if (hasVec) {
+      // vecRecall is 'N/A' for INSERT-only scenarios, or a numeric string like '100.0' for SEARCH
+      const recallStr = eng.vecRecall !== 'N/A' ? `${eng.vecRecall}%` : 'N/A';
+      const vecQpsStr = eng.vecCount > 0 ? eng.vecQps.toLocaleString() : 'N/A';
+      console.log(`${color}${eng.name.padEnd(17)} │ ${String(eng.crudQps.toLocaleString()).padStart(8)} │ ${vecQpsStr.padStart(7)} │ ${recallStr.padStart(6)} │ ${(eng.p50 + 'ms').padStart(7)} │ ${(eng.p99 + 'ms').padStart(7)} │ ${String(eng.errors).padStart(6)} │ ${scoreColor}${String(eng.score.toLocaleString()).padStart(7)}${C.reset}`);
+    } else {
+      console.log(`${color}${eng.name.padEnd(17)} │ ${String(eng.crudQps.toLocaleString()).padStart(8)} │ ${(eng.p50 + 'ms').padStart(7)} │ ${(eng.p99 + 'ms').padStart(7)} │ ${String(eng.errors).padStart(6)} │ ${scoreColor}${String(eng.score.toLocaleString()).padStart(7)}${C.reset}`);
+    }
+  }
+
+  console.log(`${'─'.repeat(hasVec ? 90 : 70)}`);
+
+  // Winner announcement
+  console.log(`
+${C.magenta}${C.bold}╔═══════════════════════════════════════════════════╗
+║  🏆 WINNER: ${winner.padEnd(20)} SCORE: ${String(maxScore).padStart(7)}  ║
+╚═══════════════════════════════════════════════════╝${C.reset}
+`);
+}
 
 // Global error handlers (suppress expected PGlite WASM ExitStatus errors)
 process.on('unhandledRejection', (reason, promise) => {
@@ -34,10 +238,10 @@ const RESULTS_DIR = new URL('./results', import.meta.url).pathname;
 // PostgreSQL Server configuration (Docker with tmpfs for fair RAM-to-RAM comparison)
 const POSTGRES_CONFIG = {
   host: 'localhost',
-  port: 15432,
+  port: 5433,  // pgvector/pgvector:pg17 Docker container
   user: 'postgres',
-  password: 'benchpass',
-  database: 'bench'
+  password: 'postgres',
+  database: 'postgres'
 };
 
 /**
@@ -66,6 +270,47 @@ const scenarios = [
     operations: [
       { type: 'INSERT', count: 100, concurrent: 50 }
     ]
+  }
+];
+
+/**
+ * Vector benchmark scenarios (pgvector)
+ * Requires: --include-vector flag
+ */
+/**
+ * Vector benchmark scenarios
+ * Following industry-standard methodology (ANN-Benchmarks, Qdrant, VectorDBBench):
+ * - Measure Recall@k alongside QPS
+ * - Compare approximate results to brute-force ground truth
+ * - Report both metrics together (can't compare QPS without knowing recall)
+ */
+const vectorScenarios = [
+  {
+    name: 'Vector INSERT (1000 vectors)',
+    description: 'Bulk insert performance - where RAM mode shows benefits',
+    type: 'INSERT',
+    dimension: 1536,
+    insertCount: 1000,  // Insert 1000 vectors to measure write speed
+  },
+  {
+    name: 'k-NN Search (k=10)',
+    description: 'Recall@10 and QPS on 10k vectors, 100 queries',
+    type: 'SEARCH',
+    dimension: 1536,
+    corpusSize: 10000,
+    queryCount: 100,
+    k: 10,
+    warmupQueries: 20  // Warm-up before measuring
+  },
+  {
+    name: 'k-NN Search (k=100)',
+    description: 'Recall@100 and QPS on 10k vectors - harder recall target',
+    type: 'SEARCH',
+    dimension: 1536,
+    corpusSize: 10000,
+    queryCount: 100,
+    k: 100,
+    warmupQueries: 20
   }
 ];
 
@@ -367,9 +612,9 @@ async function benchmarkPostgreSQL(scenario) {
 
     return metrics.getReport();
   } catch (error) {
-    console.error('   PostgreSQL benchmark failed:', error.message);
-    await pool.end();
-    return { throughput: 0, p50: 0, p99: 0, errors: 1, lockTimeouts: 0, totalOps: 0, skipped: true };
+    console.error('   PostgreSQL benchmark skipped:', error.message);
+    await pool.end().catch(() => {});
+    return { throughput: 0, p50: 0, p99: 0, errors: 0, lockTimeouts: 0, totalOps: 0, skipped: true };
   }
 }
 
@@ -504,13 +749,428 @@ async function benchmarkPgserve(scenario, useRam = false) {
   }
 }
 
+// ============================================================================
+// VECTOR BENCHMARKS (pgvector)
+// ============================================================================
+
+/**
+ * PGlite Vector Benchmark
+ * Supports both INSERT and SEARCH scenarios
+ */
+async function benchmarkPGliteVector(scenario, embeddings, queryVectors, groundTruth) {
+  console.log('  🔹 Running PGlite vector benchmark...');
+
+  const dataDir = path.join(RESULTS_DIR, 'pglite-vector-bench');
+  if (fs.existsSync(dataDir)) {
+    fs.rmSync(dataDir, { recursive: true });
+  }
+
+  try {
+    // Create PGlite with pgvector extension
+    const db = new PGlite(dataDir, { extensions: { vector } });
+    await db.exec('CREATE EXTENSION IF NOT EXISTS vector');
+
+    // Setup schema
+    await db.exec(`
+      DROP TABLE IF EXISTS embeddings;
+      CREATE TABLE embeddings (
+        id INTEGER PRIMARY KEY,
+        vector vector(${scenario.dimension})
+      )
+    `);
+
+    // INSERT scenario - measure insert speed
+    if (scenario.type === 'INSERT') {
+      console.log(`    Inserting ${scenario.insertCount} vectors (measured)...`);
+      const latencies = [];
+
+      for (let i = 0; i < scenario.insertCount; i++) {
+        const vec = formatPgVector(embeddings.vectors[i]);
+        const start = performance.now();
+        await db.query('INSERT INTO embeddings (id, vector) VALUES ($1, $2::vector)', [i + 1, vec]);
+        latencies.push(performance.now() - start);
+      }
+
+      const totalTime = latencies.reduce((a, b) => a + b, 0);
+      const qps = Math.round((scenario.insertCount / totalTime) * 1000);
+      latencies.sort((a, b) => a - b);
+      const p50 = latencies[Math.floor(latencies.length * 0.5)]?.toFixed(1) || 0;
+      const p99 = latencies[Math.floor(latencies.length * 0.99)]?.toFixed(1) || 0;
+
+      try { await db.close(); } catch { /* ignore */ }
+
+      return {
+        throughput: qps,
+        recall: 'N/A',
+        p50: parseFloat(p50),
+        p99: parseFloat(p99),
+        errors: 0,
+        totalOps: scenario.insertCount,
+        skipped: false
+      };
+    }
+
+    // SEARCH scenario - measure recall and QPS
+    // Phase 1: Insert all vectors (not measured)
+    console.log('    Inserting vectors...');
+    for (let i = 0; i < embeddings.vectors.length; i++) {
+      const vec = formatPgVector(embeddings.vectors[i]);
+      await db.query('INSERT INTO embeddings (id, vector) VALUES ($1, $2::vector)', [i + 1, vec]);
+    }
+
+    // Phase 2: Warm-up queries (not measured)
+    console.log('    Warming up...');
+    for (let i = 0; i < scenario.warmupQueries; i++) {
+      const queryVec = formatPgVector(queryVectors[i % queryVectors.length]);
+      await db.query(`SELECT id FROM embeddings ORDER BY vector <-> $1::vector LIMIT $2`, [queryVec, scenario.k]);
+    }
+
+    // Phase 3: Measured queries with recall tracking
+    console.log('    Running measured queries...');
+    const latencies = [];
+    const approximateResults = [];
+
+    for (let i = 0; i < scenario.queryCount; i++) {
+      const queryVec = formatPgVector(queryVectors[i]);
+      const start = performance.now();
+      const result = await db.query(
+        `SELECT id FROM embeddings ORDER BY vector <-> $1::vector LIMIT $2`,
+        [queryVec, scenario.k]
+      );
+      latencies.push(performance.now() - start);
+
+      // Collect IDs for recall calculation
+      approximateResults.push(result.rows.map(r => r.id));
+    }
+
+    // Calculate recall
+    const { recall } = calculateRecall(approximateResults, groundTruth, scenario.k);
+
+    // Calculate metrics
+    const totalTime = latencies.reduce((a, b) => a + b, 0);
+    const qps = Math.round((scenario.queryCount / totalTime) * 1000);
+    latencies.sort((a, b) => a - b);
+    const p50 = latencies[Math.floor(latencies.length * 0.5)]?.toFixed(1) || 0;
+    const p99 = latencies[Math.floor(latencies.length * 0.99)]?.toFixed(1) || 0;
+
+    try { await db.close(); } catch { /* ignore */ }
+
+    return {
+      throughput: qps,
+      recall: (recall * 100).toFixed(1),  // as percentage
+      p50: parseFloat(p50),
+      p99: parseFloat(p99),
+      errors: 0,
+      totalOps: scenario.queryCount,
+      skipped: false
+    };
+  } catch (error) {
+    console.error('   PGlite vector benchmark failed:', error.message);
+    return { throughput: 0, recall: 0, p50: 0, p99: 0, errors: 1, totalOps: 0, skipped: true };
+  }
+}
+
+/**
+ * PostgreSQL Server Vector Benchmark
+ * Supports both INSERT and SEARCH scenarios
+ */
+async function benchmarkPostgreSQLVector(scenario, embeddings, queryVectors, groundTruth) {
+  console.log('  🔷 Running PostgreSQL vector benchmark...');
+
+  const pool = new Pool({
+    ...POSTGRES_CONFIG,
+    max: 20
+  });
+
+  try {
+    // Test connection and check for pgvector
+    await pool.query('SELECT 1');
+
+    // Check if pgvector is available
+    try {
+      await pool.query('CREATE EXTENSION IF NOT EXISTS vector');
+    } catch (e) {
+      console.error('   pgvector extension not available. Use pgvector/pgvector:pg17 Docker image.');
+      await pool.end();
+      return { throughput: 0, recall: 'N/A', p50: 0, p99: 0, errors: 1, totalOps: 0, skipped: true };
+    }
+
+    // Setup schema
+    await pool.query(`
+      DROP TABLE IF EXISTS embeddings;
+      CREATE TABLE embeddings (
+        id INTEGER PRIMARY KEY,
+        vector vector(${scenario.dimension})
+      )
+    `);
+
+    // INSERT scenario - measure insert speed
+    if (scenario.type === 'INSERT') {
+      console.log(`    Inserting ${scenario.insertCount} vectors (measured)...`);
+      const latencies = [];
+
+      for (let i = 0; i < scenario.insertCount; i++) {
+        const vec = formatPgVector(embeddings.vectors[i]);
+        const start = performance.now();
+        await pool.query('INSERT INTO embeddings (id, vector) VALUES ($1, $2::vector)', [i + 1, vec]);
+        latencies.push(performance.now() - start);
+      }
+
+      const totalTime = latencies.reduce((a, b) => a + b, 0);
+      const qps = Math.round((scenario.insertCount / totalTime) * 1000);
+      latencies.sort((a, b) => a - b);
+      const p50 = latencies[Math.floor(latencies.length * 0.5)]?.toFixed(1) || 0;
+      const p99 = latencies[Math.floor(latencies.length * 0.99)]?.toFixed(1) || 0;
+
+      await pool.query('DROP TABLE IF EXISTS embeddings');
+      await pool.end();
+
+      return {
+        throughput: qps,
+        recall: 'N/A',
+        p50: parseFloat(p50),
+        p99: parseFloat(p99),
+        errors: 0,
+        totalOps: scenario.insertCount,
+        skipped: false
+      };
+    }
+
+    // SEARCH scenario - Phase 1: Insert all vectors (not measured)
+    console.log('    Inserting vectors...');
+    for (let i = 0; i < embeddings.vectors.length; i++) {
+      const vec = formatPgVector(embeddings.vectors[i]);
+      await pool.query('INSERT INTO embeddings (id, vector) VALUES ($1, $2::vector)', [i + 1, vec]);
+    }
+
+    // Phase 2: Warm-up queries (not measured)
+    console.log('    Warming up...');
+    for (let i = 0; i < scenario.warmupQueries; i++) {
+      const queryVec = formatPgVector(queryVectors[i % queryVectors.length]);
+      await pool.query(`SELECT id FROM embeddings ORDER BY vector <-> $1::vector LIMIT $2`, [queryVec, scenario.k]);
+    }
+
+    // Phase 3: Measured queries with recall tracking
+    console.log('    Running measured queries...');
+    const latencies = [];
+    const approximateResults = [];
+
+    for (let i = 0; i < scenario.queryCount; i++) {
+      const queryVec = formatPgVector(queryVectors[i]);
+      const start = performance.now();
+      const result = await pool.query(
+        `SELECT id FROM embeddings ORDER BY vector <-> $1::vector LIMIT $2`,
+        [queryVec, scenario.k]
+      );
+      latencies.push(performance.now() - start);
+
+      // Collect IDs for recall calculation
+      approximateResults.push(result.rows.map(r => r.id));
+    }
+
+    // Calculate recall
+    const { recall } = calculateRecall(approximateResults, groundTruth, scenario.k);
+
+    // Calculate metrics
+    const totalTime = latencies.reduce((a, b) => a + b, 0);
+    const qps = Math.round((scenario.queryCount / totalTime) * 1000);
+    latencies.sort((a, b) => a - b);
+    const p50 = latencies[Math.floor(latencies.length * 0.5)]?.toFixed(1) || 0;
+    const p99 = latencies[Math.floor(latencies.length * 0.99)]?.toFixed(1) || 0;
+
+    // Cleanup
+    await pool.query('DROP TABLE IF EXISTS embeddings');
+    await pool.end();
+
+    return {
+      throughput: qps,
+      recall: (recall * 100).toFixed(1),  // as percentage
+      p50: parseFloat(p50),
+      p99: parseFloat(p99),
+      errors: 0,
+      totalOps: scenario.queryCount,
+      skipped: false
+    };
+  } catch (error) {
+    console.error('   PostgreSQL vector benchmark skipped:', error.message);
+    await pool.end().catch(() => {});
+    return { throughput: 0, recall: 'N/A', p50: 0, p99: 0, errors: 0, totalOps: 0, skipped: true };
+  }
+}
+
+/**
+ * pgserve Vector Benchmark
+ * Supports both INSERT and SEARCH scenarios
+ */
+async function benchmarkPgserveVector(scenario, embeddings, queryVectors, groundTruth, useRam = false) {
+  const mode = useRam ? 'RAM' : 'disk';
+  console.log(`  🚀 Running pgserve (${mode}) vector benchmark...`);
+
+  let server;
+  try {
+    // Start pgserve (use different ports for vector benchmarks to avoid conflicts)
+    const port = useRam ? 18435 : 18434;
+    server = await startMultiTenantServer({
+      port,
+      logLevel: 'error',
+      useRam
+    });
+
+    // Wait for server to be fully ready
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const pool = new Pool({
+      host: 'localhost',
+      port,
+      database: 'vector_bench',
+      user: 'postgres',
+      password: 'postgres',
+      max: 20,
+      connectionTimeoutMillis: 30000
+    });
+
+    // Wait for connection with retries
+    let connected = false;
+    for (let i = 0; i < 10; i++) {
+      try {
+        await pool.query('SELECT 1');
+        connected = true;
+        break;
+      } catch (error) {
+        if (i === 9) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    if (!connected) {
+      throw new Error('Failed to connect to pgserve');
+    }
+
+    // Enable pgvector extension
+    try {
+      await pool.query('CREATE EXTENSION IF NOT EXISTS vector');
+    } catch (e) {
+      console.error(`   pgvector extension not available in pgserve. Install pgvector files to ~/.pgserve/bin/<platform>/`);
+      await pool.end();
+      await server.stop();
+      return { throughput: 0, recall: 'N/A', p50: 0, p99: 0, errors: 0, totalOps: 0, skipped: true, reason: 'pgvector not installed' };
+    }
+
+    // Setup schema
+    await pool.query(`
+      DROP TABLE IF EXISTS embeddings;
+      CREATE TABLE embeddings (
+        id INTEGER PRIMARY KEY,
+        vector vector(${scenario.dimension})
+      )
+    `);
+
+    // INSERT scenario - measure insert speed
+    if (scenario.type === 'INSERT') {
+      console.log(`    Inserting ${scenario.insertCount} vectors (measured)...`);
+      const latencies = [];
+
+      for (let i = 0; i < scenario.insertCount; i++) {
+        const vec = formatPgVector(embeddings.vectors[i]);
+        const start = performance.now();
+        await pool.query('INSERT INTO embeddings (id, vector) VALUES ($1, $2::vector)', [i + 1, vec]);
+        latencies.push(performance.now() - start);
+      }
+
+      const totalTime = latencies.reduce((a, b) => a + b, 0);
+      const qps = Math.round((scenario.insertCount / totalTime) * 1000);
+      latencies.sort((a, b) => a - b);
+      const p50 = latencies[Math.floor(latencies.length * 0.5)]?.toFixed(1) || 0;
+      const p99 = latencies[Math.floor(latencies.length * 0.99)]?.toFixed(1) || 0;
+
+      await pool.query('DROP TABLE IF EXISTS embeddings');
+      await pool.end();
+      await server.stop();
+
+      return {
+        throughput: qps,
+        recall: 'N/A',
+        p50: parseFloat(p50),
+        p99: parseFloat(p99),
+        errors: 0,
+        totalOps: scenario.insertCount,
+        skipped: false
+      };
+    }
+
+    // SEARCH scenario - Phase 1: Insert all vectors (not measured)
+    console.log('    Inserting vectors...');
+    for (let i = 0; i < embeddings.vectors.length; i++) {
+      const vec = formatPgVector(embeddings.vectors[i]);
+      await pool.query('INSERT INTO embeddings (id, vector) VALUES ($1, $2::vector)', [i + 1, vec]);
+    }
+
+    // Phase 2: Warm-up queries (not measured)
+    console.log('    Warming up...');
+    for (let i = 0; i < scenario.warmupQueries; i++) {
+      const queryVec = formatPgVector(queryVectors[i % queryVectors.length]);
+      await pool.query(`SELECT id FROM embeddings ORDER BY vector <-> $1::vector LIMIT $2`, [queryVec, scenario.k]);
+    }
+
+    // Phase 3: Measured queries with recall tracking
+    console.log('    Running measured queries...');
+    const latencies = [];
+    const approximateResults = [];
+
+    for (let i = 0; i < scenario.queryCount; i++) {
+      const queryVec = formatPgVector(queryVectors[i]);
+      const start = performance.now();
+      const result = await pool.query(
+        `SELECT id FROM embeddings ORDER BY vector <-> $1::vector LIMIT $2`,
+        [queryVec, scenario.k]
+      );
+      latencies.push(performance.now() - start);
+
+      // Collect IDs for recall calculation
+      approximateResults.push(result.rows.map(r => r.id));
+    }
+
+    // Calculate recall
+    const { recall } = calculateRecall(approximateResults, groundTruth, scenario.k);
+
+    // Calculate metrics
+    const totalTime = latencies.reduce((a, b) => a + b, 0);
+    const qps = Math.round((scenario.queryCount / totalTime) * 1000);
+    latencies.sort((a, b) => a - b);
+    const p50 = latencies[Math.floor(latencies.length * 0.5)]?.toFixed(1) || 0;
+    const p99 = latencies[Math.floor(latencies.length * 0.99)]?.toFixed(1) || 0;
+
+    // Cleanup
+    await pool.query('DROP TABLE IF EXISTS embeddings');
+    await pool.end();
+    await server.stop();
+
+    return {
+      throughput: qps,
+      recall: (recall * 100).toFixed(1),  // as percentage
+      p50: parseFloat(p50),
+      p99: parseFloat(p99),
+      errors: 0,
+      totalOps: scenario.queryCount,
+      skipped: false
+    };
+  } catch (error) {
+    console.error(`   pgserve (${mode}) vector benchmark failed:`, error.message);
+    if (server) {
+      try { await server.stop(); } catch { /* ignore */ }
+    }
+    return { throughput: 0, recall: 'N/A', p50: 0, p99: 0, errors: 0, totalOps: 0, skipped: true, reason: error.message };
+  }
+}
+
 /**
  * Generate comparison report
  */
-function generateReport(results) {
+function generateReport(results, vectorResults = []) {
   const report = {
     timestamp: new Date().toISOString(),
-    scenarios: results
+    scenarios: results,
+    vectorScenarios: vectorResults
   };
 
   // Save JSON
@@ -614,6 +1274,58 @@ function generateReport(results) {
     }
   }
 
+  // Vector benchmark results (with Recall@k)
+  if (vectorResults && vectorResults.length > 0) {
+    md += '---\n\n';
+    md += '## Vector Benchmarks (pgvector) - Recall@k Methodology\n\n';
+    md += '*Following industry-standard ANN-Benchmarks methodology: comparing approximate results to brute-force ground truth.*\n\n';
+
+    for (const scenario of vectorResults) {
+      md += `### ${scenario.name}\n\n`;
+      md += `${scenario.description}\n\n`;
+
+      const { pglite, postgres, pgserve, pgserveRam, k } = scenario;
+
+      md += '```\n';
+      md += '┌─────────────────┬──────────┬──────────┬──────────┬─────────────┐\n';
+      md += '│ Metric          │ PGlite   │ PostgreSQL│ pgserve  │ pgserve RAM │\n';
+      md += '├─────────────────┼──────────┼──────────┼──────────┼─────────────┤\n';
+
+      const pad = (s, n) => String(s).padEnd(n);
+      const val = (r, key) => r.skipped ? 'N/A' : r[key];
+      const recallVal = (r) => r.skipped ? 'N/A' : `${r.recall}%`;
+
+      md += `│ Recall@${String(k || 10).padEnd(8)}│ ${pad(recallVal(pglite), 8)} │ ${pad(recallVal(postgres), 9)} │ ${pad(recallVal(pgserve), 8)} │ ${pad(recallVal(pgserveRam), 11)} │\n`;
+      md += `│ Throughput (qps)│ ${pad(val(pglite, 'throughput'), 8)} │ ${pad(val(postgres, 'throughput'), 9)} │ ${pad(val(pgserve, 'throughput'), 8)} │ ${pad(val(pgserveRam, 'throughput'), 11)} │\n`;
+      md += `│ P50 latency (ms)│ ${pad(val(pglite, 'p50'), 8)} │ ${pad(val(postgres, 'p50'), 9)} │ ${pad(val(pgserve, 'p50'), 8)} │ ${pad(val(pgserveRam, 'p50'), 11)} │\n`;
+      md += `│ P99 latency (ms)│ ${pad(val(pglite, 'p99'), 8)} │ ${pad(val(postgres, 'p99'), 9)} │ ${pad(val(pgserve, 'p99'), 8)} │ ${pad(val(pgserveRam, 'p99'), 11)} │\n`;
+      md += `│ Errors          │ ${pad(val(pglite, 'errors'), 8)} │ ${pad(val(postgres, 'errors'), 9)} │ ${pad(val(pgserve, 'errors'), 8)} │ ${pad(val(pgserveRam, 'errors'), 11)} │\n`;
+      md += '└─────────────────┴──────────┴──────────┴──────────┴─────────────┘\n';
+      md += '```\n\n';
+
+      // Find winner among non-skipped (considering both recall and throughput)
+      const candidates = {};
+      if (!pglite.skipped) candidates.pglite = { recall: parseFloat(pglite.recall), qps: pglite.throughput };
+      if (!postgres.skipped) candidates.postgres = { recall: parseFloat(postgres.recall), qps: postgres.throughput };
+      if (!pgserve.skipped) candidates.pgserve = { recall: parseFloat(pgserve.recall), qps: pgserve.throughput };
+      if (pgserveRam && !pgserveRam.skipped) candidates.pgserveRam = { recall: parseFloat(pgserveRam.recall), qps: pgserveRam.throughput };
+
+      if (Object.keys(candidates).length > 0) {
+        const nameMap = { pglite: 'PGlite', postgres: 'PostgreSQL', pgserve: 'pgserve', pgserveRam: 'pgserve RAM' };
+        // Winner = highest QPS among those with 100% recall, otherwise highest recall
+        const perfect = Object.entries(candidates).filter(([, v]) => v.recall === 100);
+        let winnerKey;
+        if (perfect.length > 0) {
+          winnerKey = perfect.reduce((a, b) => a[1].qps > b[1].qps ? a : b)[0];
+          md += `**${nameMap[winnerKey]} wins** (100% recall @ ${candidates[winnerKey].qps} qps)\n\n`;
+        } else {
+          winnerKey = Object.entries(candidates).reduce((a, b) => a[1].recall > b[1].recall ? a : b)[0];
+          md += `**${nameMap[winnerKey]} wins** (${candidates[winnerKey].recall}% recall @ ${candidates[winnerKey].qps} qps)\n\n`;
+        }
+      }
+    }
+  }
+
   md += '---\n\n';
   md += '## Why pgserve?\n\n';
   md += '- **TRUE Concurrency**: Native PostgreSQL process forking\n';
@@ -636,10 +1348,36 @@ function generateReport(results) {
  * Main runner
  */
 async function main() {
-  console.log('╔════════════════════════════════════════════════════════════════╗');
-  console.log('║  pgserve Benchmark Suite                                       ║');
-  console.log('║  Comparing: SQLite | PGlite | PostgreSQL | pgserve            ║');
-  console.log('╚════════════════════════════════════════════════════════════════╝\n');
+  // Parse CLI args
+  const args = process.argv.slice(2);
+  const includeVector = args.includes('--include-vector') || args.includes('--vector');
+  const vectorOnly = args.includes('--vector-only');
+
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+pgserve Benchmark Suite
+
+Usage:
+  bun tests/benchmarks/runner.js [options]
+
+Options:
+  --include-vector   Include vector (pgvector) benchmarks
+  --vector-only      Run only vector benchmarks
+  --help, -h         Show this help
+
+Vector benchmarks require:
+  - PGLite: Built-in pgvector support
+  - PostgreSQL: Docker image pgvector/pgvector:pg17
+  - pgserve: Not yet supported (marked as skipped)
+`);
+    process.exit(0);
+  }
+
+  // Print banner
+  banner();
+  if (includeVector || vectorOnly) {
+    console.log(`${C.dim}  + Vector benchmarks (pgvector) enabled${C.reset}\n`);
+  }
 
   // Ensure results directory exists
   if (!fs.existsSync(RESULTS_DIR)) {
@@ -647,54 +1385,137 @@ async function main() {
   }
 
   const results = [];
+  const vectorResults = [];
 
   // Check if RAM mode is available (Linux only with /dev/shm)
   const canUseRam = os.platform() === 'linux' && fs.existsSync('/dev/shm');
   if (canUseRam) {
-    console.log('💾 RAM mode available (/dev/shm detected)\n');
+    console.log(`${C.green}💾 RAM mode available (/dev/shm detected)${C.reset}\n`);
   } else {
-    console.log('⚠️  RAM mode not available (Linux /dev/shm required)\n');
+    console.log(`${C.yellow}⚠️  RAM mode not available (Linux /dev/shm required)${C.reset}\n`);
   }
 
-  for (const scenario of scenarios) {
-    console.log(`\n📊 Scenario: ${scenario.name}`);
-    console.log(`   ${scenario.description}\n`);
+  // Run CRUD benchmarks (unless --vector-only)
+  if (!vectorOnly) {
+    for (const scenario of scenarios) {
+      section(scenario.name, scenario.description);
 
-    const sqlite = await benchmarkSQLite(scenario);
-    const pglite = await benchmarkPGlite(scenario);
-    const postgres = await benchmarkPostgreSQL(scenario);
-    const pgserve = await benchmarkPgserve(scenario, false);  // disk mode
-    const pgserveRam = canUseRam
-      ? await benchmarkPgserve(scenario, true)  // RAM mode
-      : { throughput: 0, p50: 0, p99: 0, errors: 0, lockTimeouts: 0, totalOps: 0, skipped: true };
+      const sqlite = await benchmarkSQLite(scenario);
+      const pglite = await benchmarkPGlite(scenario);
+      const postgres = await benchmarkPostgreSQL(scenario);
+      const pgserve = await benchmarkPgserve(scenario, false);  // disk mode
+      const pgserveRam = canUseRam
+        ? await benchmarkPgserve(scenario, true)  // RAM mode
+        : { throughput: 0, p50: 0, p99: 0, errors: 0, lockTimeouts: 0, totalOps: 0, skipped: true };
 
-    results.push({
-      name: scenario.name,
-      description: scenario.description,
-      sqlite,
-      pglite,
-      postgres,
-      pgserve,
-      pgserveRam
-    });
+      results.push({
+        name: scenario.name,
+        description: scenario.description,
+        sqlite,
+        pglite,
+        postgres,
+        pgserve,
+        pgserveRam
+      });
 
-    console.log(`\n   SQLite:        ${sqlite.throughput} qps, P50=${sqlite.p50}ms, errors=${sqlite.errors}`);
-    console.log(`   PGlite:        ${pglite.throughput} qps, P50=${pglite.p50}ms, errors=${pglite.errors}`);
-    console.log(`   PostgreSQL:    ${postgres.throughput} qps, P50=${postgres.p50}ms, errors=${postgres.errors}`);
-    console.log(`   pgserve:       ${pgserve.throughput} qps, P50=${pgserve.p50}ms, errors=${pgserve.errors}`);
-    if (canUseRam) {
-      console.log(`   pgserve (RAM): ${pgserveRam.throughput} qps, P50=${pgserveRam.p50}ms, errors=${pgserveRam.errors}`);
+      // Scenario results summary
+      console.log(`\n  ${C.bold}Results:${C.reset}`);
+      console.log(`  ${C.dim}──────────────────────────────────────────${C.reset}`);
+      console.log(`  ${C.yellow}🔸${C.reset} SQLite:        ${C.bold}${sqlite.throughput}${C.reset} qps, P50=${sqlite.p50}ms, P99=${sqlite.p99}ms`);
+      console.log(`  ${C.blue}🔹${C.reset} PGlite:        ${C.bold}${pglite.throughput}${C.reset} qps, P50=${pglite.p50}ms, P99=${pglite.p99}ms`);
+      console.log(`  ${C.cyan}🔷${C.reset} PostgreSQL:    ${postgres.skipped ? `${C.dim}SKIPPED${C.reset}` : `${C.bold}${postgres.throughput}${C.reset} qps, P50=${postgres.p50}ms, P99=${postgres.p99}ms`}`);
+      console.log(`  ${C.green}🚀${C.reset} pgserve:       ${C.bold}${pgserve.throughput}${C.reset} qps, P50=${pgserve.p50}ms, P99=${pgserve.p99}ms`);
+      if (canUseRam) {
+        console.log(`  ${C.magenta}⚡${C.reset} pgserve (RAM): ${C.bold}${pgserveRam.throughput}${C.reset} qps, P50=${pgserveRam.p50}ms, P99=${pgserveRam.p99}ms`);
+      }
     }
   }
 
-  console.log('\n📄 Generating report...\n');
-  generateReport(results);
+  // Run vector benchmarks (if --include-vector or --vector-only)
+  if (includeVector || vectorOnly) {
+    console.log(`\n${C.cyan}${C.bold}
+╔════════════════════════════════════════════════════════════════╗
+║  Vector Benchmarks (pgvector) - Recall@k Methodology          ║
+╚════════════════════════════════════════════════════════════════╝${C.reset}\n`);
 
-  console.log('╔════════════════════════════════════════════════════════════════╗');
-  console.log('║  Benchmarks Complete!                                         ║');
-  console.log('║                                                                ║');
-  console.log('║  Try it yourself:  npx pgserve                                ║');
-  console.log('╚════════════════════════════════════════════════════════════════╝\n');
+    // Load or generate embeddings
+    console.log(`${C.dim}📦 Loading embeddings...${C.reset}`);
+    const dimension = 1536;
+    const corpusSize = 10000;  // 10k vectors (~60MB) to exceed buffer cache and show RAM vs disk difference
+
+    // Ensure embeddings file exists
+    getEmbeddingsPath(corpusSize, dimension);
+    const embeddings = loadEmbeddings(`embeddings-${corpusSize}-${dimension}.json`);
+    const queryVectors = generateQueryVectors(100, dimension);
+    console.log(`${C.dim}   Loaded ${embeddings.vectors.length} corpus vectors, ${queryVectors.length} query vectors${C.reset}\n`);
+
+    for (const scenario of vectorScenarios) {
+      section(`Vector: ${scenario.name}`, scenario.description);
+
+      let groundTruth = null;
+
+      // Only compute ground truth for SEARCH scenarios
+      if (scenario.type === 'SEARCH') {
+        console.log(`${C.dim}  📐 Computing ground truth (brute-force k=${scenario.k})...${C.reset}`);
+        groundTruth = getGroundTruth(
+          embeddings.vectors,
+          queryVectors.slice(0, scenario.queryCount),
+          scenario.k,
+          `corpus-${corpusSize}-dim-${dimension}-queries-${scenario.queryCount}`
+        );
+      }
+
+      // Run benchmarks
+      const pglite = await benchmarkPGliteVector(scenario, embeddings, queryVectors, groundTruth);
+      const postgres = await benchmarkPostgreSQLVector(scenario, embeddings, queryVectors, groundTruth);
+      const pgserve = await benchmarkPgserveVector(scenario, embeddings, queryVectors, groundTruth, false);
+      const pgserveRam = canUseRam
+        ? await benchmarkPgserveVector(scenario, embeddings, queryVectors, groundTruth, true)
+        : { throughput: 0, recall: 'N/A', p50: 0, p99: 0, errors: 0, totalOps: 0, skipped: true };
+
+      vectorResults.push({
+        name: scenario.name,
+        description: scenario.description,
+        type: scenario.type,
+        k: scenario.k,
+        pglite,
+        postgres,
+        pgserve,
+        pgserveRam
+      });
+
+      // Vector scenario results summary
+      const isInsert = scenario.type === 'INSERT';
+      console.log(`\n  ${C.bold}Results (${isInsert ? 'INSERT QPS' : `Recall@${scenario.k} + QPS`}):${C.reset}`);
+      console.log(`  ${C.dim}──────────────────────────────────────────────────────${C.reset}`);
+      const formatResult = (r, icon, color, name) => {
+        if (r.skipped) return `  ${color}${icon}${C.reset} ${name.padEnd(14)} ${C.dim}SKIPPED${r.reason ? ` (${r.reason})` : ''}${C.reset}`;
+        if (isInsert) {
+          return `  ${color}${icon}${C.reset} ${name.padEnd(14)} ${C.bold}${r.throughput}${C.reset} inserts/sec, P50=${r.p50}ms, P99=${r.p99}ms`;
+        }
+        return `  ${color}${icon}${C.reset} ${name.padEnd(14)} Recall: ${C.bold}${r.recall}%${C.reset}, ${C.bold}${r.throughput}${C.reset} qps, P50=${r.p50}ms`;
+      };
+      console.log(formatResult(pglite, '🔹', C.blue, 'PGlite:'));
+      console.log(formatResult(postgres, '🔷', C.cyan, 'PostgreSQL:'));
+      console.log(formatResult(pgserve, '🚀', C.green, 'pgserve:'));
+      if (canUseRam) {
+        console.log(formatResult(pgserveRam, '⚡', C.magenta, 'pgserve (RAM):'));
+      }
+    }
+  }
+
+  // Save detailed JSON report
+  generateReport(results, vectorResults);
+
+  // Print final results table with scores
+  printFinalResults(results, vectorResults, canUseRam);
+
+  console.log(`${C.cyan}${C.bold}╔════════════════════════════════════════════════════════════════╗
+║  Benchmarks Complete!                                         ║
+║                                                                ║
+║  Try it yourself:  npx pgserve                                ║
+╚════════════════════════════════════════════════════════════════╝${C.reset}
+`);
 }
 
 main().catch(console.error);

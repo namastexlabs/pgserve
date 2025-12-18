@@ -39,3 +39,6 @@ tests/benchmarks/results/
 demo-data/
 test-data-*/
 *.log
+
+# Vector benchmark fixtures (large generated files)
+tests/benchmarks/fixtures/

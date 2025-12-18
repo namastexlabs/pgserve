@@ -53,6 +53,8 @@ OPTIONS:
   --no-provision     Disable auto-provisioning of databases
   --sync-to <url>    Sync to real PostgreSQL (async replication)
   --sync-databases   Database patterns to sync (comma-separated, e.g. "myapp,tenant_*")
+  --no-stats         Disable real-time stats dashboard (enabled by default)
+  --max-connections  Max concurrent connections (default: 1000)
   --help             Show this help message
 
 MODES:
@@ -108,7 +110,9 @@ function parseArgs() {
     cluster: cpuCount > 1 && !isWindows,  // Auto-enable on multi-core (disabled on Windows - no SO_REUSEPORT)
     workers: null, // null = use CPU count
     syncTo: null,  // Sync target PostgreSQL URL
-    syncDatabases: null // Database patterns to sync (comma-separated)
+    syncDatabases: null, // Database patterns to sync (comma-separated)
+    showStats: true, // Show real-time stats dashboard (default: enabled)
+    maxConnections: 1000 // Max concurrent connections (high default for multi-tenant)
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -163,6 +167,18 @@ function parseArgs() {
         options.syncDatabases = args[++i];
         break;
 
+      case '--stats':
+        options.showStats = true;
+        break;
+
+      case '--no-stats':
+        options.showStats = false;
+        break;
+
+      case '--max-connections':
+        options.maxConnections = parseInt(args[++i], 10);
+        break;
+
       case '--help':
       case 'help':
         printHelp();
@@ -211,7 +227,8 @@ pgserve - Embedded PostgreSQL Server
         useRam: options.useRam,
         logLevel: options.logLevel,
         autoProvision: options.autoProvision,
-        workers: options.workers
+        workers: options.workers,
+        maxConnections: options.maxConnections
       });
 
       // Only primary process shows full startup message
@@ -222,7 +239,7 @@ pgserve - Embedded PostgreSQL Server
 Cluster started successfully!
 
   Endpoint:    postgresql://${options.host}:${options.port}/<database>
-  Mode:        ${memoryMode ? 'In-memory (ephemeral)' : 'Persistent'} (Cluster)
+  Mode:        ${memoryMode ? (options.useRam ? 'RAM (/dev/shm)' : 'Ephemeral (temp)') : 'Persistent'} (Cluster)
   Workers:     ${stats.workers} processes
   Data:        ${storageType}
   Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
@@ -244,7 +261,8 @@ Press Ctrl+C to stop
         logLevel: options.logLevel,
         autoProvision: options.autoProvision,
         syncTo: options.syncTo,
-        syncDatabases: options.syncDatabases
+        syncDatabases: options.syncDatabases,
+        maxConnections: options.maxConnections
       });
 
       server = router;
@@ -258,7 +276,7 @@ Press Ctrl+C to stop
 Server started successfully!
 
   Endpoint:    postgresql://${options.host}:${options.port}/<database>
-  Mode:        ${memoryMode ? 'In-memory (ephemeral)' : 'Persistent'}
+  Mode:        ${memoryMode ? (options.useRam ? 'RAM (/dev/shm)' : 'Ephemeral (temp)') : 'Persistent'}
   Data:        ${storageType}
   PostgreSQL:  Port ${router.pgPort} (internal)
   Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
@@ -272,12 +290,45 @@ Press Ctrl+C to stop
 `);
     }
 
+    // Start stats dashboard if requested (only for primary/single-process)
+    let dashboard = null;
+    if (options.showStats && !process.env.PGSERVE_WORKER) {
+      const { StatsDashboard } = await import('../src/stats-dashboard.js');
+      const { StatsCollector } = await import('../src/stats-collector.js');
+
+      // Create stats collector with appropriate sources
+      const collector = new StatsCollector({
+        router: options.cluster ? null : server,
+        pgManager: server.pgManager,
+        clusterStats: options.cluster ? () => server.getStats() : null,
+        logger: server.logger,
+        port: options.port,
+        host: options.host
+      });
+
+      dashboard = new StatsDashboard({
+        refreshInterval: 2000, // 2 second refresh for real-time feel
+        statsProvider: () => collector.collect()
+      });
+
+      dashboard.start();
+    }
+
     // Graceful shutdown (only for primary/single-process, workers handle via IPC)
     if (!process.env.PGSERVE_WORKER) {
       const shutdown = async () => {
+        // Stop dashboard first to restore cursor
+        if (dashboard) {
+          dashboard.stop();
+        }
         console.log('\nShutting down...');
-        await server.stop();
-        console.log('Server stopped.');
+        try {
+          await server.stop();
+          console.log('Server stopped.');
+        } catch (err) {
+          console.error('Error during shutdown:', err.message);
+          // Still exit - best effort cleanup
+        }
         process.exit(0);
       };
 

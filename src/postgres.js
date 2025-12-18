@@ -660,6 +660,7 @@ export class PostgresManager {
         this.binaries.postgres,
         '-D', this.databaseDir,
         '-p', this.port.toString(),
+        '-c', 'max_connections=1000',  // Support high connection counts for stress testing
       ];
 
       // Enable Unix socket for faster local connections (Linux/macOS)
