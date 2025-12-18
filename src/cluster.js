@@ -42,6 +42,7 @@ class ClusterRouter extends EventEmitter {
     this.pgPassword = options.pgPassword || 'postgres';
     this.autoProvision = options.autoProvision !== false;
     this.maxConnections = options.maxConnections || 1000;
+    this.enablePgvector = options.enablePgvector || false;
 
     this.logger = createLogger({ level: options.logLevel || 'info' });
     this.sql = null;  // Bun.sql for admin queries
@@ -124,11 +125,51 @@ class ClusterRouter extends EventEmitter {
       if (result.length === 0) {
         // Use sql() helper for safe identifier escaping (like CREATE DATABASE)
         await this.sql.unsafe(`CREATE DATABASE "${dbName.replace(/"/g, '""')}"`);
+
+        // Auto-enable pgvector extension if configured
+        if (this.enablePgvector) {
+          await this.enablePgvectorExtension(dbName);
+        }
       }
     } catch (error) {
       // Ignore "already exists" (race condition between workers)
       if (!error.message?.includes('already exists')) {
         this.logger.error({ database: dbName, err: error }, 'Failed to create database');
+      }
+    }
+  }
+
+  /**
+   * Enable pgvector extension on a database
+   * Creates a temporary connection to the specific database to run CREATE EXTENSION
+   * @param {string} dbName - Database name to enable pgvector on
+   */
+  async enablePgvectorExtension(dbName) {
+    let dbPool = null;
+
+    try {
+      // Create temporary connection to the specific database
+      dbPool = new SQL({
+        hostname: '127.0.0.1',
+        port: this.pgPort,
+        database: dbName,
+        username: this.pgUser,
+        password: this.pgPassword,
+        max: 1,
+        idleTimeout: 5,
+        connectionTimeout: 5,
+      });
+
+      // Enable pgvector extension
+      await dbPool.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
+      this.logger.info({ dbName }, 'pgvector extension enabled');
+    } catch (error) {
+      // Log but don't fail database creation - pgvector might not be available
+      this.logger.warn({ dbName, err: error.message }, 'Failed to enable pgvector extension (non-fatal)');
+    } finally {
+      // Always close the temporary connection
+      if (dbPool) {
+        await dbPool.close().catch(() => {});
       }
     }
   }
@@ -342,7 +383,8 @@ export async function startClusterServer(options = {}) {
       dataDir: options.baseDir,
       port: pgPort,
       logger: logger.child({ component: 'postgres' }),
-      useRam: options.useRam  // Use /dev/shm for true RAM storage (Linux only)
+      useRam: options.useRam,  // Use /dev/shm for true RAM storage (Linux only)
+      enablePgvector: options.enablePgvector  // Auto-enable pgvector extension on new databases
     });
 
     await pgManager.start();
@@ -366,7 +408,8 @@ export async function startClusterServer(options = {}) {
         PGSERVE_PG_PASSWORD: 'postgres',
         PGSERVE_LOG_LEVEL: options.logLevel || 'info',
         PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false',
-        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000)
+        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000),
+        PGSERVE_ENABLE_PGVECTOR: options.enablePgvector ? 'true' : 'false'
       });
       workers.set(worker.id, worker);
     }
@@ -393,7 +436,8 @@ export async function startClusterServer(options = {}) {
         PGSERVE_PG_PASSWORD: 'postgres',
         PGSERVE_LOG_LEVEL: options.logLevel || 'info',
         PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false',
-        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000)
+        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000),
+        PGSERVE_ENABLE_PGVECTOR: options.enablePgvector ? 'true' : 'false'
       });
       workers.set(newWorker.id, newWorker);
     });
@@ -480,7 +524,8 @@ export async function startClusterServer(options = {}) {
       pgPassword: process.env.PGSERVE_PG_PASSWORD || 'postgres',
       logLevel: process.env.PGSERVE_LOG_LEVEL || 'info',
       autoProvision: process.env.PGSERVE_AUTO_PROVISION === 'true',
-      maxConnections: parseInt(process.env.PGSERVE_MAX_CONNECTIONS) || 1000
+      maxConnections: parseInt(process.env.PGSERVE_MAX_CONNECTIONS) || 1000,
+      enablePgvector: process.env.PGSERVE_ENABLE_PGVECTOR === 'true'
     });
 
     await router.start();

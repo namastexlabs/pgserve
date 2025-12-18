@@ -73,6 +73,10 @@ psql postgresql://localhost:8432/myapp
     <td>Sync to real PostgreSQL with minimal overhead</td>
   </tr>
   <tr>
+    <td><b>pgvector Built-in</b></td>
+    <td>Use <code>--pgvector</code> for auto-enabled vector similarity search</td>
+  </tr>
+  <tr>
     <td><b>Cross-Platform</b></td>
     <td>Linux x64, macOS ARM64/x64, Windows x64</td>
   </tr>
@@ -129,6 +133,8 @@ Options:
   --no-provision        Disable auto-provisioning of databases
   --sync-to <url>       Sync to real PostgreSQL (async replication)
   --sync-databases <p>  Database patterns to sync (comma-separated)
+  --pgvector            Auto-enable pgvector extension on new databases
+  --max-connections <n> Max concurrent connections (default: 1000)
   --help                Show help message
 ```
 
@@ -147,6 +153,12 @@ pgserve --data /var/lib/pgserve
 
 # Custom port
 pgserve --port 5433
+
+# Enable pgvector for AI/RAG applications
+pgserve --pgvector
+
+# RAM mode + pgvector (fastest for AI workloads)
+pgserve --ram --pgvector
 
 # Sync to production PostgreSQL
 pgserve --sync-to "postgresql://user:pass@db.example.com:5432/prod"
@@ -167,6 +179,7 @@ const server = await startMultiTenantServer({
   baseDir: null,        // null = memory mode
   logLevel: 'info',
   autoProvision: true,
+  enablePgvector: true, // Auto-enable pgvector on new databases
   syncTo: null,         // Optional: PostgreSQL URL for replication
   syncDatabases: null   // Optional: patterns like "myapp,tenant_*"
 });
@@ -255,6 +268,78 @@ pgserve --sync-to "postgresql://..." --sync-databases "myapp,tenant_*"
 ```
 
 > Replication is handled by PostgreSQL's WAL writer process, completely off the runtime event loop. Sync failures don't affect main server operation.
+
+<br>
+
+## pgvector (Vector Search)
+
+pgvector is **built-in** — no separate installation required. Just enable it:
+
+```bash
+# Auto-enable pgvector on all new databases
+pgserve --pgvector
+
+# Combined with RAM mode for fastest vector operations
+pgserve --ram --pgvector
+```
+
+When `--pgvector` is enabled, every new database automatically has the vector extension installed. No SQL setup required.
+
+<details>
+<summary><b>Using pgvector</b></summary>
+
+```javascript
+import pg from 'pg';
+
+const client = new pg.Client({
+  connectionString: 'postgresql://localhost:8432/myapp'
+});
+
+await client.connect();
+
+// Create a table with vector column (1536 dimensions for OpenAI embeddings)
+await client.query(`
+  CREATE TABLE documents (
+    id SERIAL PRIMARY KEY,
+    content TEXT,
+    embedding vector(1536)
+  )
+`);
+
+// Insert a document with its embedding
+const embedding = Array(1536).fill(0).map(() => Math.random());
+await client.query(
+  'INSERT INTO documents (content, embedding) VALUES ($1, $2)',
+  ['Hello world', JSON.stringify(embedding)]
+);
+
+// Find similar documents using k-NN search
+const queryEmbedding = Array(1536).fill(0).map(() => Math.random());
+const result = await client.query(`
+  SELECT content, embedding <-> $1 as distance
+  FROM documents
+  ORDER BY embedding <-> $1
+  LIMIT 10
+`, [JSON.stringify(queryEmbedding)]);
+
+console.log(result.rows);
+await client.end();
+```
+
+</details>
+
+<details>
+<summary><b>Without --pgvector flag</b></summary>
+
+If you don't use `--pgvector`, you can still enable pgvector manually per database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+</details>
+
+> pgvector 0.8.1 is bundled with the PostgreSQL binaries. Supports L2 distance (`<->`), inner product (`<#>`), and cosine distance (`<=>`).
 
 <br>
 
