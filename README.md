@@ -73,6 +73,10 @@ psql postgresql://localhost:8432/myapp
     <td>Sync to real PostgreSQL with minimal overhead</td>
   </tr>
   <tr>
+    <td><b>pgvector Built-in</b></td>
+    <td>Use <code>--pgvector</code> for auto-enabled vector similarity search</td>
+  </tr>
+  <tr>
     <td><b>Cross-Platform</b></td>
     <td>Linux x64, macOS ARM64/x64, Windows x64</td>
   </tr>
@@ -129,6 +133,8 @@ Options:
   --no-provision        Disable auto-provisioning of databases
   --sync-to <url>       Sync to real PostgreSQL (async replication)
   --sync-databases <p>  Database patterns to sync (comma-separated)
+  --pgvector            Auto-enable pgvector extension on new databases
+  --max-connections <n> Max concurrent connections (default: 1000)
   --help                Show help message
 ```
 
@@ -147,6 +153,12 @@ pgserve --data /var/lib/pgserve
 
 # Custom port
 pgserve --port 5433
+
+# Enable pgvector for AI/RAG applications
+pgserve --pgvector
+
+# RAM mode + pgvector (fastest for AI workloads)
+pgserve --ram --pgvector
 
 # Sync to production PostgreSQL
 pgserve --sync-to "postgresql://user:pass@db.example.com:5432/prod"
@@ -167,6 +179,7 @@ const server = await startMultiTenantServer({
   baseDir: null,        // null = memory mode
   logLevel: 'info',
   autoProvision: true,
+  enablePgvector: true, // Auto-enable pgvector on new databases
   syncTo: null,         // Optional: PostgreSQL URL for replication
   syncDatabases: null   // Optional: patterns like "myapp,tenant_*"
 });
@@ -287,7 +300,6 @@ SELECT content FROM documents ORDER BY embedding <-> $1 LIMIT 10;
 ```
 
 See [pgvector documentation](https://github.com/pgvector/pgvector) for full API reference.
-
 </details>
 
 <details>

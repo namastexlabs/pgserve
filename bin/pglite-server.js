@@ -55,6 +55,7 @@ OPTIONS:
   --sync-databases   Database patterns to sync (comma-separated, e.g. "myapp,tenant_*")
   --no-stats         Disable real-time stats dashboard (enabled by default)
   --max-connections  Max concurrent connections (default: 1000)
+  --pgvector         Auto-enable pgvector extension on new databases
   --help             Show this help message
 
 MODES:
@@ -112,7 +113,8 @@ function parseArgs() {
     syncTo: null,  // Sync target PostgreSQL URL
     syncDatabases: null, // Database patterns to sync (comma-separated)
     showStats: true, // Show real-time stats dashboard (default: enabled)
-    maxConnections: 1000 // Max concurrent connections (high default for multi-tenant)
+    maxConnections: 1000, // Max concurrent connections (high default for multi-tenant)
+    enablePgvector: false // Auto-enable pgvector extension on new databases
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -179,6 +181,10 @@ function parseArgs() {
         options.maxConnections = parseInt(args[++i], 10);
         break;
 
+      case '--pgvector':
+        options.enablePgvector = true;
+        break;
+
       case '--help':
       case 'help':
         printHelp();
@@ -228,7 +234,8 @@ pgserve - Embedded PostgreSQL Server
         logLevel: options.logLevel,
         autoProvision: options.autoProvision,
         workers: options.workers,
-        maxConnections: options.maxConnections
+        maxConnections: options.maxConnections,
+        enablePgvector: options.enablePgvector
       });
 
       // Only primary process shows full startup message
@@ -243,6 +250,7 @@ Cluster started successfully!
   Workers:     ${stats.workers} processes
   Data:        ${storageType}
   Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
+  pgvector:    ${options.enablePgvector ? 'Enabled (auto-installed on new DBs)' : 'Disabled (use --pgvector to enable)'}
 
 Examples:
   postgresql://${options.host}:${options.port}/myapp
@@ -262,7 +270,8 @@ Press Ctrl+C to stop
         autoProvision: options.autoProvision,
         syncTo: options.syncTo,
         syncDatabases: options.syncDatabases,
-        maxConnections: options.maxConnections
+        maxConnections: options.maxConnections,
+        enablePgvector: options.enablePgvector
       });
 
       server = router;
@@ -280,6 +289,7 @@ Server started successfully!
   Data:        ${storageType}
   PostgreSQL:  Port ${router.pgPort} (internal)
   Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
+  pgvector:    ${options.enablePgvector ? 'Enabled (auto-installed on new DBs)' : 'Disabled (use --pgvector to enable)'}
   Sync:        ${syncStatus}${options.syncDatabases ? ` (${options.syncDatabases})` : ''}
 
 Examples:
