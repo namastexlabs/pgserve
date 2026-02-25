@@ -17,23 +17,23 @@
         "pg": "^8.16.3",
       },
       "optionalDependencies": {
-        "@embedded-postgres/darwin-arm64": "17.7.0-beta.15",
-        "@embedded-postgres/darwin-x64": "17.7.0-beta.15",
-        "@embedded-postgres/linux-x64": "17.7.0-beta.15",
-        "@embedded-postgres/windows-x64": "17.7.0-beta.15",
+        "@embedded-postgres/darwin-arm64": "18.2.0-beta.16",
+        "@embedded-postgres/darwin-x64": "18.2.0-beta.16",
+        "@embedded-postgres/linux-x64": "18.2.0-beta.16",
+        "@embedded-postgres/windows-x64": "18.2.0-beta.16",
       },
     },
   },
   "packages": {
     "@electric-sql/pglite": ["@electric-sql/pglite@0.2.17", "", {}, "sha512-qEpKRT2oUaWDH6tjRxLHjdzMqRUGYDnGZlKrnL4dJ77JVMcP2Hpo3NYnOSPKdZdeec57B6QPprCUFg0picx5Pw=="],
 
-    "@embedded-postgres/darwin-arm64": ["@embedded-postgres/darwin-arm64@17.7.0-beta.15", "", { "os": "darwin", "cpu": "arm64" }, "sha512-yIo9ACgWI3U84lZpRD2G3ELzVM7fXCaTWCpH+9+lLeEj7+F9eTWYsG3DE/fcsPcDcDDxhLTqX71p9oFeX/KOZA=="],
+    "@embedded-postgres/darwin-arm64": ["@embedded-postgres/darwin-arm64@18.2.0-beta.16", "", { "os": "darwin", "cpu": "arm64" }, "sha512-wnswaF+uDvGeitqajJ8v8xOG4ttFrzixElwKNe2MIxBXSLWPV3xhi6tBY0Sjw8Lmiu6UG9vNLFZSjHPrIeokBg=="],
 
-    "@embedded-postgres/darwin-x64": ["@embedded-postgres/darwin-x64@17.7.0-beta.15", "", { "os": "darwin", "cpu": "x64" }, "sha512-KXXBbiyJ8fNYNQt9ondhVUayQ0+qCi6Uoma23Oa40xoyzXY6kRNjXwlGB7Bvf9ZV8PsiBdlnEv/fSpYeRcDjSA=="],
+    "@embedded-postgres/darwin-x64": ["@embedded-postgres/darwin-x64@18.2.0-beta.16", "", { "os": "darwin", "cpu": "x64" }, "sha512-u9WtTPxRuO0uOny5IniXHSDaLmtOujwzDoExIV/jFT0Fu8SzpX7wdoPbsSPBLgyQWdr/nPA77K9QI4r6P1/fKA=="],
 
-    "@embedded-postgres/linux-x64": ["@embedded-postgres/linux-x64@17.7.0-beta.15", "", { "os": "linux", "cpu": "x64" }, "sha512-HeaxSHsw6ccVh8l5iC4OgXqvaaCGWnnZR9CpgNgrAfnKPPGiEhUPBmO2XhEsFQIhc+ad/+36h0NTvKo4bdi40w=="],
+    "@embedded-postgres/linux-x64": ["@embedded-postgres/linux-x64@18.2.0-beta.16", "", { "os": "linux", "cpu": "x64" }, "sha512-BIt485ioL8/AwDgw37IcdraOfRgHNDOtGM6Hh63vnNaUAG4Z0qtJd5zXS5fr2wZTEsYHyC5PC60k7zkCRZXSzg=="],
 
-    "@embedded-postgres/windows-x64": ["@embedded-postgres/windows-x64@17.7.0-beta.15", "", { "os": "win32", "cpu": "x64" }, "sha512-Oq11yyKxISjefuYdKljcp3Q+uxx237zn9YpP9hO43+6Feorq7USuMIDqk5ofLSQ30FAnVyTqaIQK8ZIjW+tQXQ=="],
+    "@embedded-postgres/windows-x64": ["@embedded-postgres/windows-x64@18.2.0-beta.16", "", { "os": "win32", "cpu": "x64" }, "sha512-Sj6GhCZrvtMwchATEtWuEmexEBWpRNMHPTUHsqPuyDrHX/XgKfpIxz2/AMHa4sp7SZ0JOHGouH8AFIVsWQrQsQ=="],
 
     "@emnapi/core": ["@emnapi/core@1.7.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.1.0", "tslib": "^2.4.0" } }, "sha512-o1uhUASyo921r2XtHYOHy7gdkGLge8ghBEQHMWmyJFoXlpU58kIrhhN3w26lpQb6dspetweapMn2CSNwQ8I4wg=="],
 
