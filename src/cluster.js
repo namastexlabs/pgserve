@@ -23,6 +23,17 @@ const SSL_REQUEST_CODE = 80877103;
 const GSSAPI_REQUEST_CODE = 80877104;
 const CANCEL_REQUEST_CODE = 80877102;
 
+/**
+ * Attempt to write a pending buffer to a target socket.
+ * Returns remaining unwritten bytes, or null if fully flushed.
+ */
+function flushPending(target, pending) {
+  const written = target.write(pending);
+  if (written === pending.byteLength) return null;
+  if (written === 0) return pending;
+  return pending.subarray(written);
+}
+
 // Stats collection constants
 const WORKER_STATS_TIMEOUT_MS = 10000; // Worker stats older than this are considered stale
 const WORKER_STATS_REPORT_INTERVAL_MS = 4000; // How often workers report stats to primary
@@ -100,8 +111,14 @@ class ClusterRouter extends EventEmitter {
         },
         drain(socket) {
           const state = router.socketState.get(socket);
-          if (state?.pgSocket) {
-            state.pgSocket.resume?.();
+          if (!state) return;
+          // Flush any pending PG→Client data
+          if (state.pendingToClient) {
+            state.pendingToClient = flushPending(socket, state.pendingToClient);
+          }
+          // If fully flushed, resume reading from PostgreSQL
+          if (!state.pendingToClient && state.pgSocket) {
+            state.pgSocket.resume();
           }
         }
       }
@@ -182,7 +199,9 @@ class ClusterRouter extends EventEmitter {
       buffer: null,
       pgSocket: null,
       dbName: null,
-      handshakeComplete: false
+      handshakeComplete: false,
+      pendingToPg: null,
+      pendingToClient: null
     });
     this.connections.add(socket);
     this.connectionStats.totalConnected++;
@@ -197,7 +216,17 @@ class ClusterRouter extends EventEmitter {
 
     // If handshake complete, forward to PostgreSQL
     if (state.handshakeComplete && state.pgSocket) {
-      state.pgSocket.write(data);
+      // If there's already pending data, append to it
+      if (state.pendingToPg) {
+        state.pendingToPg = Buffer.concat([state.pendingToPg, data]);
+        return;
+      }
+      const written = state.pgSocket.write(data);
+      if (written < data.byteLength) {
+        // Partial write — buffer remainder and pause client
+        state.pendingToPg = written === 0 ? Buffer.from(data) : Buffer.from(data.subarray(written));
+        socket.pause();
+      }
       return;
     }
 
@@ -250,50 +279,47 @@ class ClusterRouter extends EventEmitter {
 
       const router = this;
 
-      // Connect to PRIMARY's PostgreSQL using Bun.connect()
+      // Shared handler for pgSocket (used by both unix and TCP paths)
+      const pgHandler = {
+        data(_pgSocket, pgData) {
+          // Forward PostgreSQL response to client with backpressure
+          if (state.pendingToClient) {
+            state.pendingToClient = Buffer.concat([state.pendingToClient, pgData]);
+            return;
+          }
+          const written = socket.write(pgData);
+          if (written < pgData.byteLength) {
+            state.pendingToClient = written === 0 ? Buffer.from(pgData) : Buffer.from(pgData.subarray(written));
+            _pgSocket.pause();
+          }
+        },
+        open(pgSocket) {
+          pgSocket.write(startupMessage);
+          state.handshakeComplete = true;
+        },
+        close(_pgSocket) {
+          socket.end();
+        },
+        error(_pgSocket, error) {
+          router.logger.error({ dbName, err: error }, 'PostgreSQL socket error');
+          socket.end();
+        },
+        drain(_pgSocket) {
+          // Flush any pending Client→PG data
+          if (state.pendingToPg) {
+            state.pendingToPg = flushPending(_pgSocket, state.pendingToPg);
+          }
+          // If fully flushed, resume reading from client
+          if (!state.pendingToPg) {
+            socket.resume();
+          }
+        }
+      };
+
       if (this.pgSocketPath) {
-        state.pgSocket = await Bun.connect({
-          unix: this.pgSocketPath,
-          socket: {
-            data(_pgSocket, pgData) {
-              socket.write(pgData);
-            },
-            open(pgSocket) {
-              pgSocket.write(startupMessage);
-              state.handshakeComplete = true;
-            },
-            close(_pgSocket) {
-              socket.end();
-            },
-            error(_pgSocket, error) {
-              router.logger.error({ dbName, err: error }, 'PostgreSQL socket error');
-              socket.end();
-            },
-            drain(_pgSocket) {}
-          }
-        });
+        state.pgSocket = await Bun.connect({ unix: this.pgSocketPath, socket: pgHandler });
       } else {
-        state.pgSocket = await Bun.connect({
-          hostname: '127.0.0.1',
-          port: this.pgPort,
-          socket: {
-            data(_pgSocket, pgData) {
-              socket.write(pgData);
-            },
-            open(pgSocket) {
-              pgSocket.write(startupMessage);
-              state.handshakeComplete = true;
-            },
-            close(_pgSocket) {
-              socket.end();
-            },
-            error(_pgSocket, error) {
-              router.logger.error({ dbName, err: error }, 'PostgreSQL socket error');
-              socket.end();
-            },
-            drain(_pgSocket) {}
-          }
-        });
+        state.pgSocket = await Bun.connect({ hostname: '127.0.0.1', port: this.pgPort, socket: pgHandler });
       }
     } catch (error) {
       this.logger.error({ dbName, err: error }, 'Connection error');
@@ -306,8 +332,10 @@ class ClusterRouter extends EventEmitter {
    */
   handleSocketClose(socket) {
     const state = this.socketState.get(socket);
-    if (state?.pgSocket) {
-      state.pgSocket.end();
+    if (state) {
+      state.pendingToPg = null;
+      state.pendingToClient = null;
+      if (state.pgSocket) state.pgSocket.end();
     }
     this.connections.delete(socket);
     this.socketState.delete(socket);
@@ -334,8 +362,10 @@ class ClusterRouter extends EventEmitter {
     if (error.code !== 'ECONNRESET') {
       this.logger.error({ err: error, dbName: state?.dbName }, 'Socket error');
     }
-    if (state?.pgSocket) {
-      state.pgSocket.end();
+    if (state) {
+      state.pendingToPg = null;
+      state.pendingToClient = null;
+      if (state.pgSocket) state.pgSocket.end();
     }
     this.connections.delete(socket);
     this.socketState.delete(socket);

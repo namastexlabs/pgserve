@@ -5,7 +5,7 @@
     "": {
       "name": "pgserve",
       "dependencies": {
-        "bun": "1.3.4",
+        "bun": "^1.3.4",
       },
       "devDependencies": {
         "@electric-sql/pglite": "^0.2.17",
@@ -20,7 +20,7 @@
         "@embedded-postgres/darwin-arm64": "17.7.0-beta.15",
         "@embedded-postgres/darwin-x64": "17.7.0-beta.15",
         "@embedded-postgres/linux-x64": "17.7.0-beta.15",
-        "@embedded-postgres/win32-x64": "17.7.0-beta.15",
+        "@embedded-postgres/windows-x64": "17.7.0-beta.15",
       },
     },
   },
@@ -32,6 +32,8 @@
     "@embedded-postgres/darwin-x64": ["@embedded-postgres/darwin-x64@17.7.0-beta.15", "", { "os": "darwin", "cpu": "x64" }, "sha512-KXXBbiyJ8fNYNQt9ondhVUayQ0+qCi6Uoma23Oa40xoyzXY6kRNjXwlGB7Bvf9ZV8PsiBdlnEv/fSpYeRcDjSA=="],
 
     "@embedded-postgres/linux-x64": ["@embedded-postgres/linux-x64@17.7.0-beta.15", "", { "os": "linux", "cpu": "x64" }, "sha512-HeaxSHsw6ccVh8l5iC4OgXqvaaCGWnnZR9CpgNgrAfnKPPGiEhUPBmO2XhEsFQIhc+ad/+36h0NTvKo4bdi40w=="],
+
+    "@embedded-postgres/windows-x64": ["@embedded-postgres/windows-x64@17.7.0-beta.15", "", { "os": "win32", "cpu": "x64" }, "sha512-Oq11yyKxISjefuYdKljcp3Q+uxx237zn9YpP9hO43+6Feorq7USuMIDqk5ofLSQ30FAnVyTqaIQK8ZIjW+tQXQ=="],
 
     "@emnapi/core": ["@emnapi/core@1.7.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.1.0", "tslib": "^2.4.0" } }, "sha512-o1uhUASyo921r2XtHYOHy7gdkGLge8ghBEQHMWmyJFoXlpU58kIrhhN3w26lpQb6dspetweapMn2CSNwQ8I4wg=="],
 
