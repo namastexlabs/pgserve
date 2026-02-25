@@ -66,7 +66,7 @@ async function downloadPostgresBinaries() {
 
   const platformKey = getPlatformKey();
   const pkgName = `@embedded-postgres/${platformKey}`;
-  const pkgVersion = '17.7.0-beta.15';
+  const pkgVersion = '18.2.0-beta.16';
 
   console.log(`[pgserve] PostgreSQL binaries not found.`);
   console.log(`[pgserve] Downloading ${pkgName}@${pkgVersion}...`);

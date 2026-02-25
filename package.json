@@ -41,10 +41,10 @@
   },
   "homepage": "https://github.com/namastexlabs/pgserve#readme",
   "optionalDependencies": {
-    "@embedded-postgres/darwin-arm64": "17.7.0-beta.15",
-    "@embedded-postgres/darwin-x64": "17.7.0-beta.15",
-    "@embedded-postgres/linux-x64": "17.7.0-beta.15",
-    "@embedded-postgres/windows-x64": "17.7.0-beta.15"
+    "@embedded-postgres/darwin-arm64": "18.2.0-beta.16",
+    "@embedded-postgres/darwin-x64": "18.2.0-beta.16",
+    "@embedded-postgres/linux-x64": "18.2.0-beta.16",
+    "@embedded-postgres/windows-x64": "18.2.0-beta.16"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.2.17",

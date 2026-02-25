@@ -1,2 +1,2 @@
-pnpm exec lint-staged
-pnpm deadcode
+bunx lint-staged
+bun run deadcode
