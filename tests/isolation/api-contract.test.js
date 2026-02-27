@@ -1,11 +1,5 @@
 /**
- * API contract tests — public isolation APIs work without genie-os dependencies
- *
- * Verifies:
- * 1. All public exports work without importing anything from genie-os
- * 2. normalizeAppId is a pure function (no I/O)
- * 3. getAppConnectionInfo returns expected shape
- * 4. isolation/index.js re-exports all public APIs
+ * API contract tests — public isolation APIs are generic and have no domain dependencies
  */
 
 import { test, expect, beforeAll, afterAll } from 'bun:test';
@@ -14,12 +8,11 @@ import { createLogger } from '../../src/logger.js';
 
 // Import ONLY from the isolation barrel — simulates external consumer
 import {
-  normalizeAppId,
   initCatalog,
   getCatalogEntry,
   upsertCatalogEntry,
-  provisionAppSchema,
-  getAppConnectionInfo,
+  provisionSchema,
+  getConnectionInfo,
 } from '../../src/isolation/index.js';
 
 const pgPort = 15552;
@@ -53,67 +46,44 @@ afterAll(async () => {
   if (pgManager) await pgManager.stop();
 }, 30000);
 
-// ─── normalizeAppId (pure, no I/O) ────────────────────────────────────────────
-
-test('api-contract - normalizeAppId is a pure function', () => {
-  const result = normalizeAppId('my-app');
-  expect(result).toEqual({
-    schemaName: 'app_my_app',
-    roleName: 'app_my_app_role',
-  });
-});
-
-test('api-contract - normalizeAppId lowercases input', () => {
-  const result = normalizeAppId('MYAPP');
-  expect(result.schemaName).toBe('app_myapp');
-  expect(result.roleName).toBe('app_myapp_role');
-});
-
-test('api-contract - normalizeAppId replaces hyphens with underscores', () => {
-  const { schemaName, roleName } = normalizeAppId('khal-backend');
-  expect(schemaName).toBe('app_khal_backend');
-  expect(roleName).toBe('app_khal_backend_role');
-});
-
-test('api-contract - normalizeAppId collapses multiple separators', () => {
-  const { schemaName } = normalizeAppId('my--app__test');
-  expect(schemaName).toBe('app_my_app_test');
-});
-
 // ─── initCatalog + getCatalogEntry (DB-bound) ─────────────────────────────────
 
 test('api-contract - initCatalog creates table', async () => {
-  await initCatalog(sql); // idempotent
+  await initCatalog(sql);
   const rows = await sql`
     SELECT table_name FROM information_schema.tables
-    WHERE table_name = 'pgserve_app_isolation_catalog'
+    WHERE table_name = 'pgserve_isolation_catalog'
   `;
   expect(rows.length).toBe(1);
 });
 
-test('api-contract - getCatalogEntry returns null for missing appId', async () => {
-  const result = await getCatalogEntry(sql, '__no_such_app__');
+test('api-contract - getCatalogEntry returns null for missing name', async () => {
+  const result = await getCatalogEntry(sql, '__no_such_entry__');
   expect(result).toBeNull();
 });
 
 test('api-contract - upsertCatalogEntry then getCatalogEntry round-trips', async () => {
   await upsertCatalogEntry(sql, {
-    appId: 'contract-app',
-    schemaName: 'app_contract_app',
-    roleName: 'app_contract_app_role',
+    name: 'contract-entry',
+    schemaName: 'contract_schema',
+    roleName: 'contract_role',
     policyVersion: 1,
   });
 
-  const entry = await getCatalogEntry(sql, 'contract-app');
-  expect(entry.app_id).toBe('contract-app');
-  expect(entry.schema_name).toBe('app_contract_app');
-  expect(entry.role_name).toBe('app_contract_app_role');
+  const entry = await getCatalogEntry(sql, 'contract-entry');
+  expect(entry.name).toBe('contract-entry');
+  expect(entry.schema_name).toBe('contract_schema');
+  expect(entry.role_name).toBe('contract_role');
 });
 
-// ─── provisionAppSchema ────────────────────────────────────────────────────────
+// ─── provisionSchema ────────────────────────────────────────────────────────
 
-test('api-contract - provisionAppSchema returns expected shape', async () => {
-  const result = await provisionAppSchema(sql, 'shape-test');
+test('api-contract - provisionSchema returns expected shape', async () => {
+  const result = await provisionSchema(sql, {
+    name: 'shape-test',
+    schemaName: 'shape_test_schema',
+    roleName: 'shape_test_role',
+  });
   expect(result).toHaveProperty('schemaName');
   expect(result).toHaveProperty('roleName');
   expect(result).toHaveProperty('created');
@@ -122,30 +92,33 @@ test('api-contract - provisionAppSchema returns expected shape', async () => {
   expect(typeof result.created).toBe('boolean');
 });
 
-// ─── getAppConnectionInfo ─────────────────────────────────────────────────────
+// ─── getConnectionInfo ─────────────────────────────────────────────────────
 
-test('api-contract - getAppConnectionInfo returns expected shape after provision', async () => {
-  await provisionAppSchema(sql, 'conn-info-app');
+test('api-contract - getConnectionInfo returns expected shape after provision', async () => {
+  await provisionSchema(sql, {
+    name: 'conn-info',
+    schemaName: 'conn_info_schema',
+    roleName: 'conn_info_role',
+  });
 
-  const info = await getAppConnectionInfo(sql, 'conn-info-app');
+  const info = await getConnectionInfo(sql, 'conn-info');
   expect(info).not.toBeNull();
-  expect(info.schemaName).toBe('app_conn_info_app');
-  expect(info.roleName).toBe('app_conn_info_app_role');
+  expect(info.schemaName).toBe('conn_info_schema');
+  expect(info.roleName).toBe('conn_info_role');
   expect(typeof info.searchPath).toBe('string');
-  expect(info.searchPath).toContain('app_conn_info_app');
+  expect(info.searchPath).toContain('conn_info_schema');
   expect(info.connectionOptions).toBeDefined();
   expect(info.connectionOptions.searchPath).toBe(info.searchPath);
 });
 
-test('api-contract - getAppConnectionInfo returns null for unprovisioned appId', async () => {
-  const info = await getAppConnectionInfo(sql, '__unprovisioned__');
+test('api-contract - getConnectionInfo returns null for unprovisioned name', async () => {
+  const info = await getConnectionInfo(sql, '__unprovisioned__');
   expect(info).toBeNull();
 });
 
-// ─── No genie-os imports ──────────────────────────────────────────────────────
+// ─── No domain-specific imports ──────────────────────────────────────────────
 
-test('api-contract - isolation module has no genie-os imports', async () => {
-  // Dynamic import the module source and check it doesn't mention genie-os
+test('api-contract - isolation module has no domain-specific imports', async () => {
   const fs = await import('fs');
   const path = await import('path');
 
@@ -158,4 +131,9 @@ test('api-contract - isolation module has no genie-os imports', async () => {
     expect(src).not.toContain('@genie-os');
     expect(src).not.toContain('khal-app');
   }
+});
+
+test('api-contract - no normalizeAppId export (consumer defines naming)', async () => {
+  const barrel = await import('../../src/isolation/index.js');
+  expect(barrel.normalizeAppId).toBeUndefined();
 });

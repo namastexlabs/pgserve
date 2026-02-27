@@ -16,14 +16,13 @@ export { StatsDashboard } from './stats-dashboard.js';
 
 // Isolation APIs
 export {
-  normalizeAppId,
   initCatalog,
   getCatalogEntry,
   upsertCatalogEntry,
-  provisionAppSchema,
-  getAppConnectionInfo,
+  provisionSchema,
+  getConnectionInfo,
   applyDenyByDefault,
-  validateAppConnection,
+  validateConnection,
   isAdminRole,
 } from './isolation/index.js';
 

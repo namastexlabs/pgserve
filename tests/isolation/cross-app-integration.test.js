@@ -1,19 +1,19 @@
 /**
- * Cross-App Isolation Integration Test
+ * Cross-Schema Isolation Integration Test
  *
  * This is the "gate" test that proves the core security guarantee:
- * App A CANNOT access App B's data.
+ * Schema A CANNOT access Schema B's data.
  *
  * Test scenario:
- * 1. Provision two apps: "xapp-alpha" and "xapp-beta"
+ * 1. Provision two schemas: "alpha" and "beta" (consumer-defined names)
  * 2. Enforcement applied (deny-by-default) on both
- * 3. As app_xapp_alpha_role: CREATE TABLE in own schema, INSERT data — works
- * 4. As app_xapp_alpha_role: attempt to read from xapp-beta schema — permission denied
- * 5. As app_xapp_beta_role: attempt to read from xapp-alpha schema — permission denied
- * 6. As app_xapp_alpha_role: attempt to CREATE TABLE in xapp-beta schema — permission denied
+ * 3. As alpha_role: CREATE TABLE in own schema, INSERT data — works
+ * 4. As alpha_role: attempt to read from beta schema — permission denied
+ * 5. As beta_role: attempt to read from alpha schema — permission denied
+ * 6. As alpha_role: attempt to CREATE TABLE in beta schema — permission denied
  * 7. As postgres (admin): verify both schemas have correct isolated data
  * 8. Validate connection info matches catalog
- * 9. Validate admin role is rejected for app connections
+ * 9. Validate admin role is rejected for connections
  *
  * Implementation note: role impersonation is done via SET ROLE within the
  * admin connection, which avoids needing separate LOGIN roles and keeps
@@ -25,9 +25,9 @@ import { PostgresManager } from '../../src/postgres.js';
 import { createLogger } from '../../src/logger.js';
 import {
   initCatalog,
-  provisionAppSchema,
-  getAppConnectionInfo,
-  validateAppConnection,
+  provisionSchema,
+  getConnectionInfo,
+  validateConnection,
 } from '../../src/isolation/index.js';
 
 const pgPort = 15556;
@@ -36,16 +36,14 @@ let pgManager;
 /** @type {import('bun').SQL} Admin connection */
 let sql;
 
-// App IDs used in this test suite
-const ALPHA_APP_ID = 'xapp-alpha';
-const BETA_APP_ID = 'xapp-beta';
+// Consumer-defined names (no imposed naming convention)
+const ALPHA_NAME = 'alpha';
+const ALPHA_SCHEMA = 'alpha_schema';
+const ALPHA_ROLE = 'alpha_role';
 
-// Derived names (match normalizeAppId logic: lowercase + hyphens->underscores)
-const ALPHA_SCHEMA = 'app_xapp_alpha';
-const ALPHA_ROLE = 'app_xapp_alpha_role';
-
-const BETA_SCHEMA = 'app_xapp_beta';
-const BETA_ROLE = 'app_xapp_beta_role';
+const BETA_NAME = 'beta';
+const BETA_SCHEMA = 'beta_schema';
+const BETA_ROLE = 'beta_role';
 
 beforeAll(async () => {
   pgManager = new PostgresManager({
@@ -66,10 +64,10 @@ beforeAll(async () => {
     connectionTimeout: 5,
   });
 
-  // Step 1 & 2: Provision both apps with deny-by-default enforcement
+  // Step 1 & 2: Provision both schemas with deny-by-default enforcement
   await initCatalog(sql);
-  await provisionAppSchema(sql, ALPHA_APP_ID, { enforceDenyByDefault: true });
-  await provisionAppSchema(sql, BETA_APP_ID, { enforceDenyByDefault: true });
+  await provisionSchema(sql, { name: ALPHA_NAME, schemaName: ALPHA_SCHEMA, roleName: ALPHA_ROLE }, { enforceDenyByDefault: true });
+  await provisionSchema(sql, { name: BETA_NAME, schemaName: BETA_SCHEMA, roleName: BETA_ROLE }, { enforceDenyByDefault: true });
 }, 90000);
 
 afterAll(async () => {
@@ -86,8 +84,8 @@ afterAll(async () => {
 
 /**
  * Execute a callback as a specific PostgreSQL role using SET ROLE / RESET ROLE.
- * The superuser can SET ROLE to any role. This simulates what an app connection
- * would do when its login role inherits from the app role.
+ * The superuser can SET ROLE to any role. This simulates what a connection
+ * would do when its login role inherits from the schema role.
  *
  * @param {string} roleName - Role to impersonate
  * @param {() => Promise<any>} fn - Async callback executed under that role
@@ -101,9 +99,9 @@ async function asRole(roleName, fn) {
   }
 }
 
-// ─── Step 3: App alpha can CRUD in its own schema ────────────────────────────
+// ─── Step 3: Alpha can CRUD in its own schema ────────────────────────────────
 
-test('cross-app - app_alpha can CREATE TABLE in own schema', async () => {
+test('cross-isolation - alpha can CREATE TABLE in own schema', async () => {
   await asRole(ALPHA_ROLE, async () => {
     await sql.unsafe(
       `CREATE TABLE IF NOT EXISTS "${ALPHA_SCHEMA}".items (id SERIAL PRIMARY KEY, payload TEXT)`,
@@ -118,7 +116,7 @@ test('cross-app - app_alpha can CREATE TABLE in own schema', async () => {
   expect(tables.length).toBe(1);
 });
 
-test('cross-app - app_alpha can INSERT into own schema', async () => {
+test('cross-isolation - alpha can INSERT into own schema', async () => {
   await asRole(ALPHA_ROLE, async () => {
     await sql.unsafe(`INSERT INTO "${ALPHA_SCHEMA}".items (payload) VALUES ('alpha-secret')`);
   });
@@ -128,7 +126,7 @@ test('cross-app - app_alpha can INSERT into own schema', async () => {
   expect(rows[0].payload).toBe('alpha-secret');
 });
 
-test('cross-app - app_alpha can SELECT from own schema', async () => {
+test('cross-isolation - alpha can SELECT from own schema', async () => {
   let rows;
   await asRole(ALPHA_ROLE, async () => {
     rows = await sql.unsafe(`SELECT payload FROM "${ALPHA_SCHEMA}".items`);
@@ -137,9 +135,9 @@ test('cross-app - app_alpha can SELECT from own schema', async () => {
   expect(rows[0].payload).toBe('alpha-secret');
 });
 
-// ─── Step 4: App alpha CANNOT read from app beta ─────────────────────────────
+// ─── Step 4: Alpha CANNOT read from beta ─────────────────────────────────────
 
-test('cross-app - app_alpha CANNOT SELECT from app_beta schema (permission denied)', async () => {
+test('cross-isolation - alpha CANNOT SELECT from beta schema (permission denied)', async () => {
   // Ensure beta schema has a table (created as admin) so the error is about permissions
   await sql.unsafe(
     `CREATE TABLE IF NOT EXISTS "${BETA_SCHEMA}".items (id SERIAL PRIMARY KEY, payload TEXT)`,
@@ -160,9 +158,9 @@ test('cross-app - app_alpha CANNOT SELECT from app_beta schema (permission denie
   expect(errorCaught).toBe(true);
 });
 
-// ─── Step 5: App beta CANNOT read from app alpha ─────────────────────────────
+// ─── Step 5: Beta CANNOT read from alpha ─────────────────────────────────────
 
-test('cross-app - app_beta CANNOT SELECT from app_alpha schema (permission denied)', async () => {
+test('cross-isolation - beta CANNOT SELECT from alpha schema (permission denied)', async () => {
   let errorCaught = false;
   try {
     await asRole(BETA_ROLE, async () => {
@@ -175,9 +173,9 @@ test('cross-app - app_beta CANNOT SELECT from app_alpha schema (permission denie
   expect(errorCaught).toBe(true);
 });
 
-// ─── Step 6: App alpha CANNOT create tables in app beta schema ────────────────
+// ─── Step 6: Alpha CANNOT create tables in beta schema ───────────────────────
 
-test('cross-app - app_alpha CANNOT CREATE TABLE in app_beta schema (permission denied)', async () => {
+test('cross-isolation - alpha CANNOT CREATE TABLE in beta schema (permission denied)', async () => {
   let errorCaught = false;
   try {
     await asRole(ALPHA_ROLE, async () => {
@@ -190,9 +188,9 @@ test('cross-app - app_alpha CANNOT CREATE TABLE in app_beta schema (permission d
   expect(errorCaught).toBe(true);
 });
 
-// ─── Step 7: Admin verifies both schemas have correct isolated data ───────────
+// ─── Step 7: Admin verifies both schemas have correct isolated data ──────────
 
-test('cross-app - admin verifies alpha schema data is isolated', async () => {
+test('cross-isolation - admin verifies alpha schema data is isolated', async () => {
   const rows = await sql.unsafe(`SELECT payload FROM "${ALPHA_SCHEMA}".items`);
   expect(rows.length).toBeGreaterThan(0);
   const payloads = rows.map((r) => r.payload);
@@ -201,7 +199,7 @@ test('cross-app - admin verifies alpha schema data is isolated', async () => {
   expect(payloads).not.toContain('beta-secret');
 });
 
-test('cross-app - admin verifies beta schema data is isolated', async () => {
+test('cross-isolation - admin verifies beta schema data is isolated', async () => {
   const rows = await sql.unsafe(`SELECT payload FROM "${BETA_SCHEMA}".items`);
   expect(rows.length).toBeGreaterThan(0);
   const payloads = rows.map((r) => r.payload);
@@ -210,10 +208,10 @@ test('cross-app - admin verifies beta schema data is isolated', async () => {
   expect(payloads).not.toContain('alpha-secret');
 });
 
-// ─── Step 8: Connection info matches catalog ──────────────────────────────────
+// ─── Step 8: Connection info matches catalog ─────────────────────────────────
 
-test('cross-app - alpha connection info matches catalog', async () => {
-  const info = await getAppConnectionInfo(sql, ALPHA_APP_ID);
+test('cross-isolation - alpha connection info matches catalog', async () => {
+  const info = await getConnectionInfo(sql, ALPHA_NAME);
   expect(info).not.toBeNull();
   expect(info.schemaName).toBe(ALPHA_SCHEMA);
   expect(info.roleName).toBe(ALPHA_ROLE);
@@ -221,8 +219,8 @@ test('cross-app - alpha connection info matches catalog', async () => {
   expect(info.connectionOptions.searchPath).toBe(info.searchPath);
 });
 
-test('cross-app - beta connection info matches catalog', async () => {
-  const info = await getAppConnectionInfo(sql, BETA_APP_ID);
+test('cross-isolation - beta connection info matches catalog', async () => {
+  const info = await getConnectionInfo(sql, BETA_NAME);
   expect(info).not.toBeNull();
   expect(info.schemaName).toBe(BETA_SCHEMA);
   expect(info.roleName).toBe(BETA_ROLE);
@@ -230,60 +228,60 @@ test('cross-app - beta connection info matches catalog', async () => {
   expect(info.connectionOptions.searchPath).toBe(info.searchPath);
 });
 
-// ─── Step 9: Admin role is rejected for app connections ───────────────────────
+// ─── Step 9: Admin role is rejected for connections ──────────────────────────
 
-test('cross-app - admin role (postgres) is rejected for alpha app connection', async () => {
-  const result = await validateAppConnection(sql, ALPHA_APP_ID, 'postgres');
+test('cross-isolation - admin role (postgres) is rejected for alpha connection', async () => {
+  const result = await validateConnection(sql, ALPHA_NAME, 'postgres');
   expect(result.valid).toBe(false);
   expect(typeof result.reason).toBe('string');
   expect(result.reason.length).toBeGreaterThan(0);
 });
 
-test('cross-app - admin role (postgres) is rejected for beta app connection', async () => {
-  const result = await validateAppConnection(sql, BETA_APP_ID, 'postgres');
+test('cross-isolation - admin role (postgres) is rejected for beta connection', async () => {
+  const result = await validateConnection(sql, BETA_NAME, 'postgres');
   expect(result.valid).toBe(false);
   expect(typeof result.reason).toBe('string');
 });
 
 // ─── Bonus: wrong role validation ────────────────────────────────────────────
 
-test('cross-app - alpha role fails validation for beta app', async () => {
-  // Alpha's role is rejected when used against beta's appId
-  const result = await validateAppConnection(sql, BETA_APP_ID, ALPHA_ROLE);
+test('cross-isolation - alpha role fails validation for beta', async () => {
+  // Alpha's role is rejected when used against beta's name
+  const result = await validateConnection(sql, BETA_NAME, ALPHA_ROLE);
   expect(result.valid).toBe(false);
   expect(typeof result.reason).toBe('string');
 });
 
-test('cross-app - beta role fails validation for alpha app', async () => {
-  const result = await validateAppConnection(sql, ALPHA_APP_ID, BETA_ROLE);
+test('cross-isolation - beta role fails validation for alpha', async () => {
+  const result = await validateConnection(sql, ALPHA_NAME, BETA_ROLE);
   expect(result.valid).toBe(false);
   expect(typeof result.reason).toBe('string');
 });
 
 // ─── Privilege-level checks (belt and suspenders) ────────────────────────────
 
-test('cross-app - alpha role has no SELECT privilege on beta items table', async () => {
+test('cross-isolation - alpha role has no SELECT privilege on beta items table', async () => {
   const rows = await sql.unsafe(`
     SELECT has_table_privilege('${ALPHA_ROLE}', '${BETA_SCHEMA}.items', 'SELECT') AS can_select
   `);
   expect(rows[0].can_select).toBe(false);
 });
 
-test('cross-app - beta role has no SELECT privilege on alpha items table', async () => {
+test('cross-isolation - beta role has no SELECT privilege on alpha items table', async () => {
   const rows = await sql.unsafe(`
     SELECT has_table_privilege('${BETA_ROLE}', '${ALPHA_SCHEMA}.items', 'SELECT') AS can_select
   `);
   expect(rows[0].can_select).toBe(false);
 });
 
-test('cross-app - alpha role has no CREATE privilege on beta schema', async () => {
+test('cross-isolation - alpha role has no CREATE privilege on beta schema', async () => {
   const rows = await sql.unsafe(`
     SELECT has_schema_privilege('${ALPHA_ROLE}', '${BETA_SCHEMA}', 'CREATE') AS can_create
   `);
   expect(rows[0].can_create).toBe(false);
 });
 
-test('cross-app - beta role has no USAGE privilege on alpha schema', async () => {
+test('cross-isolation - beta role has no USAGE privilege on alpha schema', async () => {
   const rows = await sql.unsafe(`
     SELECT has_schema_privilege('${BETA_ROLE}', '${ALPHA_SCHEMA}', 'USAGE') AS has_usage
   `);

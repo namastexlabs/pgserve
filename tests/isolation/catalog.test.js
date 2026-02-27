@@ -1,8 +1,5 @@
 /**
- * Catalog tests — pgserve_app_isolation_catalog CRUD + idempotent init
- *
- * Uses an embedded PostgreSQL instance (via PostgresManager) so the tests
- * are self-contained and have no external dependency.
+ * Catalog tests — pgserve_isolation_catalog CRUD + idempotent init
  */
 
 import { test, expect, beforeAll, afterAll } from 'bun:test';
@@ -44,66 +41,62 @@ afterAll(async () => {
 test('catalog - table exists after initCatalog', async () => {
   const result = await sql`
     SELECT table_name FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'pgserve_app_isolation_catalog'
+    WHERE table_schema = 'public' AND table_name = 'pgserve_isolation_catalog'
   `;
   expect(result.length).toBe(1);
 });
 
 test('catalog - initCatalog is idempotent (can be called multiple times)', async () => {
-  // Call init twice — should not throw
   await initCatalog(sql);
   await initCatalog(sql);
 
   const result = await sql`
     SELECT table_name FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_name = 'pgserve_app_isolation_catalog'
+    WHERE table_schema = 'public' AND table_name = 'pgserve_isolation_catalog'
   `;
   expect(result.length).toBe(1);
 });
 
-test('catalog - getCatalogEntry returns null for unknown appId', async () => {
-  const entry = await getCatalogEntry(sql, 'no-such-app');
+test('catalog - getCatalogEntry returns null for unknown name', async () => {
+  const entry = await getCatalogEntry(sql, 'no-such-entry');
   expect(entry).toBeNull();
 });
 
 test('catalog - upsertCatalogEntry inserts a new entry', async () => {
   await upsertCatalogEntry(sql, {
-    appId: 'test-app-1',
-    schemaName: 'app_test_app_1',
-    roleName: 'app_test_app_1_role',
+    name: 'test-1',
+    schemaName: 'test_schema_1',
+    roleName: 'test_role_1',
     policyVersion: 1,
   });
 
-  const entry = await getCatalogEntry(sql, 'test-app-1');
+  const entry = await getCatalogEntry(sql, 'test-1');
   expect(entry).not.toBeNull();
-  expect(entry.app_id).toBe('test-app-1');
-  expect(entry.schema_name).toBe('app_test_app_1');
-  expect(entry.role_name).toBe('app_test_app_1_role');
+  expect(entry.name).toBe('test-1');
+  expect(entry.schema_name).toBe('test_schema_1');
+  expect(entry.role_name).toBe('test_role_1');
   expect(entry.policy_version).toBe(1);
   expect(entry.created_at).toBeDefined();
   expect(entry.updated_at).toBeDefined();
 });
 
 test('catalog - upsertCatalogEntry updates an existing entry (no duplicates)', async () => {
-  // Insert first
   await upsertCatalogEntry(sql, {
-    appId: 'test-app-upsert',
-    schemaName: 'app_test_app_upsert',
-    roleName: 'app_test_app_upsert_role',
+    name: 'test-upsert',
+    schemaName: 'test_schema_upsert',
+    roleName: 'test_role_upsert',
     policyVersion: 1,
   });
 
-  // Upsert again with same appId
   await upsertCatalogEntry(sql, {
-    appId: 'test-app-upsert',
-    schemaName: 'app_test_app_upsert',
-    roleName: 'app_test_app_upsert_role',
+    name: 'test-upsert',
+    schemaName: 'test_schema_upsert',
+    roleName: 'test_role_upsert',
     policyVersion: 2,
   });
 
-  // Check there is only ONE row for this appId
   const rows = await sql`
-    SELECT * FROM pgserve_app_isolation_catalog WHERE app_id = 'test-app-upsert'
+    SELECT * FROM pgserve_isolation_catalog WHERE name = 'test-upsert'
   `;
   expect(rows.length).toBe(1);
   expect(rows[0].policy_version).toBe(2);
@@ -111,15 +104,15 @@ test('catalog - upsertCatalogEntry updates an existing entry (no duplicates)', a
 
 test('catalog - getCatalogEntry returns all expected columns', async () => {
   await upsertCatalogEntry(sql, {
-    appId: 'test-app-columns',
-    schemaName: 'app_test_app_columns',
-    roleName: 'app_test_app_columns_role',
+    name: 'test-columns',
+    schemaName: 'test_schema_columns',
+    roleName: 'test_role_columns',
     policyVersion: 1,
   });
 
-  const entry = await getCatalogEntry(sql, 'test-app-columns');
+  const entry = await getCatalogEntry(sql, 'test-columns');
   expect(entry).toHaveProperty('id');
-  expect(entry).toHaveProperty('app_id');
+  expect(entry).toHaveProperty('name');
   expect(entry).toHaveProperty('schema_name');
   expect(entry).toHaveProperty('role_name');
   expect(entry).toHaveProperty('policy_version');
