@@ -14,5 +14,18 @@ export { Dashboard } from './dashboard.js';
 export { StatsCollector } from './stats-collector.js';
 export { StatsDashboard } from './stats-dashboard.js';
 
+// Isolation APIs
+export {
+  normalizeAppId,
+  initCatalog,
+  getCatalogEntry,
+  upsertCatalogEntry,
+  provisionAppSchema,
+  getAppConnectionInfo,
+  applyDenyByDefault,
+  validateAppConnection,
+  isAdminRole,
+} from './isolation/index.js';
+
 // Default export
 export { startMultiTenantServer as default } from './router.js';
