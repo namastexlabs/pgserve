@@ -14,6 +14,7 @@
  * Uses sql.unsafe() because schema/role names are identifiers, not parameters.
  */
 
+import { validateIdentifier } from './identifiers.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger({ component: 'isolation:enforcement' });
@@ -29,26 +30,31 @@ const logger = createLogger({ component: 'isolation:enforcement' });
  * @returns {Promise<void>}
  */
 export async function applyDenyByDefault(sql, { schemaName, roleName }) {
-  // 1. Revoke public access — deny-by-default baseline
-  await sql.unsafe(`REVOKE ALL ON SCHEMA "${schemaName}" FROM PUBLIC`);
+  validateIdentifier(schemaName, 'schemaName');
+  validateIdentifier(roleName, 'roleName');
 
-  // 2. Grant minimum necessary to the role
-  await sql.unsafe(`GRANT USAGE, CREATE ON SCHEMA "${schemaName}" TO "${roleName}"`);
+  await sql.begin(async (tx) => {
+    // 1. Revoke public access — deny-by-default baseline
+    await tx.unsafe(`REVOKE ALL ON SCHEMA "${schemaName}" FROM PUBLIC`);
 
-  // 3. Default privileges for future tables created by this role
-  await sql.unsafe(`
-    ALTER DEFAULT PRIVILEGES FOR ROLE "${roleName}" IN SCHEMA "${schemaName}"
-    GRANT ALL ON TABLES TO "${roleName}"
-  `);
+    // 2. Grant minimum necessary to the role
+    await tx.unsafe(`GRANT USAGE, CREATE ON SCHEMA "${schemaName}" TO "${roleName}"`);
 
-  // 4. Default privileges for future sequences created by this role
-  await sql.unsafe(`
-    ALTER DEFAULT PRIVILEGES FOR ROLE "${roleName}" IN SCHEMA "${schemaName}"
-    GRANT ALL ON SEQUENCES TO "${roleName}"
-  `);
+    // 3. Default privileges for future tables created by this role
+    await tx.unsafe(`
+      ALTER DEFAULT PRIVILEGES FOR ROLE "${roleName}" IN SCHEMA "${schemaName}"
+      GRANT ALL ON TABLES TO "${roleName}"
+    `);
 
-  // 5. Fix search_path at role level
-  await sql.unsafe(`ALTER ROLE "${roleName}" SET search_path TO "${schemaName}"`);
+    // 4. Default privileges for future sequences created by this role
+    await tx.unsafe(`
+      ALTER DEFAULT PRIVILEGES FOR ROLE "${roleName}" IN SCHEMA "${schemaName}"
+      GRANT ALL ON SEQUENCES TO "${roleName}"
+    `);
+
+    // 5. Fix search_path at role level
+    await tx.unsafe(`ALTER ROLE "${roleName}" SET search_path TO "${schemaName}"`);
+  });
 
   logger.info({ schemaName, roleName }, 'Deny-by-default policy applied');
 }

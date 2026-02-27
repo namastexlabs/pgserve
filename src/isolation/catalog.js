@@ -10,8 +10,8 @@
  * Table columns:
  *   id              SERIAL PRIMARY KEY
  *   name            TEXT UNIQUE NOT NULL   — consumer-defined identifier
- *   schema_name     TEXT NOT NULL
- *   role_name       TEXT NOT NULL
+ *   schema_name     TEXT UNIQUE NOT NULL
+ *   role_name       TEXT UNIQUE NOT NULL
  *   policy_version  INTEGER DEFAULT 1
  *   created_at      TIMESTAMPTZ DEFAULT NOW()
  *   updated_at      TIMESTAMPTZ DEFAULT NOW()
@@ -30,8 +30,8 @@ export async function initCatalog(sql) {
     CREATE TABLE IF NOT EXISTS ${CATALOG_TABLE} (
       id             SERIAL PRIMARY KEY,
       name           TEXT UNIQUE NOT NULL,
-      schema_name    TEXT NOT NULL,
-      role_name      TEXT NOT NULL,
+      schema_name    TEXT UNIQUE NOT NULL,
+      role_name      TEXT UNIQUE NOT NULL,
       policy_version INTEGER NOT NULL DEFAULT 1,
       created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()

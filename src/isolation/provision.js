@@ -15,6 +15,7 @@
 
 import { getCatalogEntry, upsertCatalogEntry } from './catalog.js';
 import { applyDenyByDefault } from './enforcement.js';
+import { validateIdentifier } from './identifiers.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger({ component: 'isolation:provision' });
@@ -57,6 +58,9 @@ function lockKey(str) {
  * @returns {Promise<{ schemaName: string, roleName: string, created: boolean }>}
  */
 export async function provisionSchema(sql, { name, schemaName, roleName }, options = {}) {
+  validateIdentifier(schemaName, 'schemaName');
+  validateIdentifier(roleName, 'roleName');
+
   const policyVersion = options.policyVersion ?? 1;
   const enforceDenyByDefault = options.enforceDenyByDefault ?? true;
   const key = lockKey(name);
@@ -78,11 +82,14 @@ export async function provisionSchema(sql, { name, schemaName, roleName }, optio
     logger.debug({ name, schemaName }, 'Schema created');
 
     // 4. CREATE ROLE IF NOT EXISTS
+    // roleName has already been validated as a safe identifier (alphanumeric + underscore only).
+    // We use PL/pgSQL format('%I', ...) with EXECUTE to safely quote the role name
+    // as a SQL identifier, providing defense-in-depth within the DO $$ block.
     await tx.unsafe(`
       DO $$
       BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${roleName}') THEN
-          CREATE ROLE "${roleName}" NOLOGIN;
+          EXECUTE format('CREATE ROLE %I NOLOGIN', '${roleName}');
         END IF;
       END
       $$
