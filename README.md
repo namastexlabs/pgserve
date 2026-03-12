@@ -5,7 +5,7 @@
   <p>
     <a href="https://www.npmjs.com/package/pgserve"><img src="https://img.shields.io/npm/v/pgserve?style=flat-square&color=00D9FF" alt="npm version"></a>
     <img src="https://img.shields.io/badge/node-%3E%3D18-green?style=flat-square" alt="Node.js">
-    <img src="https://img.shields.io/badge/PostgreSQL-17.7-blue?style=flat-square" alt="PostgreSQL">
+    <img src="https://img.shields.io/badge/PostgreSQL-18-blue?style=flat-square" alt="PostgreSQL">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"></a>
     <a href="https://discord.gg/xcW8c7fF3R"><img src="https://img.shields.io/discord/1095114867012292758?style=flat-square&color=00D9FF&label=discord" alt="Discord"></a>
   </p>
@@ -41,7 +41,7 @@ psql postgresql://localhost:8432/myapp
 
 <table>
   <tr>
-    <td><b>Real PostgreSQL 17</b></td>
+    <td><b>Real PostgreSQL 18</b></td>
     <td>Native binaries, not WASM — full compatibility, extensions support</td>
   </tr>
   <tr>
@@ -450,7 +450,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
   </tr>
 </table>
 
-> <b>Methodology:</b> Recall@k measured against brute-force ground truth (industry standard). PostgreSQL baseline is Docker <code>pgvector/pgvector:pg17</code>. RAM mode available on Linux and WSL2.
+> <b>Methodology:</b> Recall@k measured against brute-force ground truth (industry standard). PostgreSQL baseline is Docker <code>pgvector/pgvector:pg18</code>. RAM mode available on Linux and WSL2.
 >
 > Run benchmarks yourself: <code>bun tests/benchmarks/runner.js --include-vector</code>
 
