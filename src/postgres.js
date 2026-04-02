@@ -509,6 +509,12 @@ export class PostgresManager {
       persistent: this.persistent
     }, 'PostgreSQL started successfully');
 
+    // Pre-install pgvector extension files if enabled
+    // This ensures vector.so + vector.control are ready before any CREATE EXTENSION call
+    if (this.enablePgvector) {
+      await this.ensurePgvectorFiles();
+    }
+
     return this;
   }
 
@@ -918,11 +924,105 @@ export class PostgresManager {
   }
 
   /**
+   * Ensure pgvector extension files are installed in the PG binary dirs.
+   * Downloads prebuilt vector.so from apt.postgresql.org on first use (cached).
+   * Patches vector.control to use absolute module_pathname.
+   */
+  async ensurePgvectorFiles() {
+    if (!this.binaries?.libDir) return;
+
+    const libDir = this.binaries.libDir;
+    const binDir = this.binaries.binDir;
+    const extDir = path.join(path.dirname(binDir), 'share', 'postgresql', 'extension');
+    const vectorSo = path.join(libDir, 'vector.so');
+    const vectorControl = path.join(extDir, 'vector.control');
+
+    // Already installed
+    if (fs.existsSync(vectorSo) && fs.existsSync(vectorControl)) return;
+
+    this.logger.info('pgvector extension files not found — downloading prebuilt binary...');
+
+    try {
+      // Detect PG major version from the postgres binary
+      const { execSync } = await import('node:child_process');
+      const pgVersion = execSync(`${this.binaries.postgres} --version`, { encoding: 'utf-8' }).trim();
+      const majorMatch = pgVersion.match(/PostgreSQL (\d+)/);
+      const pgMajor = majorMatch ? majorMatch[1] : '17';
+
+      // Detect architecture
+      const arch = os.arch() === 'x64' ? 'amd64' : os.arch() === 'arm64' ? 'arm64' : 'amd64';
+
+      // Download prebuilt pgvector .deb from apt.postgresql.org
+      const debUrl = `http://apt.postgresql.org/pub/repos/apt/pool/main/p/pgvector/postgresql-${pgMajor}-pgvector_0.8.1-2.pgdg%2B1_${arch}.deb`;
+      this.logger.info({ url: debUrl }, 'Downloading pgvector...');
+
+      const res = await fetch(debUrl);
+      if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+
+      const buffer = Buffer.from(await res.arrayBuffer());
+
+      // Extract .deb (it's an ar archive containing data.tar.xz)
+      const tmpDir = path.join(os.tmpdir(), `pgserve-pgvector-${Date.now()}`);
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const debPath = path.join(tmpDir, 'pgvector.deb');
+      fs.writeFileSync(debPath, buffer);
+
+      // Use dpkg-deb or ar to extract
+      try {
+        execSync(`dpkg-deb -x ${debPath} ${tmpDir}/extracted`, { stdio: 'pipe' });
+      } catch {
+        // Fallback: try ar + tar
+        execSync(`cd ${tmpDir} && ar x pgvector.deb && tar xf data.tar.* -C ${tmpDir}/extracted 2>/dev/null || tar xf data.tar.xz -C ${tmpDir}/extracted`, { stdio: 'pipe' });
+      }
+
+      // Copy .so file
+      const soSrc = path.join(tmpDir, 'extracted', 'usr', 'lib', 'postgresql', pgMajor, 'lib', 'vector.so');
+      if (fs.existsSync(soSrc)) {
+        fs.copyFileSync(soSrc, vectorSo);
+        this.logger.info({ path: vectorSo }, 'Installed vector.so');
+      }
+
+      // Copy extension SQL + control files
+      const extSrc = path.join(tmpDir, 'extracted', 'usr', 'share', 'postgresql', pgMajor, 'extension');
+      if (fs.existsSync(extSrc)) {
+        fs.mkdirSync(extDir, { recursive: true });
+        for (const f of fs.readdirSync(extSrc)) {
+          if (f.startsWith('vector')) {
+            fs.copyFileSync(path.join(extSrc, f), path.join(extDir, f));
+          }
+        }
+        this.logger.info({ path: extDir }, 'Installed vector extension SQL files');
+      }
+
+      // Patch vector.control to use absolute module_pathname
+      // (embedded PG's $libdir doesn't match the compiled-in path)
+      if (fs.existsSync(vectorControl)) {
+        let control = fs.readFileSync(vectorControl, 'utf-8');
+        control = control.replace(
+          /module_pathname\s*=\s*'\$libdir\/vector'/,
+          `module_pathname = '${vectorSo.replace('.so', '')}'`
+        );
+        fs.writeFileSync(vectorControl, control);
+        this.logger.info('Patched vector.control with absolute module path');
+      }
+
+      // Cleanup
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      this.logger.info('pgvector extension installed successfully');
+    } catch (error) {
+      this.logger.warn({ err: error.message }, 'Failed to install pgvector extension files (non-fatal)');
+    }
+  }
+
+  /**
    * Enable pgvector extension on a database
    * Creates a temporary connection to the specific database to run CREATE EXTENSION
    * @param {string} dbName - Database name to enable pgvector on
    */
   async enablePgvectorExtension(dbName) {
+    // Ensure extension files are installed first
+    await this.ensurePgvectorFiles();
+
     const { SQL } = await import('bun');
     let dbPool = null;
 
