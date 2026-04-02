@@ -927,9 +927,31 @@ export class PostgresManager {
    * Ensure pgvector extension files are installed in the PG binary dirs.
    * Downloads prebuilt vector.so from apt.postgresql.org on first use (cached).
    * Patches vector.control to use absolute module_pathname.
+   *
+   * Linux only — .deb extraction requires dpkg-deb or ar+tar.
+   * Serialized via _pgvectorInstallPromise to prevent concurrent races.
    */
   async ensurePgvectorFiles() {
+    // Serialize: only one install runs at a time
+    if (this._pgvectorInstallPromise) {
+      return this._pgvectorInstallPromise;
+    }
+    this._pgvectorInstallPromise = this._doEnsurePgvectorFiles();
+    try {
+      await this._pgvectorInstallPromise;
+    } finally {
+      this._pgvectorInstallPromise = null;
+    }
+  }
+
+  async _doEnsurePgvectorFiles() {
     if (!this.binaries?.libDir) return;
+
+    // Linux only — .deb packages are Linux-specific
+    if (os.platform() !== 'linux') {
+      this.logger.info('pgvector auto-install is Linux-only. On macOS, install via: brew install pgvector');
+      return;
+    }
 
     const libDir = this.binaries.libDir;
     const binDir = this.binaries.binDir;
@@ -949,11 +971,19 @@ export class PostgresManager {
       const majorMatch = pgVersion.match(/PostgreSQL (\d+)/);
       const pgMajor = majorMatch ? majorMatch[1] : '17';
 
-      // Detect architecture
-      const arch = os.arch() === 'x64' ? 'amd64' : os.arch() === 'arm64' ? 'arm64' : 'amd64';
+      // Detect architecture — fail explicitly on unsupported platforms
+      const nodeArch = os.arch();
+      let arch;
+      if (nodeArch === 'x64') arch = 'amd64';
+      else if (nodeArch === 'arm64') arch = 'arm64';
+      else {
+        this.logger.warn({ arch: nodeArch }, 'Unsupported architecture for pgvector auto-install. Supported: x64, arm64');
+        return;
+      }
 
-      // Download prebuilt pgvector .deb from apt.postgresql.org
-      const debUrl = `http://apt.postgresql.org/pub/repos/apt/pool/main/p/pgvector/postgresql-${pgMajor}-pgvector_0.8.1-2.pgdg%2B1_${arch}.deb`;
+      // Download prebuilt pgvector .deb from apt.postgresql.org (HTTPS)
+      // Version 0.8.1-2 — update when new releases ship
+      const debUrl = `https://apt.postgresql.org/pub/repos/apt/pool/main/p/pgvector/postgresql-${pgMajor}-pgvector_0.8.1-2.pgdg%2B1_${arch}.deb`;
       this.logger.info({ url: debUrl }, 'Downloading pgvector...');
 
       const res = await fetch(debUrl);
@@ -962,7 +992,7 @@ export class PostgresManager {
       const buffer = Buffer.from(await res.arrayBuffer());
 
       // Extract .deb (it's an ar archive containing data.tar.xz)
-      const tmpDir = path.join(os.tmpdir(), `pgserve-pgvector-${Date.now()}`);
+      const tmpDir = path.join(os.tmpdir(), `pgserve-pgvector-${process.pid}-${Date.now()}`);
       fs.mkdirSync(tmpDir, { recursive: true });
       const debPath = path.join(tmpDir, 'pgvector.deb');
       fs.writeFileSync(debPath, buffer);
@@ -972,6 +1002,7 @@ export class PostgresManager {
         execSync(`dpkg-deb -x ${debPath} ${tmpDir}/extracted`, { stdio: 'pipe' });
       } catch {
         // Fallback: try ar + tar
+        fs.mkdirSync(path.join(tmpDir, 'extracted'), { recursive: true });
         execSync(`cd ${tmpDir} && ar x pgvector.deb && tar xf data.tar.* -C ${tmpDir}/extracted 2>/dev/null || tar xf data.tar.xz -C ${tmpDir}/extracted`, { stdio: 'pipe' });
       }
 
