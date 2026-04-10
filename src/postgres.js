@@ -965,11 +965,23 @@ export class PostgresManager {
     this.logger.info('pgvector extension files not found — downloading prebuilt binary...');
 
     try {
-      // Detect PG major version from the postgres binary
+      // Detect PG major version from the postgres binary.
+      // `postgres --version` output is `postgres (PostgreSQL) 18.2`, so the
+      // regex must tolerate the `)` that separates the product name from the
+      // version number. The previous pattern `/PostgreSQL (\d+)/` expected a
+      // digit immediately after `PostgreSQL ` and silently fell back to '17'
+      // on PG 14+, causing the wrong pgvector .deb to be downloaded and a
+      // later "incompatible library version mismatch" at CREATE EXTENSION time.
       const { execSync } = await import('node:child_process');
       const pgVersion = execSync(`${this.binaries.postgres} --version`, { encoding: 'utf-8' }).trim();
-      const majorMatch = pgVersion.match(/PostgreSQL (\d+)/);
-      const pgMajor = majorMatch ? majorMatch[1] : '17';
+      const majorMatch = pgVersion.match(/PostgreSQL\)?\s+(\d+)/);
+      if (!majorMatch) {
+        throw new Error(
+          `Could not detect PostgreSQL major version from: ${JSON.stringify(pgVersion)}`
+        );
+      }
+      const pgMajor = majorMatch[1];
+      this.logger.info({ pgMajor, pgVersion }, 'Detected PostgreSQL major version for pgvector install');
 
       // Detect architecture — fail explicitly on unsupported platforms
       const nodeArch = os.arch();
