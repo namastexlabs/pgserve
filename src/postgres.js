@@ -385,6 +385,27 @@ function buildCommand(cmd, libDir) {
   return cmd;
 }
 
+/**
+ * Compare a persisted pgvector install metadata record against the currently
+ * detected PG major and postgres binary path. Returns `true` only when the
+ * metadata is a plain object, has the expected shape, and matches the
+ * runtime environment. Used by the pgvector auto-heal path to decide whether
+ * an already-present `vector.so` is safe to reuse or must be replaced.
+ *
+ * Exported for unit tests — keep this pure (no I/O, no `this`).
+ *
+ * @param {unknown} meta - Value parsed from `vector.meta.json`, or null.
+ * @param {{pgMajor: string, postgresPath: string}} runtime - Current env.
+ * @returns {boolean}
+ */
+export function pgvectorMetaMatches(meta, runtime) {
+  if (!meta || typeof meta !== 'object') return false;
+  if (typeof meta.pgMajor !== 'string' || meta.pgMajor !== runtime.pgMajor) return false;
+  // postgresPath is optional in older metadata — only compare when present.
+  if (meta.postgresPath && meta.postgresPath !== runtime.postgresPath) return false;
+  return true;
+}
+
 export class PostgresManager {
   constructor(options = {}) {
     this.dataDir = options.dataDir || null; // null = memory mode (temp dir)
@@ -953,62 +974,172 @@ export class PostgresManager {
       return;
     }
 
+    const paths = this._pgvectorPaths();
+
+    let pgMajor;
+    try {
+      pgMajor = await this._detectPgMajor();
+    } catch (error) {
+      this.logger.warn({ err: error.message }, 'Failed to detect PG major version for pgvector install (non-fatal)');
+      return;
+    }
+
+    // Proactive staleness check: if vector.so and vector.control both exist,
+    // trust them ONLY if the sidecar metadata file matches the current PG
+    // major and the current postgres binary path. Any mismatch — including a
+    // missing metadata file from a pre-auto-heal install — triggers a clean
+    // reinstall. This is what heals existing deployments that were shipped
+    // with the regex bug: on first run after upgrading pgserve, the stale
+    // PG17 .so will be detected (no metadata → mismatch) and replaced.
+    const filesPresent = fs.existsSync(paths.vectorSo) && fs.existsSync(paths.vectorControl);
+    if (filesPresent) {
+      const meta = this._readPgvectorMeta(paths.vectorMeta);
+      if (pgvectorMetaMatches(meta, { pgMajor, postgresPath: this.binaries.postgres })) {
+        return;
+      }
+      this.logger.warn(
+        {
+          detectedPgMajor: pgMajor,
+          metaPgMajor: meta?.pgMajor ?? null,
+          metaPresent: meta !== null,
+          vectorMeta: paths.vectorMeta,
+        },
+        'pgvector install metadata missing or mismatched — auto-healing stale install'
+      );
+      this._removePgvectorFiles(paths);
+    } else {
+      this.logger.info('pgvector extension files not found — downloading prebuilt binary...');
+    }
+
+    try {
+      await this._installPgvectorFromDeb({ pgMajor, ...paths });
+    } catch (error) {
+      this.logger.warn({ err: error.message }, 'Failed to install pgvector extension files (non-fatal)');
+    }
+  }
+
+  /**
+   * Compute the canonical pgvector file paths for this PG install.
+   * Extracted so proactive install, reactive heal, and cleanup all agree.
+   */
+  _pgvectorPaths() {
     const libDir = this.binaries.libDir;
     const binDir = this.binaries.binDir;
     const extDir = path.join(path.dirname(binDir), 'share', 'postgresql', 'extension');
-    const vectorSo = path.join(libDir, 'vector.so');
-    const vectorControl = path.join(extDir, 'vector.control');
+    return {
+      libDir,
+      extDir,
+      vectorSo: path.join(libDir, 'vector.so'),
+      vectorControl: path.join(extDir, 'vector.control'),
+      vectorMeta: path.join(libDir, 'vector.meta.json'),
+    };
+  }
 
-    // Already installed
-    if (fs.existsSync(vectorSo) && fs.existsSync(vectorControl)) return;
+  /**
+   * Parse `postgres --version` output and return the major version string.
+   * Throws on unparseable output so callers can fail loudly instead of
+   * silently downloading the wrong pgvector .deb.
+   */
+  async _detectPgMajor() {
+    // `postgres --version` output is `postgres (PostgreSQL) 18.2`, so the
+    // regex must tolerate the `)` that separates the product name from the
+    // version number. The previous pattern `/PostgreSQL (\d+)/` expected a
+    // digit immediately after `PostgreSQL ` and silently fell back to '17'
+    // on PG 14+, causing the wrong pgvector .deb to be downloaded and a
+    // later "incompatible library version mismatch" at CREATE EXTENSION time.
+    const { execSync } = await import('node:child_process');
+    const pgVersion = execSync(`${this.binaries.postgres} --version`, { encoding: 'utf-8' }).trim();
+    const majorMatch = pgVersion.match(/PostgreSQL\)?\s+(\d+)/);
+    if (!majorMatch) {
+      throw new Error(`Could not detect PostgreSQL major version from: ${JSON.stringify(pgVersion)}`);
+    }
+    this.logger.debug({ pgMajor: majorMatch[1], pgVersion }, 'Detected PostgreSQL major version');
+    return majorMatch[1];
+  }
 
-    this.logger.info('pgvector extension files not found — downloading prebuilt binary...');
+  /**
+   * Read and parse the pgvector install metadata sidecar, if present.
+   * Returns null on missing file or any parse error (caller treats both as
+   * "unknown, needs reinstall").
+   */
+  _readPgvectorMeta(metaPath) {
+    try {
+      if (!fs.existsSync(metaPath)) return null;
+      return JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Write the pgvector install metadata sidecar. Best-effort — failure to
+   * write metadata should not crash the install; it just means the next
+   * startup will trigger a re-heal (idempotent).
+   */
+  _writePgvectorMeta(metaPath, data) {
+    try {
+      fs.writeFileSync(metaPath, JSON.stringify(data, null, 2));
+    } catch (error) {
+      this.logger.warn({ err: error.message, metaPath }, 'Failed to write pgvector metadata sidecar');
+    }
+  }
+
+  /**
+   * Remove all pgvector files (vector.so, vector.meta.json, and any
+   * vector*.sql / vector.control files in the extension dir) so that a
+   * subsequent install starts from a clean slate. Used by the auto-heal
+   * paths — never call this while PG is mid-transaction.
+   */
+  _removePgvectorFiles(paths) {
+    const { libDir, extDir, vectorSo, vectorMeta } = paths;
+    const toRemove = [vectorSo, vectorMeta];
+    if (fs.existsSync(extDir)) {
+      for (const f of fs.readdirSync(extDir)) {
+        if (f.startsWith('vector')) toRemove.push(path.join(extDir, f));
+      }
+    }
+    for (const p of toRemove) {
+      try { fs.rmSync(p, { force: true }); } catch { /* ignore */ }
+    }
+    this.logger.info({ libDir, extDir }, 'Removed stale pgvector files');
+  }
+
+  /**
+   * Download + extract + install pgvector from apt.postgresql.org for the
+   * given PG major. Writes a metadata sidecar on success so future starts
+   * can detect staleness without re-downloading.
+   */
+  async _installPgvectorFromDeb({ pgMajor, extDir, vectorSo, vectorControl, vectorMeta }) {
+    const { execSync } = await import('node:child_process');
+
+    // Detect architecture — fail explicitly on unsupported platforms
+    const nodeArch = os.arch();
+    let arch;
+    if (nodeArch === 'x64') arch = 'amd64';
+    else if (nodeArch === 'arm64') arch = 'arm64';
+    else {
+      this.logger.warn({ arch: nodeArch }, 'Unsupported architecture for pgvector auto-install. Supported: x64, arm64');
+      return;
+    }
+
+    // Download prebuilt pgvector .deb from apt.postgresql.org (HTTPS)
+    // Version 0.8.1-2 — update when new releases ship
+    const pgvectorVersion = '0.8.1-2';
+    const debUrl = `https://apt.postgresql.org/pub/repos/apt/pool/main/p/pgvector/postgresql-${pgMajor}-pgvector_${pgvectorVersion}.pgdg%2B1_${arch}.deb`;
+    this.logger.info({ url: debUrl, pgMajor }, 'Downloading pgvector...');
+
+    const res = await fetch(debUrl);
+    if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+
+    const buffer = Buffer.from(await res.arrayBuffer());
+
+    // Extract .deb (it's an ar archive containing data.tar.xz)
+    const tmpDir = path.join(os.tmpdir(), `pgserve-pgvector-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const debPath = path.join(tmpDir, 'pgvector.deb');
+    fs.writeFileSync(debPath, buffer);
 
     try {
-      // Detect PG major version from the postgres binary.
-      // `postgres --version` output is `postgres (PostgreSQL) 18.2`, so the
-      // regex must tolerate the `)` that separates the product name from the
-      // version number. The previous pattern `/PostgreSQL (\d+)/` expected a
-      // digit immediately after `PostgreSQL ` and silently fell back to '17'
-      // on PG 14+, causing the wrong pgvector .deb to be downloaded and a
-      // later "incompatible library version mismatch" at CREATE EXTENSION time.
-      const { execSync } = await import('node:child_process');
-      const pgVersion = execSync(`${this.binaries.postgres} --version`, { encoding: 'utf-8' }).trim();
-      const majorMatch = pgVersion.match(/PostgreSQL\)?\s+(\d+)/);
-      if (!majorMatch) {
-        throw new Error(
-          `Could not detect PostgreSQL major version from: ${JSON.stringify(pgVersion)}`
-        );
-      }
-      const pgMajor = majorMatch[1];
-      this.logger.info({ pgMajor, pgVersion }, 'Detected PostgreSQL major version for pgvector install');
-
-      // Detect architecture — fail explicitly on unsupported platforms
-      const nodeArch = os.arch();
-      let arch;
-      if (nodeArch === 'x64') arch = 'amd64';
-      else if (nodeArch === 'arm64') arch = 'arm64';
-      else {
-        this.logger.warn({ arch: nodeArch }, 'Unsupported architecture for pgvector auto-install. Supported: x64, arm64');
-        return;
-      }
-
-      // Download prebuilt pgvector .deb from apt.postgresql.org (HTTPS)
-      // Version 0.8.1-2 — update when new releases ship
-      const debUrl = `https://apt.postgresql.org/pub/repos/apt/pool/main/p/pgvector/postgresql-${pgMajor}-pgvector_0.8.1-2.pgdg%2B1_${arch}.deb`;
-      this.logger.info({ url: debUrl }, 'Downloading pgvector...');
-
-      const res = await fetch(debUrl);
-      if (!res.ok) throw new Error(`Download failed: ${res.status}`);
-
-      const buffer = Buffer.from(await res.arrayBuffer());
-
-      // Extract .deb (it's an ar archive containing data.tar.xz)
-      const tmpDir = path.join(os.tmpdir(), `pgserve-pgvector-${process.pid}-${Date.now()}`);
-      fs.mkdirSync(tmpDir, { recursive: true });
-      const debPath = path.join(tmpDir, 'pgvector.deb');
-      fs.writeFileSync(debPath, buffer);
-
       // Use dpkg-deb or ar to extract
       try {
         execSync(`dpkg-deb -x ${debPath} ${tmpDir}/extracted`, { stdio: 'pipe' });
@@ -1018,12 +1149,13 @@ export class PostgresManager {
         execSync(`cd ${tmpDir} && ar x pgvector.deb && tar xf data.tar.* -C ${tmpDir}/extracted 2>/dev/null || tar xf data.tar.xz -C ${tmpDir}/extracted`, { stdio: 'pipe' });
       }
 
-      // Copy .so file
+      // Copy .so file — fail loudly if missing so we don't silently ship broken
       const soSrc = path.join(tmpDir, 'extracted', 'usr', 'lib', 'postgresql', pgMajor, 'lib', 'vector.so');
-      if (fs.existsSync(soSrc)) {
-        fs.copyFileSync(soSrc, vectorSo);
-        this.logger.info({ path: vectorSo }, 'Installed vector.so');
+      if (!fs.existsSync(soSrc)) {
+        throw new Error(`Extracted .deb missing expected vector.so at ${soSrc}`);
       }
+      fs.copyFileSync(soSrc, vectorSo);
+      this.logger.info({ path: vectorSo }, 'Installed vector.so');
 
       // Copy extension SQL + control files
       const extSrc = path.join(tmpDir, 'extracted', 'usr', 'share', 'postgresql', pgMajor, 'extension');
@@ -1049,29 +1181,55 @@ export class PostgresManager {
         this.logger.info('Patched vector.control with absolute module path');
       }
 
-      // Cleanup
+      // Write metadata sidecar so future starts can detect staleness
+      this._writePgvectorMeta(vectorMeta, {
+        pgMajor,
+        pgvectorVersion,
+        sourceUrl: debUrl,
+        postgresPath: this.binaries.postgres,
+        installedAt: new Date().toISOString(),
+      });
+
+      this.logger.info({ pgMajor, pgvectorVersion }, 'pgvector extension installed successfully');
+    } finally {
+      // Always clean up tmpdir, even on failure
       fs.rmSync(tmpDir, { recursive: true, force: true });
-      this.logger.info('pgvector extension installed successfully');
-    } catch (error) {
-      this.logger.warn({ err: error.message }, 'Failed to install pgvector extension files (non-fatal)');
     }
   }
 
   /**
+   * Tear down an existing pgvector install and reinstall from scratch.
+   * Called reactively when CREATE EXTENSION surfaces an ABI mismatch —
+   * this is the last-resort heal for deployments that somehow bypassed
+   * the proactive staleness check (e.g. metadata file got corrupted, or
+   * the files were placed by an older pgserve that didn't write metadata).
+   */
+  async _healStalePgvector() {
+    if (!this.binaries?.libDir || os.platform() !== 'linux') return;
+    const paths = this._pgvectorPaths();
+    this._removePgvectorFiles(paths);
+    // _doEnsurePgvectorFiles is serialized via _pgvectorInstallPromise;
+    // this call goes through the mutex wrapper to stay race-safe.
+    await this.ensurePgvectorFiles();
+  }
+
+  /**
    * Enable pgvector extension on a database
-   * Creates a temporary connection to the specific database to run CREATE EXTENSION
+   * Creates a temporary connection to the specific database to run CREATE EXTENSION.
+   * If the CREATE hits an ABI mismatch (stale vector.so from an older pgserve
+   * install that shipped the wrong PG major), auto-heal the install and retry
+   * once. This is the reactive safety net for deployments that already have a
+   * broken vector.so on disk when this version of pgserve first starts.
    * @param {string} dbName - Database name to enable pgvector on
    */
   async enablePgvectorExtension(dbName) {
-    // Ensure extension files are installed first
+    // Ensure extension files are installed first (proactive path)
     await this.ensurePgvectorFiles();
 
     const { SQL } = await import('bun');
-    let dbPool = null;
 
-    try {
-      // Create temporary connection to the specific database
-      dbPool = new SQL({
+    const tryCreateExtension = async () => {
+      const dbPool = new SQL({
         hostname: '127.0.0.1',
         port: this.port,
         database: dbName,
@@ -1081,17 +1239,47 @@ export class PostgresManager {
         idleTimeout: 5,
         connectionTimeout: 5,
       });
-
-      // Enable pgvector extension
-      await dbPool.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
-      this.logger.info({ dbName }, 'pgvector extension enabled');
-    } catch (error) {
-      // Log but don't fail database creation - pgvector might not be available
-      this.logger.warn({ dbName, err: error.message }, 'Failed to enable pgvector extension (non-fatal)');
-    } finally {
-      // Always close the temporary connection
-      if (dbPool) {
+      try {
+        await dbPool.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
+      } finally {
         await dbPool.close().catch(() => {});
+      }
+    };
+
+    try {
+      await tryCreateExtension();
+      this.logger.info({ dbName }, 'pgvector extension enabled');
+      return;
+    } catch (error) {
+      const msg = error?.message || '';
+      // Postgres surfaces stale .so as "incompatible library version" or
+      // "version mismatch" depending on the nature of the ABI break.
+      // PG_MODULE_MAGIC mismatches show the same symptoms.
+      const abiMismatch = /version mismatch|incompatible library version|PG_MODULE_MAGIC/i.test(msg);
+      if (!abiMismatch) {
+        this.logger.warn({ dbName, err: msg }, 'Failed to enable pgvector extension (non-fatal)');
+        return;
+      }
+
+      this.logger.warn(
+        { dbName, err: msg },
+        'pgvector ABI mismatch detected — auto-healing stale install and retrying'
+      );
+      try {
+        await this._healStalePgvector();
+      } catch (healError) {
+        this.logger.error({ dbName, err: healError.message }, 'pgvector auto-heal failed during reinstall');
+        return;
+      }
+
+      try {
+        await tryCreateExtension();
+        this.logger.info({ dbName }, 'pgvector auto-heal successful — extension enabled');
+      } catch (retryError) {
+        this.logger.error(
+          { dbName, err: retryError.message },
+          'pgvector still failing after auto-heal — manual intervention required'
+        );
       }
     }
   }
