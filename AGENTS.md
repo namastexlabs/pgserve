@@ -1,3 +1,5 @@
+> **Shared rules in `~/.claude/rules/agent-bible.md`. Read it.**
+
 # Genie Agent Framework
 
 ## Core Identity

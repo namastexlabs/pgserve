@@ -11,6 +11,8 @@ forge:
   OPENCODE: {}
 ---
 
+> **Shared rules in `~/.claude/rules/agent-bible.md`. Read it.**
+
 ## Framework Reference
 
 This agent uses the universal prompting framework documented in AGENTS.md §Prompting Standards Framework:
