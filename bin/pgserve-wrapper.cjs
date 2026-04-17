@@ -53,7 +53,112 @@ if (!bunPath) {
   process.exit(1);
 }
 
+// Pre-flight health check: verify bun can actually execute.
+//
+// When pgserve is installed via `bun install` (as a global or transitive dep),
+// the nested `bun` npm package's postinstall can be skipped, leaving
+// `@oven/bun-<platform>/bin/bun` empty. The bun stub at `node_modules/bun/bin/bun`
+// then exits instantly with:
+//   Error: Bun's postinstall script was not run.
+//
+// pglite-server.js's TCP readiness poll can't distinguish this from a slow
+// startup, so users see a confusing 30s timeout. Detect the specific error
+// here, attempt the documented self-heal once (`node install.js`), and retry.
+// If self-heal also fails, surface the real error instead of hanging later.
+ensureBunHealthy(bunPath);
+
 const scriptPath = path.join(__dirname, 'pglite-server.js');
+
+/**
+ * Verify the selected bun binary can execute. If it fails with the known
+ * "postinstall script was not run" signature, attempt a one-shot repair via
+ * the bun npm package's install.js. Throws (with a useful message) rather
+ * than letting pglite-server.js hang on the TCP readiness poll for 30s.
+ */
+function ensureBunHealthy(bunExe) {
+  const probe = probeBun(bunExe);
+  if (probe.ok) return;
+
+  // Only attempt self-heal for the specific postinstall-not-run failure.
+  // Any other failure (corrupt binary, unsupported glibc, etc.) is surfaced
+  // as-is rather than silently papered over.
+  if (!isPostinstallMissingError(probe.output)) {
+    console.error('Error: bun runtime at', bunExe, 'failed to execute:');
+    console.error(probe.output || '(no output)');
+    process.exit(1);
+  }
+
+  const installJs = findBunInstallJs(bunExe);
+  if (!installJs) {
+    console.error('Error: bun runtime at', bunExe, 'is missing its platform binary,');
+    console.error('and the recovery script (node_modules/bun/install.js) could not be located.');
+    console.error('');
+    console.error('Try reinstalling pgserve, or run the fix manually:');
+    console.error('  cd <node_modules>/bun && node install.js');
+    process.exit(1);
+  }
+
+  console.error('[pgserve] bun runtime missing platform binary; attempting self-heal...');
+  try {
+    execSync(`node ${JSON.stringify(installJs)}`, { stdio: 'inherit' });
+  } catch {
+    // fall through to second probe
+  }
+
+  const second = probeBun(bunExe);
+  if (second.ok) {
+    console.error('[pgserve] bun runtime recovered.');
+    return;
+  }
+
+  console.error('Error: bun runtime still broken after self-heal attempt.');
+  console.error(second.output || '(no output)');
+  console.error('');
+  console.error('Manual fix:');
+  console.error(`  cd ${path.dirname(path.dirname(installJs))}/bun && node install.js`);
+  console.error('');
+  console.error('Upstream bug: https://github.com/namastexlabs/pgserve/issues/22');
+  process.exit(1);
+}
+
+function probeBun(bunExe) {
+  try {
+    const out = execSync(`${JSON.stringify(bunExe)} --version`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10000,
+      encoding: 'utf8'
+    });
+    return { ok: true, output: out };
+  } catch (err) {
+    const output = [err.stderr, err.stdout, err.message]
+      .filter(Boolean).map(String).join('\n');
+    return { ok: false, output };
+  }
+}
+
+function isPostinstallMissingError(output) {
+  return typeof output === 'string' &&
+    /Bun's postinstall script was not run/i.test(output);
+}
+
+function findBunInstallJs(bunExe) {
+  // Walk up from the bun binary toward a `bun` package dir containing install.js.
+  // Matches the wrapper's own location list - bun is always nested under a
+  // `bun` package directory (or its `bin/` subdir).
+  let cursor = path.dirname(path.resolve(bunExe));
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(cursor, 'install.js');
+    if (fs.existsSync(candidate) && fs.existsSync(path.join(cursor, 'package.json'))) {
+      return candidate;
+    }
+    const nested = path.join(cursor, 'bun', 'install.js');
+    if (fs.existsSync(nested)) return nested;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return null;
+}
 
 // Platform-specific spawning strategy:
 // - Windows: Use pipes for explicit handle control (prevents EBUSY errors)

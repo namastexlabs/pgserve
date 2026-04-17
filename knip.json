@@ -3,7 +3,7 @@
   "entry": ["src/index.js", "bin/pglite-server.js", "bin/pgserve-wrapper.cjs"],
   "project": ["src/**/*.js", "bin/**/*.js", "bin/**/*.cjs"],
   "ignore": ["tests/**", "helpers/**", "scripts/**"],
-  "ignoreBinaries": ["scripts/test-npx.sh", "make"],
+  "ignoreBinaries": ["scripts/test-npx.sh", "scripts/test-bun-self-heal.sh", "make"],
   "ignoreDependencies": ["bun"],
   "ignoreExportsUsedInFile": true
 }
