@@ -35,8 +35,8 @@ We will credit reporters publicly (with their permission) in the released adviso
 |--------------|--------|
 | `1.1.10` and later clean releases | ✅ Supported — current |
 | `1.1.11` – `1.1.14` | ❌ **COMPROMISED — do not use** |
-| `1.1.0` – `1.1.10` | ⚠️ Legacy — security patches only |
-| Earlier versions | ❌ End of life |
+| `1.1.0` – `1.1.9` | ⚠️ Legacy — security patches only |
+| `1.0.x` and earlier | ❌ End of life |
 
 Always install from the current stable line. Pin explicit versions in your `package.json` and avoid `latest` for supply-chain sensitive packages.
 
@@ -58,7 +58,7 @@ Between 2026-04-21 (~22:14 UTC) and 2026-04-22 (~14:00 UTC), versions `1.1.11`, 
 - 📖 [Full incident response manual](https://github.com/namastexlabs/genie-dpo/blob/main/knowledge/canisterworm-incident-response.md)
 - 🌐 [Public advisory (English)](https://automagik.dev/security)
 - 🌐 [Aviso público (Português)](https://automagik.dev/seguranca)
-- 🛡️ [GitHub Security Advisory](https://github.com/namastexlabs/pgserve/security/advisories) *(GHSA link — update after publishing)*
+- 🛡️ [GitHub Security Advisories](https://github.com/namastexlabs/pgserve/security/advisories) for this repository
 
 A full public post-mortem will be published within 30 days of containment.
 
@@ -80,8 +80,8 @@ Effective 2026-04-23, all `pgserve` releases are governed by:
 ## Hardening Recommendations for Consumers
 
 - Pin explicit versions, not `latest`: `"pgserve": "1.1.10"`.
-- Use `npm ci --frozen-lockfile` in CI.
-- Enable `ignore-scripts` where `postinstall` is not required: `npm config set ignore-scripts true`.
+- Use `npm ci` in CI. It enforces lockfile-based installs by default.
+- Evaluate `--ignore-scripts` per-package for untrusted dependencies. The current `pgserve` release does not require any lifecycle script to function.
 - Verify package provenance: `npm view pgserve --json | jq '.dist.attestations'`.
 - Monitor advisories: subscribe to GitHub security alerts for this repository.
 
