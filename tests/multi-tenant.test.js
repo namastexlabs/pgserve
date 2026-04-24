@@ -161,6 +161,77 @@ test('Multi-tenant router - multiple databases isolated', async () => {
   cleanup();
 });
 
+test('Router - pre-handshake buffer is bounded (issue #18 root cause #2)', async () => {
+  // Regression test for issue #18: without a bound on state.buffer, a
+  // client that sends garbage and never completes the PG startup would
+  // grow router memory unbounded (traced to the production 74 GiB VmSize).
+  // After fix, the router must close the connection once the buffer
+  // exceeds MAX_STARTUP_BUFFER_SIZE (1 MiB).
+  cleanup();
+
+  const router = await startMultiTenantServer({
+    port: 15546,
+    baseDir: testDataDir,
+    logLevel: 'warn',
+  });
+
+  const net = await import('net');
+  const sock = net.connect(15546, '127.0.0.1');
+  await new Promise((resolve) => sock.once('connect', resolve));
+
+  const garbage = Buffer.alloc(256 * 1024, 0x41); // 256 KiB of 'A'
+  let closed = false;
+  sock.on('close', () => { closed = true; });
+
+  // Send 5 × 256 KiB = 1.25 MiB, exceeding the 1 MiB cap.
+  for (let i = 0; i < 5 && !closed; i++) {
+    await new Promise((resolve) => sock.write(garbage, resolve));
+  }
+
+  // Wait up to 2s for the proxy to close the connection.
+  const deadline = Date.now() + 2000;
+  while (!closed && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  expect(closed).toBe(true);
+  sock.destroy();
+
+  await router.stop();
+  cleanup();
+});
+
+test('Router - socket state has startupInProgress flag (issue #18 root cause #1)', async () => {
+  // White-box regression test for the reentrancy guard. Without
+  // state.startupInProgress, two data events arriving during the first
+  // processStartupMessage() await would launch concurrent async tasks
+  // that race to assign state.pgSocket, leaking the loser. This test
+  // verifies the flag is wired into the state object.
+  cleanup();
+
+  const router = await startMultiTenantServer({
+    port: 15547,
+    baseDir: testDataDir,
+    logLevel: 'warn',
+  });
+
+  const net = await import('net');
+  const sock = net.connect(15547, '127.0.0.1');
+  await new Promise((resolve) => sock.once('connect', resolve));
+
+  // Router tracks client sockets in this.connections; introspect to pull
+  // the state object and confirm the flag exists and defaults to false.
+  expect(router.connections.size).toBeGreaterThan(0);
+  const bunSocket = [...router.connections][0];
+  const state = router.socketState.get(bunSocket);
+  expect(state).toBeDefined();
+  expect(state.startupInProgress).toBe(false);
+
+  sock.destroy();
+  await router.stop();
+  cleanup();
+});
+
 test('Multi-tenant router - instance reuse', async () => {
   cleanup();
 
