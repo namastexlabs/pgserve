@@ -221,6 +221,14 @@ test('Router - socket state has startupInProgress flag (issue #18 root cause #1)
 
   // Router tracks client sockets in this.connections; introspect to pull
   // the state object and confirm the flag exists and defaults to false.
+  // On some platforms (macOS in particular) the client-side 'connect'
+  // event fires slightly before the server-side handleSocketOpen runs,
+  // so poll until the router has registered the connection rather than
+  // asserting synchronously.
+  const deadline = Date.now() + 2000;
+  while (router.connections.size === 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
   expect(router.connections.size).toBeGreaterThan(0);
   const bunSocket = [...router.connections][0];
   const state = router.socketState.get(bunSocket);
