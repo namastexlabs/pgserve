@@ -161,6 +161,91 @@ test('Multi-tenant router - multiple databases isolated', async () => {
   cleanup();
 });
 
+test('PostgresManager - stop() nulls socketDir/databaseDir (issue #24)', async () => {
+  // Regression test for issue #24: router used to cache stale socketPath
+  // pointing to a directory that stop() had already rmSync'd. After fix,
+  // stop() nulls socketDir/databaseDir UNCONDITIONALLY so subsequent
+  // getSocketPath() returns null (forcing TCP fallback in the router).
+  cleanup();
+
+  const { PostgresManager } = await import('../src/postgres.js');
+  const { createLogger } = await import('../src/logger.js');
+  const pg = new PostgresManager({
+    port: 15543,
+    logger: createLogger({ level: 'warn' }),
+  });
+
+  await pg.start();
+  const socketPathBeforeStop = pg.getSocketPath();
+  expect(socketPathBeforeStop).not.toBeNull();
+  expect(fs.existsSync(pg.socketDir)).toBe(true);
+
+  await pg.stop();
+
+  // CORE ASSERTION: socketDir must be nulled after stop
+  expect(pg.socketDir).toBeNull();
+  expect(pg.getSocketPath()).toBeNull();
+  // databaseDir nulled only in memory mode (persistent mode keeps user-owned path)
+  expect(pg.databaseDir).toBeNull();
+  // And the dir on disk must actually be gone
+  // (socketPathBeforeStop points inside the deleted socketDir)
+  const staleSocketDir = path.dirname(socketPathBeforeStop);
+  expect(fs.existsSync(staleSocketDir)).toBe(false);
+});
+
+test('PostgresManager - start()+stop()+start() yields fresh socketDir (issue #24)', async () => {
+  // Regression test for issue #24: pgManager.start() called after stop()
+  // must produce a FRESH socketDir (different path). Without the fix, a
+  // re-entry guard was missing and socketDir could leak across restarts.
+  cleanup();
+
+  const { PostgresManager } = await import('../src/postgres.js');
+  const { createLogger } = await import('../src/logger.js');
+  const pg = new PostgresManager({
+    port: 15544,
+    logger: createLogger({ level: 'warn' }),
+  });
+
+  await pg.start();
+  const socketDir1 = pg.socketDir;
+  expect(socketDir1).not.toBeNull();
+
+  await pg.stop();
+  expect(pg.socketDir).toBeNull();
+
+  await pg.start();
+  const socketDir2 = pg.socketDir;
+  expect(socketDir2).not.toBeNull();
+  expect(socketDir2).not.toBe(socketDir1);
+  expect(fs.existsSync(socketDir2)).toBe(true);
+
+  await pg.stop();
+});
+
+test('PostgresManager - double start() is a no-op (issue #24 re-entry guard)', async () => {
+  // Without the guard, a second start() would overwrite socketDir/databaseDir
+  // and leak the previous tmp dir (the "1,457 stale sock dirs" symptom).
+  cleanup();
+
+  const { PostgresManager } = await import('../src/postgres.js');
+  const { createLogger } = await import('../src/logger.js');
+  const pg = new PostgresManager({
+    port: 15545,
+    logger: createLogger({ level: 'warn' }),
+  });
+
+  await pg.start();
+  const socketDir1 = pg.socketDir;
+
+  // Second start() should silently return the same instance without
+  // reassigning socketDir/databaseDir.
+  const result = await pg.start();
+  expect(result).toBe(pg);
+  expect(pg.socketDir).toBe(socketDir1);
+
+  await pg.stop();
+});
+
 test('Multi-tenant router - instance reuse', async () => {
   cleanup();
 
