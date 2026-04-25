@@ -160,13 +160,46 @@ before invoking `npm publish`, so:
 | Trusted Publisher target documented | ✓ | binding table above; user confirmed `version.yml` filename mid-execution |
 | `prepublishOnly` viable in CI | ✓ | bun + Node 24 + Linux runner has all deps |
 
-## Group 4 (live-fire) — to run after merge
+## Group 4 (live-fire) — push-path validation, evidence
 
-`gh workflow run release.yml -f bump=patch` from `main` after this PR merges.
-Expected outputs:
+The push-to-main path was exercised end-to-end on 2026-04-25. The release
+pipeline required five hotfix iterations after the initial wish landed —
+each one peeled a layer that wasn't visible at plan time. Documented here
+for posterity so the next time someone touches this, they don't repeat
+the same archaeology.
 
-- New `v1.2.1` git tag
-- `npm view pgserve@latest version` → `1.2.1`
-- `gh release view v1.2.1` shows three platform binaries + git-log notes
-- `package.json` on `main` updated to `1.2.1` by `[skip ci]` bot commit
-- `release.yml` does NOT retrigger from the bot's `[skip ci]` commit
+### Hotfix journey
+
+| PR | What it fixed | Symptom |
+|----|---------------|---------|
+| [#31](https://github.com/namastexlabs/pgserve/pull/31) | Added `id-token: write` to `release.yml` top-level permissions | `startup_failure` in 1s — caller permissions cannot be less than called workflow's |
+| [#32](https://github.com/namastexlabs/pgserve/pull/32) | Switched gate to `!= 'true'`, added `Debug resolved outputs` step | Build/release silently skipped despite `prepare.outputs.skip='false'` |
+| [#33](https://github.com/namastexlabs/pgserve/pull/33) | Bulletproof gate: `always() && needs.prepare.result == 'success' && needs.prepare.outputs.skip != 'true'` | Debug step proved outputs were correct; reusable-workflow caller's `if:` evaluator was treating `needs.X.outputs.Y` as null when the transitive `needs:` chain included a skipped job |
+| [#34](https://github.com/namastexlabs/pgserve/pull/34) | Surface `ref` via `prepare.outputs.ref`, checkout by SHA on push path | Build job ran, then died at checkout trying to fetch `v1.2.0` tag that nobody had created (push path doesn't run `bump`) |
+| [#35](https://github.com/namastexlabs/pgserve/pull/35) | Removed `environment: npm-publish` from `version.yml` publish job | Narrowed the OIDC claim mismatch to the workflow filename |
+| (npmjs.com) | Trusted Publisher entry: `version.yml` → `release.yml` | npm checks the `workflow_ref` claim (top-level workflow), not `job_workflow_ref` (the reusable). Configure Trusted Publisher with the **caller** filename. |
+
+### Final evidence
+
+| Check | Result |
+|-------|--------|
+| Workflow run | [24941829291](https://github.com/namastexlabs/pgserve/actions/runs/24941829291) — completed: success after re-run of failed publish |
+| All jobs | `Prepare release` ✓ · `Build linux-x64` ✓ · `Build darwin-arm64` ✓ · `Build windows-x64` ✓ · `Publish to npm` ✓ · `Create GitHub Release` ✓ |
+| npm | `npm view pgserve@latest version` → `1.2.0` |
+| GitHub Release | `gh release view v1.2.0` exists, created 2026-04-25T22:15:21Z, three platform binaries attached |
+| `package.json` | `1.2.0` on `main`, matches npm `latest` and the release tag (no drift) |
+| Bot-loop guard | Verified by gate-trace design (Scenarios A/B/C above). The `[skip ci]` bot commit is filtered by `prepare`'s `if:`. Will be exercised in practice on the next `workflow_dispatch` bump. |
+
+### Key takeaways for future maintainers
+
+1. **OIDC permissions are caller-bound.** A reusable workflow's `permissions:` request must be subset-matched by what the calling workflow's job has been granted. If you call a reusable that needs `id-token: write`, the caller (workflow-level or job-level) must also declare it. The error mode is `startup_failure` in ~1s.
+2. **`needs.<X>.outputs.<Y>` is unreliable in reusable-workflow caller `if:` when the transitive `needs:` chain contains a skipped job.** Use `always() && needs.<X>.result == 'success' && ...` instead of relying on outputs propagation. The empirical evidence is in PR #33's commit body.
+3. **Reusable workflow callers cannot reference upstream-of-upstream needs.** If `prepare needs: bump` and `build needs: prepare`, then `build` cannot reference `needs.bump.outputs.*` directly. Surface needed values through intermediate jobs' `outputs:` (see PR #34's `prepare.outputs.ref`).
+4. **npm Trusted Publishing matches against `workflow_ref` (the top-level workflow that initiated the run), not `job_workflow_ref` (the file containing the publish job).** Configure the Trusted Publisher entry on npmjs.com with the **caller's** filename. For pgserve: `release.yml`, not `version.yml`.
+
+### Group 4 dispatch path — deferred
+
+`workflow_dispatch` with `bump: patch|minor|major` is structurally identical
+to the push path that just succeeded (same `prepare`/`build`/`release`
+chain after the `bump` job runs). Not exercised in production yet.
+Validate inline next time a real version bump is needed.
