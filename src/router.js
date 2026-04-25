@@ -14,6 +14,7 @@
  * PERFORMANCE: Uses Bun.listen() and Bun.connect() for 2-3x throughput improvement
  */
 
+import fs from 'fs';
 import { PostgresManager } from './postgres.js';
 import { SyncManager } from './sync.js';
 import { RestoreManager } from './restore.js';
@@ -362,9 +363,18 @@ export class MultiTenantRouter extends EventEmitter {
         }
       };
 
-      if (socketPath) {
+      // Safety net for issue #24: if socketPath points to a directory that was
+      // cleaned up (e.g. pgManager was stopped+started, or the PG subprocess
+      // exited unexpectedly and socketDir was reset to null but a stale cached
+      // path is still hanging around), fall back to TCP instead of Bun.connect
+      // hanging on a missing unix socket.
+      const useUnix = socketPath && fs.existsSync(socketPath);
+      if (useUnix) {
         state.pgSocket = await Bun.connect({ unix: socketPath, socket: pgHandler });
       } else {
+        if (socketPath && !useUnix) {
+          this.logger.warn({ socketPath, dbName }, 'Unix socket path stale — falling back to TCP');
+        }
         state.pgSocket = await Bun.connect({ hostname: '127.0.0.1', port: this.pgPort, socket: pgHandler });
       }
 

@@ -444,8 +444,20 @@ export class PostgresManager {
 
   /**
    * Start the embedded PostgreSQL instance
+   *
+   * Re-entry guard: if a previous start() left `this.process` or stale state
+   * behind, refuse silently rather than leaking another socketDir/databaseDir.
+   * Callers must call stop() first if they want to restart.
    */
   async start() {
+    if (this.process) {
+      this.logger?.warn(
+        { pid: this.process.pid, socketDir: this.socketDir },
+        'PostgresManager.start() called while already started — returning existing instance'
+      );
+      return this;
+    }
+
     // Get binary paths (may extract bundled binaries on first run)
     this.binaries = await getBinaryPaths();
 
@@ -773,12 +785,33 @@ export class PostgresManager {
       readStream(this.process.stdout);
 
       // Handle process exit
+      //
+      // When the postgres subprocess exits (normal stop OR crash), we must
+      // null `this.process` AND `this.socketDir`/`this.databaseDir` so that
+      // subsequent `getSocketPath()` calls do not return a path to a directory
+      // that no longer exists. This is the issue #24 root cause: the router
+      // was receiving stale socketPaths pointing to cleaned-up tmp dirs.
+      //
+      // NOTE: we do NOT null socketDir here if `stop()` is in flight, because
+      // stop() already handles cleanup+null. We only need to self-heal when
+      // the exit is unexpected (external kill, crash, OOM).
       this.process.exited.then((code) => {
         processExited = true;
         if (!started) {
           reject(new Error(`PostgreSQL exited with code ${code} before starting: ${startupOutput}`));
         }
         this.process = null;
+        // On unexpected exit (not via stop()), reset cached paths so that
+        // getSocketPath() returns null and callers can fall back to TCP
+        // or force a fresh start().
+        if (!this._stopping) {
+          this.socketDir = null;
+          this.databaseDir = null;
+          this.logger?.warn(
+            { code },
+            'PostgreSQL subprocess exited unexpectedly — socketDir/databaseDir reset'
+          );
+        }
       });
 
       // Method 1: TCP connection polling (preferred, works on Linux/macOS)
@@ -1294,8 +1327,19 @@ export class PostgresManager {
 
   /**
    * Stop the PostgreSQL instance
+   *
+   * Cleanup order matters: we null `this.socketDir`/`this.databaseDir` AFTER
+   * the rmSync so any concurrent `getSocketPath()` call either sees the old
+   * path (while it still exists) or null (after cleanup) — never a path
+   * pointing to a deleted directory.
+   *
+   * The `_stopping` flag tells the process.exited handler to NOT redundantly
+   * null the paths (avoids a race where start() called immediately after
+   * stop() sees nulls that stop() was about to set anyway).
    */
   async stop() {
+    this._stopping = true;
+
     // Close admin pool first (Bun.sql)
     if (this.adminPool) {
       await this.adminPool.close();
@@ -1340,6 +1384,16 @@ export class PostgresManager {
         }
       }
     }
+
+    // Reset cached paths UNCONDITIONALLY after cleanup so getSocketPath()
+    // returns null for anyone still holding a reference to this instance.
+    // This is the core fix for issue #24.
+    this.socketDir = null;
+    if (!this.persistent) {
+      this.databaseDir = null;
+    }
+    this.createdDatabases.clear();
+    this._stopping = false;
   }
 
   /**
