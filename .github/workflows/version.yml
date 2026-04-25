@@ -112,7 +112,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: inputs.version != ''
-    environment: npm-publish
+    # Note: `environment: npm-publish` was removed because the npmjs.com
+    # Trusted Publisher entry for `pgserve` does not declare an environment
+    # name. With the env gate present here, the OIDC token's environment
+    # claim did not match the registry's expectation and `npm publish`
+    # returned 404. Re-add this line if/when the Trusted Publisher entry
+    # has its Environment Name field set to `npm-publish`.
     permissions:
       id-token: write
       contents: read
