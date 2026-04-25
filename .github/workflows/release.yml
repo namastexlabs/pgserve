@@ -184,17 +184,28 @@ jobs:
   # Publisher is configured against that exact path. Renaming requires
   # updating the npmjs.com Trusted Publisher entry first.
   #
-  # `if:` uses `!= 'true'` rather than `== 'false'` to also match the empty-
-  # string case. When a job's `needs:` chain includes a skipped job (here,
-  # `bump` skipped on push events), GH Actions can propagate `outputs.<name>`
-  # as empty rather than the resolved value to downstream `if:` evaluation.
-  # `!= 'true'` is robust to that — only an explicit "release exists, skip"
-  # signal blocks the build.
+  # The `if:` uses `always() && needs.prepare.result == 'success' &&
+  # needs.prepare.outputs.skip != 'true'`. This is the bulletproof pattern
+  # for reusable-workflow callers when any upstream job in the `needs:`
+  # chain was SKIPPED. With the simpler `needs.prepare.outputs.skip != 'true'`
+  # alone, GH Actions silently evaluated the gate as false even though the
+  # debug step in `prepare` proved the output was actually `'false'` — a
+  # known GH Actions quirk: when a job's transitive `needs:` chain includes
+  # a skipped job (here, `bump` is skipped on push events), the reusable-
+  # workflow caller's expression evaluator treats `needs.<job>.outputs.<x>`
+  # as null/missing regardless of the actual value.
+  #
+  # `always()` opts out of the implicit success() filter; the explicit
+  # `result == 'success'` reinstates it correctly; the outputs check then
+  # works as intended.
   # ---------------------------------------------------------------------------
   build:
     name: Build & Publish
     needs: prepare
-    if: needs.prepare.outputs.skip != 'true'
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.skip != 'true'
     uses: ./.github/workflows/version.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
@@ -208,7 +219,11 @@ jobs:
   release:
     name: Create GitHub Release
     needs: [prepare, build]
-    if: needs.prepare.outputs.skip != 'true'
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.build.result == 'success' &&
+      needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
