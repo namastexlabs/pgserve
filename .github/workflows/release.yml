@@ -168,17 +168,33 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # Echo the resolved outputs so downstream skip/no-skip decisions are
+      # debuggable from the run log without re-running with step debug.
+      - name: Debug resolved outputs
+        run: |
+          echo "version=${{ steps.ver.outputs.version }}"
+          echo "tag=${{ steps.ver.outputs.tag }}"
+          echo "skip=${{ steps.ver.outputs.skip }}"
+          echo "prev=${{ steps.prev.outputs.tag }}"
+
   # ---------------------------------------------------------------------------
   # Build & Publish: matrix build of platform binaries + npm publish via OIDC.
   #
   # The reusable workflow filename is `version.yml` because npm Trusted
   # Publisher is configured against that exact path. Renaming requires
   # updating the npmjs.com Trusted Publisher entry first.
+  #
+  # `if:` uses `!= 'true'` rather than `== 'false'` to also match the empty-
+  # string case. When a job's `needs:` chain includes a skipped job (here,
+  # `bump` skipped on push events), GH Actions can propagate `outputs.<name>`
+  # as empty rather than the resolved value to downstream `if:` evaluation.
+  # `!= 'true'` is robust to that — only an explicit "release exists, skip"
+  # signal blocks the build.
   # ---------------------------------------------------------------------------
   build:
     name: Build & Publish
     needs: prepare
-    if: needs.prepare.outputs.skip == 'false'
+    if: needs.prepare.outputs.skip != 'true'
     uses: ./.github/workflows/version.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
@@ -192,7 +208,7 @@ jobs:
   release:
     name: Create GitHub Release
     needs: [prepare, build]
-    if: needs.prepare.outputs.skip == 'false'
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
