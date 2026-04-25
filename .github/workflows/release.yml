@@ -115,11 +115,18 @@ jobs:
       tag: ${{ steps.ver.outputs.tag }}
       skip: ${{ steps.ver.outputs.skip }}
       changelog: ${{ steps.changelog.outputs.notes }}
+      # Surface the resolved checkout-ref so downstream jobs (build, release)
+      # can use it. They cannot reference `needs.bump.outputs.*` directly
+      # because they only have `needs: prepare` (or [prepare, build]) — not
+      # `bump` — in their needs context.
+      ref: ${{ needs.bump.outputs.tag || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           # On dispatch, check out the freshly-pushed tag; on push, the
           # triggering SHA already has the bumped package.json.
+          # (Prepare cannot reference its own `outputs.ref` here — that's
+          # only available to downstream jobs.)
           ref: ${{ needs.bump.outputs.tag || github.sha }}
           fetch-depth: 0
 
@@ -210,7 +217,14 @@ jobs:
     with:
       version: ${{ needs.prepare.outputs.version }}
       npm_tag: latest
-      ref: ${{ needs.prepare.outputs.tag }}
+      # Use prepare.outputs.ref (which resolves to the bump-job tag on
+      # dispatch, or `github.sha` on push). Build cannot reference
+      # `needs.bump.*` directly — only `prepare` is in its `needs:` chain.
+      # On the push path nobody creates the tag before this runs; the
+      # SHA-based checkout works because the merge commit already has the
+      # bumped package.json. The release job creates the tag at the end
+      # via `gh release create`.
+      ref: ${{ needs.prepare.outputs.ref }}
     secrets: inherit
 
   # ---------------------------------------------------------------------------
@@ -229,7 +243,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.tag }}
+          # Same as the build job: prefer the bump job's tag (dispatch
+          # path) but fall back to the SHA (push path, no tag exists yet).
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Download binaries
         uses: actions/download-artifact@v4
