@@ -29,6 +29,14 @@ const SSL_REQUEST_CODE = 80877103;
 const GSSAPI_REQUEST_CODE = 80877104;
 const CANCEL_REQUEST_CODE = 80877102;
 
+// Maximum size for the pre-handshake startup buffer. A legitimate PG
+// startup message is at most a few hundred bytes; anything approaching
+// 1 MiB is a runaway client or an attempted buffer-growth DoS. Bound
+// this to stop the proxy from accumulating gigabytes of orphaned data
+// when a client sends garbage and the handshake never completes.
+// (Issue #18 root cause #2 — unbounded growth at state.buffer.)
+const MAX_STARTUP_BUFFER_SIZE = 1024 * 1024; // 1 MiB
+
 /**
  * Attempt to write a pending buffer to a target socket.
  * Returns remaining unwritten bytes, or null if fully flushed.
@@ -232,6 +240,12 @@ export class MultiTenantRouter extends EventEmitter {
       pgSocket: null,
       dbName: null,
       handshakeComplete: false,
+      // startupInProgress serializes processStartupMessage() against async
+      // reentrancy — without it, every data event fired while the previous
+      // processStartupMessage() is still awaiting createDatabase() would
+      // launch another async task on the same state, racing to overwrite
+      // state.pgSocket and leaking the losers (issue #18 root cause #1).
+      startupInProgress: false,
       pendingToPg: null,
       pendingToClient: null
     });
@@ -250,9 +264,13 @@ export class MultiTenantRouter extends EventEmitter {
 
     // If handshake complete, forward to PostgreSQL
     if (state.handshakeComplete && state.pgSocket) {
-      // If there's already pending data, append to it
+      // If there's already pending data, append and re-pause.
+      // (Re-pause is defensive: client should already be paused from the
+      //  earlier partial-write, but kernel-buffered data can still arrive
+      //  before the pause takes effect — issue #18 root cause #3.)
       if (state.pendingToPg) {
         state.pendingToPg = Buffer.concat([state.pendingToPg, data]);
+        socket.pause();
         return;
       }
       const written = state.pgSocket.write(data);
@@ -264,7 +282,20 @@ export class MultiTenantRouter extends EventEmitter {
       return;
     }
 
-    // Buffer data for startup message parsing
+    // Buffer data for startup message parsing.
+    // Bound the pre-handshake buffer so a client that never completes its
+    // startup (or sends garbage) cannot grow state.buffer without limit —
+    // the 74 GiB VmSize in the production deadlock report traces to this
+    // path (issue #18 root cause #2).
+    const incomingSize = state.buffer ? state.buffer.length + data.byteLength : data.byteLength;
+    if (incomingSize > MAX_STARTUP_BUFFER_SIZE) {
+      this.logger.warn(
+        { incomingSize, limit: MAX_STARTUP_BUFFER_SIZE },
+        'Pre-handshake buffer exceeded limit — closing connection'
+      );
+      socket.end();
+      return;
+    }
     if (state.buffer) {
       state.buffer = Buffer.concat([state.buffer, data]);
     } else {
@@ -276,9 +307,17 @@ export class MultiTenantRouter extends EventEmitter {
   }
 
   /**
-   * Process PostgreSQL startup message and establish proxy connection
+   * Process PostgreSQL startup message and establish proxy connection.
+   *
+   * Guarded against async reentrancy: multiple data events arriving while
+   * the first processStartupMessage() is still awaiting createDatabase()
+   * or Bun.connect() must not launch concurrent tasks on the same state —
+   * they would race to assign state.pgSocket, leaking the losing sockets
+   * and double-writing the startup message (issue #18 root cause #1).
    */
   async processStartupMessage(socket, state) {
+    if (state.startupInProgress) return;
+
     const buffer = state.buffer;
     if (!buffer || buffer.length < 8) return; // Need at least length + protocol
 
@@ -316,6 +355,11 @@ export class MultiTenantRouter extends EventEmitter {
     const dbName = extractDatabaseName(startupMessage);
     state.dbName = dbName;
 
+    // Claim the reentrancy guard BEFORE the first await so subsequent data
+    // events (buffered into state.buffer by handleSocketData) cannot launch
+    // a second async task on the same state.
+    state.startupInProgress = true;
+
     try {
       // Auto-provision database if needed
       if (this.autoProvision) {
@@ -329,9 +373,13 @@ export class MultiTenantRouter extends EventEmitter {
       // Shared handler for pgSocket (used by both unix and TCP paths)
       const pgHandler = {
         data(_pgSocket, pgData) {
-          // Forward PostgreSQL response to client with backpressure
+          // Forward PostgreSQL response to client with backpressure.
+          // Re-pause defensively when pendingToClient already exists —
+          // kernel-buffered PG data can arrive before the earlier pause()
+          // takes effect (issue #18 root cause #3).
           if (state.pendingToClient) {
             state.pendingToClient = Buffer.concat([state.pendingToClient, pgData]);
+            _pgSocket.pause();
             return;
           }
           const written = socket.write(pgData);
@@ -383,6 +431,13 @@ export class MultiTenantRouter extends EventEmitter {
       this.logger.error({ dbName, err: error }, 'Connection error');
       socket.end();
       this.emit('connection-error', { error, dbName });
+    } finally {
+      // Release the reentrancy guard whether handshake succeeded or not.
+      // If it succeeded, handshakeComplete is now true and further data
+      // events will bypass processStartupMessage anyway (handleSocketData
+      // takes the handshakeComplete path). If it failed, socket.end()
+      // has been called and the connection is tearing down.
+      state.startupInProgress = false;
     }
   }
 
