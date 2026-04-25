@@ -28,15 +28,13 @@ help: ## Show this help
 	@echo "$(CYAN)Embedded PostgreSQL server with multi-tenant support$(RESET)"
 	@echo ""
 	@echo "$(BOLD)Quick Commands:$(RESET)"
-	@echo "  $(PURPLE)release-rc$(RESET)     Create RC release locally"
-	@echo "  $(PURPLE)release-stable$(RESET) Promote RC to stable"
 	@echo "  $(PURPLE)test-local$(RESET)     Test server locally"
 	@echo "  $(PURPLE)pm2-start$(RESET)      Start server with PM2"
 	@echo ""
-	@echo "$(BOLD)CI/CD Workflow:$(RESET)"
-	@echo "  1. Create PR with changes"
-	@echo "  2. Add 'rc' label → auto-publishes to npm @next"
-	@echo "  3. Add 'stable' label → promotes to npm @latest"
+	@echo "$(BOLD)Releasing:$(RESET)"
+	@echo "  Manual: bump locally with 'npm version patch|minor|major', PR to main."
+	@echo "  Bot:    'gh workflow run release.yml -f bump=patch' (or minor/major)."
+	@echo "  Skip:   any commit message starting with [skip ci] is ignored."
 	@echo ""
 	@echo "$(BOLD)Build Executables:$(RESET)"
 	@echo "  $(PURPLE)build$(RESET)          Build for current platform"
@@ -211,35 +209,19 @@ clean-dist: ## Clean build artifacts
 	@echo "$(GREEN)✅ Dist cleaned!$(RESET)"
 
 # ==========================================
-# 🚀 CI/CD Release (Automated)
+# 🚀 Releasing
 # ==========================================
-# Releases are triggered by GitHub Actions when PRs are merged with labels:
-#   - 'rc' label → Creates RC release (1.0.8 → 1.0.9-rc.1)
-#   - 'stable' label → Promotes RC to stable (1.0.9-rc.1 → 1.0.9)
+# Releases are driven by .github/workflows/release.yml on push to main.
 #
-# See .github/workflows/release.yml for full automation.
+#   Manual:  bump locally with `npm version patch|minor|major`, commit, PR
+#            to main. Merge -> release fires automatically.
+#   Bot:     `gh workflow run release.yml -f bump=patch` (or minor/major).
+#            The bot bumps, tags, builds binaries, publishes to npm via OIDC.
+#   Skip:    any commit message starting with [skip ci] is ignored.
+#
+# There are no Make targets for releases — versioning is intentionally
+# centralized in CI to keep the local-vs-prod workflow paths identical.
 # ==========================================
-.PHONY: release-rc release-stable release-dry
-
-release-rc: ## Create RC release locally (for testing)
-	@echo "$(CYAN)🔢 Creating RC release...$(RESET)"
-	@node scripts/release.cjs --action bump-rc
-	@echo ""
-	@echo "$(GREEN)✅ RC release created!$(RESET)"
-	@echo "$(YELLOW)Push with: git push && git push --tags$(RESET)"
-
-release-stable: ## Promote RC to stable locally (for testing)
-	@echo "$(CYAN)🎉 Promoting to stable...$(RESET)"
-	@node scripts/release.cjs --action promote
-	@echo ""
-	@echo "$(GREEN)✅ Stable release created!$(RESET)"
-	@echo "$(YELLOW)Push with: git push && git push --tags$(RESET)"
-
-release-dry: ## Dry-run release (no changes)
-	@echo "$(CYAN)🔍 Dry-run release...$(RESET)"
-	@node scripts/release.cjs --action bump-rc --dry-run
-	@echo ""
-	@echo "$(GREEN)✅ Dry-run complete (no changes made)$(RESET)"
 
 # ==========================================
 # 📦 Manual Publish (Deprecated)
@@ -254,19 +236,14 @@ publish-dry: pre-publish ## Dry-run publish (test without actually publishing)
 	@echo "$(GREEN)✅ Dry-run successful!$(RESET)"
 	@echo "$(YELLOW)To actually publish, run: make publish$(RESET)"
 
-publish: ## ⚠️ [DEPRECATED] Use PR labels instead
+publish: ## ⚠️ [DEPRECATED] Releases run from CI on push to main
 	@echo ""
 	@echo "$(YELLOW)$(BOLD)╔═══════════════════════════════════════════════════════════════╗$(RESET)"
 	@echo "$(YELLOW)$(BOLD)║  ⚠️  Manual publish is DEPRECATED                            ║$(RESET)"
 	@echo "$(YELLOW)$(BOLD)║                                                               ║$(RESET)"
-	@echo "$(YELLOW)$(BOLD)║  Use PR labels for automated releases:                       ║$(RESET)"
-	@echo "$(YELLOW)$(BOLD)║    • Add 'rc' label → RC release (npm @next)                 ║$(RESET)"
-	@echo "$(YELLOW)$(BOLD)║    • Add 'stable' label → Promote to stable (npm @latest)   ║$(RESET)"
-	@echo "$(YELLOW)$(BOLD)║                                                               ║$(RESET)"
-	@echo "$(YELLOW)$(BOLD)║  Local testing:                                              ║$(RESET)"
-	@echo "$(YELLOW)$(BOLD)║    make release-rc      Create RC locally                    ║$(RESET)"
-	@echo "$(YELLOW)$(BOLD)║    make release-stable  Promote locally                      ║$(RESET)"
-	@echo "$(YELLOW)$(BOLD)║    make release-dry     Dry-run (no changes)                 ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║  Releases are driven by .github/workflows/release.yml:       ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║    Manual: npm version patch|minor|major, commit, PR to main ║$(RESET)"
+	@echo "$(YELLOW)$(BOLD)║    Bot:    gh workflow run release.yml -f bump=patch         ║$(RESET)"
 	@echo "$(YELLOW)$(BOLD)╚═══════════════════════════════════════════════════════════════╝$(RESET)"
 	@echo ""
 
