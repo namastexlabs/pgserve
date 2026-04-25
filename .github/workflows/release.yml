@@ -37,6 +37,11 @@ concurrency:
 
 permissions:
   contents: write
+  id-token: write   # required so the reusable `version.yml` workflow can mint
+                    # the OIDC token for npm Trusted Publishing — without this,
+                    # GH rejects the workflow at parse time (startup_failure)
+                    # because the called job's `id-token: write` permission
+                    # exceeds what the caller has granted.
 
 jobs:
   # ---------------------------------------------------------------------------
