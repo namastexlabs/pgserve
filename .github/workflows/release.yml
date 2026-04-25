@@ -1,138 +1,201 @@
-name: Unified Release
+name: Release
+
+# Single-branch release pipeline modeled on khal-os/desktop.
+#
+# Two trigger paths into the same workflow:
+#
+#   1. push to main with a hand-bumped package.json (no [skip ci] marker)
+#      -> auto-detect path: prepare reads package.json, checks if v${version}
+#         tag exists, builds + publishes + creates GitHub Release if not.
+#
+#   2. workflow_dispatch with bump=patch|minor|major
+#      -> bump job runs `npm version`, commits with [skip ci], tags, pushes.
+#         prepare/build/release continue inline in the same workflow run.
+#
+# Bot-loop guard: bump commits carry [skip ci]. Push of those commits is
+# filtered out by the prepare gate, so the bot's own push does not retrigger.
+#
+# Auth: npm OIDC Trusted Publishing (configured via build-all-platforms.yml).
 
 on:
-  pull_request:
-    types: [closed]
+  push:
     branches: [main]
   workflow_dispatch:
     inputs:
-      action:
-        description: 'Release action'
+      bump:
+        description: "Version bump type"
         required: true
         type: choice
         options:
-          - bump-rc
-          - promote
+          - patch
+          - minor
+          - major
 
 concurrency:
-  group: unified-release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: write
-  pull-requests: read
-  id-token: write
 
 jobs:
-  # Gate: Skip bot commits, detect action from PR labels
-  gate:
-    name: Release Gate
+  # ---------------------------------------------------------------------------
+  # Bump (workflow_dispatch only): npm version, commit [skip ci], tag, push.
+  # ---------------------------------------------------------------------------
+  bump:
+    name: Bump version
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.merged == true &&
-       (contains(github.event.pull_request.labels.*.name, 'rc') ||
-        contains(github.event.pull_request.labels.*.name, 'stable')))
-    outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-      action: ${{ steps.detect.outputs.action }}
-
-    steps:
-      - name: Check for bot commits
-        id: check
-        run: |
-          # Skip if this is a bot commit (prevents infinite loops)
-          if [[ "${{ github.actor }}" == "github-actions[bot]" ]]; then
-            echo "Skipping: bot commit detected"
-            echo "should_run=false" >> $GITHUB_OUTPUT
-          else
-            echo "should_run=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Detect action
-        id: detect
-        if: steps.check.outputs.should_run == 'true'
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "action=${{ inputs.action }}" >> $GITHUB_OUTPUT
-            echo "Action from dispatch: ${{ inputs.action }}"
-          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'stable') }}" == "true" ]]; then
-            echo "action=promote" >> $GITHUB_OUTPUT
-            echo "Action from label: promote (stable)"
-          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'rc') }}" == "true" ]]; then
-            echo "action=bump-rc" >> $GITHUB_OUTPUT
-            echo "Action from label: bump-rc"
-          else
-            echo "No release label found"
-            echo "action=" >> $GITHUB_OUTPUT
-          fi
-
-  # Version: Bump version and create tag
-  version:
-    name: Bump Version
-    needs: gate
-    if: needs.gate.outputs.should_run == 'true' && needs.gate.outputs.action != ''
-    runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.bump.outputs.version }}
       tag: ${{ steps.bump.outputs.tag }}
-      npm_tag: ${{ steps.bump.outputs.npm_tag }}
-      is_promote: ${{ steps.bump.outputs.is_promote }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "22"
 
-      - name: Configure Git
+      - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Run release script
+      - name: Bump version
         id: bump
-        run: node scripts/release.cjs --action ${{ needs.gate.outputs.action }}
-
-      - name: Push changes
         run: |
-          git push origin HEAD:${{ github.ref_name }}
-          git push origin --tags
+          npm version "${{ inputs.bump }}" --no-git-tag-version
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Bumped to ${VERSION}"
 
-  # Build & Publish: Always build and publish (npm_tag comes from version job)
+      - name: Commit, tag, push
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          TAG="${{ steps.bump.outputs.tag }}"
+          git add package.json
+          git commit -m "[skip ci] release ${TAG}"
+          git tag "${TAG}"
+          git push origin HEAD --follow-tags
+
+  # ---------------------------------------------------------------------------
+  # Prepare: resolve version, skip if tag already exists, build changelog.
+  #
+  # Gate handles both event types:
+  #   - push:    bump is skipped; the !cancelled() && !failure() guard lets
+  #              this job run regardless. The [skip ci] check filters the
+  #              bot's own bump-commit push so it does not retrigger.
+  #   - dispatch: bump succeeded; the workflow_dispatch branch of the OR
+  #              short-circuits the [skip ci] check (the dispatch event
+  #              itself does not carry the bump's commit message).
+  # ---------------------------------------------------------------------------
+  prepare:
+    name: Prepare release
+    needs: bump
+    if: |
+      !cancelled() && !failure() &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' &&
+        !startsWith(github.event.head_commit.message, '[skip ci]')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      skip: ${{ steps.ver.outputs.skip }}
+      changelog: ${{ steps.changelog.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On dispatch, check out the freshly-pushed tag; on push, the
+          # triggering SHA already has the bumped package.json.
+          ref: ${{ needs.bump.outputs.tag || github.sha }}
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            echo "Release ${TAG} already exists — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Find previous release tag
+        id: prev
+        if: steps.ver.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          PREV=$(gh release list --limit 50 --json tagName -q '.[].tagName' | grep -v "^${TAG}$" | head -1)
+          if [ -n "$PREV" ] && git merge-base --is-ancestor "$PREV" HEAD 2>/dev/null; then
+            echo "tag=${PREV}" >> "$GITHUB_OUTPUT"
+            echo "Previous tag: ${PREV}"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "No previous tag reachable from HEAD"
+          fi
+
+      - name: Generate changelog
+        id: changelog
+        if: steps.ver.outputs.skip == 'false' && steps.prev.outputs.tag != ''
+        run: |
+          PREV="${{ steps.prev.outputs.tag }}"
+          NOTES=$(git log --oneline "${PREV}..HEAD" --pretty="- %s" | head -50)
+          {
+            echo "notes<<EOF"
+            echo "$NOTES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Build & Publish: matrix build of platform binaries + npm publish via OIDC.
+  #
+  # The reusable workflow filename is `version.yml` because npm Trusted
+  # Publisher is configured against that exact path. Renaming requires
+  # updating the npmjs.com Trusted Publisher entry first.
+  # ---------------------------------------------------------------------------
   build:
     name: Build & Publish
-    needs: version
-    uses: ./.github/workflows/build-all-platforms.yml
+    needs: prepare
+    if: needs.prepare.outputs.skip == 'false'
+    uses: ./.github/workflows/version.yml
     with:
-      version: ${{ needs.version.outputs.version }}
-      npm_tag: ${{ needs.version.outputs.npm_tag }}
-      ref: ${{ needs.version.outputs.tag }}
+      version: ${{ needs.prepare.outputs.version }}
+      npm_tag: latest
+      ref: ${{ needs.prepare.outputs.tag }}
     secrets: inherit
 
-  # GitHub Release: Create release with changelog
-  github-release:
+  # ---------------------------------------------------------------------------
+  # Release: download artifacts, create GitHub Release with cliff-free notes.
+  # ---------------------------------------------------------------------------
+  release:
     name: Create GitHub Release
-    needs: [version, build]
-    if: always() && needs.version.result == 'success' && needs.build.result == 'success'
+    needs: [prepare, build]
+    if: needs.prepare.outputs.skip == 'false'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.tag }}
 
-      - name: Download artifacts
-        if: needs.build.result == 'success'
+      - name: Download binaries
         uses: actions/download-artifact@v4
         with:
           path: dist/
@@ -140,28 +203,35 @@ jobs:
           merge-multiple: true
 
       - name: List artifacts
+        run: ls -la dist/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES: ${{ needs.prepare.outputs.changelog }}
         run: |
-          if [ -d "dist" ]; then
-            echo "Release artifacts:"
-            ls -la dist/
-          else
-            echo "No artifacts (promote release)"
+          TAG="${{ needs.prepare.outputs.tag }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+
+          if [ -z "$RELEASE_NOTES" ]; then
+            RELEASE_NOTES="Release ${TAG}"
           fi
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.version.outputs.tag }}
-          name: ${{ needs.version.outputs.tag }}
-          generate_release_notes: true
-          body: |
-            ## Install
+          {
+            echo "$RELEASE_NOTES"
+            echo ""
+            echo "## Install"
+            echo ""
+            echo '```bash'
+            echo "npm install pgserve@${VERSION}"
+            echo "bunx pgserve@${VERSION}"
+            echo '```'
+          } > /tmp/release-notes.md
 
-            ```bash
-            npm install pgserve@${{ needs.version.outputs.npm_tag }}
-            bunx pgserve@${{ needs.version.outputs.npm_tag }}
-            ```
-          prerelease: ${{ contains(needs.version.outputs.version, '-rc.') }}
-          files: |
+          # The tag already exists (created by bump job on dispatch, or by the
+          # human commit on push). gh release create resolves --target via the
+          # tag automatically when omitted.
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --notes-file /tmp/release-notes.md \
             dist/*
-          fail_on_unmatched_files: false

@@ -190,16 +190,18 @@ Before editing ANY implementation file, Base Genie must check:
 
 **Protocol:** `@.genie/spells/orchestration-boundary-protocol.md`
 
-**Release Workflow Protocol:**
-- ❌ Never manually trigger `workflow_dispatch` for releases
-- ❌ Never manually bump version in package.json
-- ✅ Always use PR with `rc` or `stable` label - release.yml auto-triggers on merge
-- ✅ Version bumping is automated by scripts/release.cjs
+**Release Workflow Protocol (push-to-main, single tier):**
+- ✅ Manual path: bump locally with `npm version patch|minor|major`, commit, PR to main. Merge → `release.yml` fires automatically.
+- ✅ Bot path: `gh workflow run release.yml -f bump=patch` (or `minor`/`major`). Bot bumps, tags, builds binaries, publishes to npm via OIDC.
+- ✅ Skip: any commit message starting with `[skip ci]` is filtered by the prepare gate.
+- ❌ No `rc`/`stable` PR labels (legacy — removed). No `scripts/release.cjs` (deleted).
+- ❌ Don't edit `package.json` `version` directly on `main` outside the `npm version` flow above.
+- ⚙️ npm publish runs from `.github/workflows/version.yml` (the file npmjs.com Trusted Publisher is bound to).
 
-**Documented Violations:**
+**Documented Violations (history):**
 - Bug #168, task b51db539, 2025-10-21 (duplicate implementation)
 - 2025-10-26 (claimed release implementation steps without investigating automation)
-- 2025-12-08 (manually set version to 1.1.0 + triggered workflow_dispatch → version jumped to 1.1.1-rc.1)
+- 2025-12-08 (manually set version to 1.1.0 + triggered workflow_dispatch → version jumped to 1.1.1-rc.1; this class of error is no longer possible — the bump path goes through `gh workflow run`, not direct package.json edits)
 
 ### 4. Task State Optimization - Live State, Not Documentation 🔴 CRITICAL
 **Rule:** Task state is ephemeral runtime data, not permanent documentation
