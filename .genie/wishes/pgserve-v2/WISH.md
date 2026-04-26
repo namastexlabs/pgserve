@@ -12,7 +12,7 @@
 
 ## Summary
 
-Cut **pgserve v2.0.0** — breaking semver bump that bundles GC, singleton daemon mode, Unix-socket-by-default, kernel-rooted package.json fingerprint, database-per-fingerprint enforcement, opt-in TCP, and `pgserve.persist: true` flag. Drop the staged ABI-compat plan from the original design (`pgserve-roadmap-design.md`) in favor of one clean cut. Validate the cut by migrating the `automagik-genie` consumer in lockstep — a dedicated dogfooder twin agent runs a real genie dev environment against pgserve v2 throughout the build, reporting breakage daily. Other 5 consumer apps (brain, omni, rlmx, hapvida-eugenia, email) remain on v1.x and migrate in separate per-app wishes after v2 ships.
+Cut **pgserve v2.0.0** — breaking semver bump that bundles GC, singleton daemon mode, Unix-socket-by-default, kernel-rooted package.json fingerprint, database-per-fingerprint enforcement, opt-in TCP, and `pgserve.persist: true` flag. Drop the staged ABI-compat plan from the original design (`pgserve-roadmap-design.md`) in favor of one clean cut. Validate the cut by migrating the `automagik-dev/genie` consumer in lockstep — a dedicated dogfooder twin agent runs a real genie dev environment against pgserve v2 throughout the build, reporting breakage daily. Other 5 consumer apps (brain, omni, rlmx, hapvida-eugenia, email) remain on v1.x and migrate in separate per-app wishes after v2 ships.
 
 ## Scope
 
@@ -30,7 +30,7 @@ Cut **pgserve v2.0.0** — breaking semver bump that bundles GC, singleton daemo
 - Enforcement default-ON with `PGSERVE_DISABLE_FINGERPRINT_ENFORCEMENT=1` deprecation kill switch.
 - Audit log: `~/.pgserve/audit.log` JSONL default, `pgserve.audit.target: "syslog"` opt-in (webhook deferred to v2.1).
 - `--listen :PORT` opt-in TCP for k8s/remote use.
-- Migration: `automagik-genie` repo updated to consume pgserve v2 — proves zero TCP ports + zero credentials + visible fingerprint in DB name.
+- Migration: `automagik-dev/genie` repo updated to consume pgserve v2 — proves zero TCP ports + zero credentials + visible fingerprint in DB name.
 - Dogfooder twin agent spawned at wish start, runs genie dev environment against work-in-progress builds, reports daily.
 - Release: `pgserve@2.0.0` published to npm; CHANGELOG includes migration guide for v1 consumers.
 
@@ -50,7 +50,7 @@ Cut **pgserve v2.0.0** — breaking semver bump that bundles GC, singleton daemo
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 1 | Single v2.0.0 cut, not the original 5-stage ABI-compat rollout | Felipe 2026-04-26: cycle time over compat. Align breaking semver with actual breaking change. Dogfood loop is the safety net — `automagik-genie` migrates in lockstep. |
+| 1 | Single v2.0.0 cut, not the original 5-stage ABI-compat rollout | Felipe 2026-04-26: cycle time over compat. Align breaking semver with actual breaking change. Dogfood loop is the safety net — `automagik-dev/genie` migrates in lockstep. |
 | 2 | Portless default — Unix socket only at well-known control path | Eliminates port conflicts (#1 embedded-server failure mode); enables SO_PEERCRED for kernel-rooted identity. |
 | 3 | Identity tuple = `(realpath(package.json), name, uid)` hashed to 12 hex | Stable across npm install, runtime swap, git pull, sub-cd. Birthday-bound at ~16M projects. |
 | 4 | Database-per-fingerprint, NOT schema-per | Real mechanical isolation under shared superuser; atomic GC via DROP DATABASE; pg_dump/drizzle/prisma compat preserved. |
@@ -59,18 +59,18 @@ Cut **pgserve v2.0.0** — breaking semver bump that bundles GC, singleton daemo
 | 7 | GC: opportunistic + hourly + boot, single sweep function | Bounds worst-case orphan lifetime ≤ 1h on idle; near-instant on active hosts. |
 | 8 | Audit tiered (file default → syslog opt-in → webhook v2.1) | Zero-config promise honored; ops opts into separate sink. |
 | 9 | Monorepo: nearest-ancestor package.json wins (matches `require.resolve`) | Familiar Node mental model. Workspace edge case documented. |
-| 10 | Dogfood `automagik-genie` in parallel from t=0 | Empirical safety net for the breaking cut; first canary before broader migration. |
+| 10 | Dogfood `automagik-dev/genie` in parallel from t=0 | Empirical safety net for the breaking cut; first canary before broader migration. |
 | 11 | DELETE PR #16 schema/role machinery | Replaced by database boundary + peer-creds routing. |
 | 12 | Pin v1.x for non-genie consumers (brain/omni/rlmx/eugenia/email) until each gets a migration wish | Prevents accidental breakage during the v2 rollout window. |
 
 ## Success Criteria
 
 - [ ] `pgserve@2.0.0` published to npm with provenance (no `NPM_TOKEN`, OIDC only — already in place from `release-system-genie-pattern`).
-- [ ] `automagik-genie` repo running against pgserve v2 in dev mode, verified by:
+- [ ] `automagik-dev/genie` repo running against pgserve v2 in dev mode, verified by:
   - [ ] No TCP ports bound by pgserve daemon (`ss -tlnp | grep -i pgserve` returns empty unless `--listen` is set).
   - [ ] No credentials in genie's env or code paths (libpq connstring uses Unix socket via `host=/run/.../pgserve` or equivalent).
   - [ ] `psql -l` shows genie's DB named `app_<sanitized-name>_<12hex>` with the visible fingerprint.
-- [ ] Dogfooder twin reports PASS on the scenario suite (defined in Group D below) covering: connect, fingerprint mismatch denied, persist-flag honored, TTL reaped, `--listen` TCP fallback, kill-switch bypass.
+- [ ] Dogfooder twin reports PASS on the scenario suite (defined in Group 0 below) covering: connect, fingerprint mismatch denied, persist-flag honored, TTL reaped, `--listen` TCP fallback, kill-switch bypass.
 - [ ] `pgserve_meta` schema present; every user DB has a row at creation time.
 - [ ] Synthetic 240-orphan fixture reduced to 0 after first sweep (test under `tests/multi-tenant.test.js` or new file).
 - [ ] Audit log populated with all 7 event types under realistic workload.
@@ -83,27 +83,27 @@ Cut **pgserve v2.0.0** — breaking semver bump that bundles GC, singleton daemo
 
 | Wave | Groups | Parallel? | Notes |
 |------|--------|-----------|-------|
-| **0** | **D** (dogfooder twin spawn + scenario harness scaffold) | Independent — runs continuously from t=0 | Sets up genie dev env, scenario suite skeleton; idle-watches for builds to consume |
+| **0** | **0** (dogfooder twin spawn + scenario harness scaffold) | Independent — runs continuously from t=0 | Sets up genie dev env, scenario suite skeleton; idle-watches for builds to consume |
 | **1** | **1** (control DB + `pgserve_meta` schema + audit log infra) | Sequential foundation | Foundation for all later groups |
 | **2** | **2** (singleton daemon + control socket + PR #24 regression) ‖ **3** (fingerprint derivation + SO_PEERCRED) | Yes — disjoint surfaces | Group 2 = transport layer; Group 3 = identity layer |
 | **3** | **4** (database-per-fingerprint + enforcement + kill switch) | Sequential after Wave 2 | Wires identity to tenancy |
 | **4** | **5** (lifecycle + persist + GC sweep) ‖ **6** (`--listen` opt-in TCP) | Yes — disjoint surfaces | Group 5 = lifecycle; Group 6 = transport opt-in |
-| **5** | **7** (`automagik-genie` consumer migration) | Sequential — proof | Migrates genie repo to consume pgserve v2; dogfooder validates |
+| **5** | **7** (`automagik-dev/genie` consumer migration) | Sequential — proof | Migrates genie repo to consume pgserve v2; dogfooder validates |
 | **6** | **8** (release prep — semver 2.0.0, CHANGELOG, migration guide, README, npm publish) | Sequential — ship gate | Final release through `release-system-genie-pattern` workflow |
 
-Group D runs in parallel throughout — its job is to consume each Wave's output as it lands and report breakage to the engineer group leads via `genie send`.
+Group 0 runs in parallel throughout — its job is to consume each Wave's output as it lands and report breakage to the engineer group leads via `genie send`.
 
 ---
 
 ## Execution Groups
 
-### Group D: Dogfooder twin spawn + scenario harness
+### Group 0: Dogfooder twin spawn + scenario harness
 
-**Goal:** Stand up an independent genie agent (the "dogfooder twin") that runs a local `automagik-genie` dev environment against pgserve v2 work-in-progress builds throughout this wish, exercises a defined scenario suite, and reports breakage continuously to the engineer working each group.
+**Goal:** Stand up an independent genie agent (the "dogfooder twin") that runs a local `automagik-dev/genie` dev environment against pgserve v2 work-in-progress builds throughout this wish, exercises a defined scenario suite, and reports breakage continuously to the engineer working each group.
 
 **Deliverables:**
-1. Spawn dogfooder twin via `genie spawn dogfooder --team genie` with cwd `/home/genie/workspace/repos/automagik-genie`. Brief: consume pgserve v2 from `npm pack` of the active feature branch, run scenario suite daily, report PASS/FAIL via `genie send` to the engineer.
-2. Scenario suite scaffold at `automagik-genie/.genie/dogfood/pgserve-v2/scenarios.md`, covering:
+1. Spawn dogfooder twin via `genie spawn dogfooder --team genie` with cwd `/home/genie/workspace/repos/genie`. Brief: consume pgserve v2 from `npm pack` of the active feature branch, run scenario suite daily, report PASS/FAIL via `genie send` to the engineer.
+2. Scenario suite scaffold at `genie/.genie/dogfood/pgserve-v2/scenarios.md`, covering:
    - **S1 connect**: genie boots, requests a DB, gets one (named with fingerprint), CRUD a row, disconnect.
    - **S2 fingerprint mismatch denied**: genie boots from `/tmp/fake-project` (different package.json) — must NOT reach the real genie DB; gets a fresh fingerprint instead.
    - **S3 persist honored**: package.json has `pgserve.persist: true`; kill genie process, wait 25h (or fast-forward via test hook), restart genie, original DB still present.
@@ -122,8 +122,8 @@ Group D runs in parallel throughout — its job is to consume each Wave's output
 **Validation:**
 ```bash
 genie ls --json | jq '.[] | select(.name=="dogfooder")'
-test -f /home/genie/workspace/repos/automagik-genie/.genie/dogfood/pgserve-v2/scenarios.md
-ls /home/genie/workspace/repos/automagik-genie/.genie/dogfood/pgserve-v2/scenarios/ | wc -l   # expect 6
+test -f /home/genie/workspace/repos/genie/.genie/dogfood/pgserve-v2/scenarios.md
+ls /home/genie/workspace/repos/genie/.genie/dogfood/pgserve-v2/scenarios/ | wc -l   # expect 6
 ```
 
 **depends-on:** none (runs from t=0 in parallel with Wave 1)
@@ -347,12 +347,12 @@ pgserve daemon stop
 
 ---
 
-### Group 7: `automagik-genie` consumer migration (the dogfood proof)
+### Group 7: `automagik-dev/genie` consumer migration (the dogfood proof)
 
-**Goal:** Migrate the `automagik-genie` repo to consume pgserve v2. This is THE proof. Removes all pgserve TCP host/port/credential references, switches to Unix socket, relies on auto-fingerprint. Dogfooder twin's S1–S6 must all return PASS after this group ships.
+**Goal:** Migrate the `automagik-dev/genie` repo to consume pgserve v2. This is THE proof. Removes all pgserve TCP host/port/credential references, switches to Unix socket, relies on auto-fingerprint. Dogfooder twin's S1–S6 must all return PASS after this group ships.
 
 **Deliverables:**
-1. In `automagik-genie` repo (separate PR, depends-on this wish merging first):
+1. In `automagik-dev/genie` repo (separate PR, depends-on this wish merging first):
    - Remove all `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` references where they exist purely for pgserve.
    - Update libpq connstring helper to default to `host=$XDG_RUNTIME_DIR/pgserve` (no port, no user, no password).
    - Add `pgserve.persist: true` to genie's package.json (genie holds long-lived state — wishes, agents, events).
@@ -362,14 +362,14 @@ pgserve daemon stop
 4. Migration note in genie's CHANGELOG.
 
 **Acceptance Criteria:**
-- [ ] `automagik-genie` PR merged.
+- [ ] `automagik-dev/genie` PR merged.
 - [ ] Dogfooder twin's S1–S6 all PASS after this group ships.
 - [ ] `genie wish list` works in genie's CI against pgserve v2.
 - [ ] No port bound (`ss -tlnp` clean) when genie is the only pgserve consumer.
 
 **Validation:**
 ```bash
-# In automagik-genie repo:
+# In automagik-dev/genie repo:
 grep -rE 'PGHOST|PGPORT|PGUSER|PGPASSWORD' src/ packages/ 2>/dev/null   # zero hits expected (or only in test fixtures)
 jq '.dependencies.pgserve' package.json                                   # ^2.0.0
 genie wish list >/dev/null && echo OK
@@ -430,10 +430,10 @@ After merge to `main` and release of `pgserve@2.0.0`:
 
 ## Assumptions / Risks
 
-- **Assumption:** `automagik-genie` is the right canary. Its data model is non-trivial (wishes, agents, events) and it's actively developed — high signal-to-noise. If turns out genie under-exercises a code path that brain/email rely on, dogfood loop won't catch it. Mitigation: Group 7 includes a smoke test that exercises every audit event, not just connect.
+- **Assumption:** `automagik-dev/genie` is the right canary. Its data model is non-trivial (wishes, agents, events) and it's actively developed — high signal-to-noise. If turns out genie under-exercises a code path that brain/email rely on, dogfood loop won't catch it. Mitigation: Group 7 includes a smoke test that exercises every audit event, not just connect.
 - **Assumption:** macOS support for SO_PEERCRED via Bun is available. If not, fall back to `getpeereid` syscall via FFI; if that's also blocked, document as Linux-only for v2.0 and revisit for v2.1.
 - **Risk: brain/omni/rlmx/eugenia/email apps accidentally upgrade to v2.0** before their migration wishes run → outage. Mitigation: Group 8 migration guide explicitly tells consumers to pin `^1.x`; we also send notice to each repo's owner before publish.
-- **Risk: `automagik-genie` migration reveals a fundamental design flaw** mid-build. Mitigation: dogfooder twin reports daily; if a Wave 4+ scenario fails irreparably, pause wish, reconvene `/council`, possibly revert to the original staged plan.
+- **Risk: `automagik-dev/genie` migration reveals a fundamental design flaw** mid-build. Mitigation: dogfooder twin reports daily; if a Wave 4+ scenario fails irreparably, pause wish, reconvene `/council`, possibly revert to the original staged plan.
 - **Risk: PR #24 invariants regress in Group 2 daemon work.** Mitigation: explicit regression test required in Group 2's deliverables.
 - **Risk: 24h TTL is wrong for some workloads.** Mitigation: `pgserve.persist: true` covers production; for dev workloads with long debug cycles, document that any new connection slides the window. If real friction emerges, expose `pgserve.ttlHours` in v2.1.
 - **Risk: daemon as single point of failure.** Mitigation: supervised by PM2/systemd per the README snippets; pgserve already tolerates restarts (per-app spawn pattern was effectively the same SPF).

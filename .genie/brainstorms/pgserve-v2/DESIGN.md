@@ -22,7 +22,7 @@ Production usage growing across 6 Namastex apps (brain, omni, rlmx, genie, hapvi
 
 ## Goal
 
-Cut pgserve **v2.0.0** — breaking semver bump (deliberately violating the original "we do not break userspace" plan). Replace v1's per-app TCP spawn + shared-superuser-without-isolation with a portless, fingerprinted, kernel-rooted, lifecycle-managed model. Use `automagik-genie` as the canary consumer (dogfood loop) to validate the design empirically before broader migration.
+Cut pgserve **v2.0.0** — breaking semver bump (deliberately violating the original "we do not break userspace" plan). Replace v1's per-app TCP spawn + shared-superuser-without-isolation with a portless, fingerprinted, kernel-rooted, lifecycle-managed model. Use `automagik-dev/genie` as the canary consumer (dogfood loop) to validate the design empirically before broader migration.
 
 The original design (`pgserve-roadmap-design.md`) staged this evolution v1.0 → v2.0 across 5 ABI-compatible releases. Felipe's direction on 2026-04-26 collapsed this into a single v2.0.0 cut, accepting the breakage cost in exchange for shorter cycle time and aligning the breaking semver with the actual breaking change.
 
@@ -140,7 +140,7 @@ CREATE TABLE pgserve_meta (
 | 7 | Enforcement default-ON with `PGSERVE_DISABLE_FINGERPRINT_ENFORCEMENT=1` kill switch | Simplifier wins happy path; architect keeps emergency valve. |
 | 8 | Monorepo: nearest-ancestor package.json wins | Matches Node `require.resolve`; familiar mental model. |
 | 9 | Audit log tiered (file → syslog → webhook) | Zero-config promise honored at tier 1; ops opt into separate sink. |
-| 10 | Dogfood `automagik-genie` consumer in lockstep | Provides empirical safety net for the breaking cut; first canary before brain/omni/rlmx/eugenia/email migrate. |
+| 10 | Dogfood `automagik-dev/genie` consumer in lockstep | Provides empirical safety net for the breaking cut; first canary before brain/omni/rlmx/eugenia/email migrate. |
 | 11 | DELETE PR #16 schema/role machinery | Replaced by database boundary + peer-creds routing — fewer lines AND honest isolation. |
 
 ## Risks & Assumptions
