@@ -201,7 +201,7 @@ bun test tests/multi-tenant.test.js   # PR #24's original tests
 pgserve daemon &; sleep 1; test -S "${XDG_RUNTIME_DIR:-/tmp}/pgserve/control.sock"; pgserve daemon stop
 ```
 
-**depends-on:** pgserve-v2#1
+**depends-on:** Group 1
 
 ---
 
@@ -239,7 +239,7 @@ psql -h "${XDG_RUNTIME_DIR:-/tmp}/pgserve" -c 'select 1' >/dev/null
 tail -1 ~/.pgserve/audit.log | jq -e '.event=="connection_routed" and (.fingerprint|length==12)'
 ```
 
-**depends-on:** pgserve-v2#1
+**depends-on:** Group 1
 
 ---
 
@@ -276,7 +276,7 @@ bun test tests/tenancy.test.js
 # Confirm each gets app_a_<hex> and app_b_<hex>; cross attempt from a-client targeting b-db is denied.
 ```
 
-**depends-on:** pgserve-v2#2, pgserve-v2#3
+**depends-on:** Group 2, Group 3
 
 ---
 
@@ -311,7 +311,7 @@ bun test tests/orphan-cleanup.test.js
 grep -c db_reaped_ ~/.pgserve/audit.log   # >= 240 after the test
 ```
 
-**depends-on:** pgserve-v2#1, pgserve-v2#4
+**depends-on:** Group 1, Group 4
 
 ---
 
@@ -343,7 +343,7 @@ ss -tlnp | grep -q 5432
 pgserve daemon stop
 ```
 
-**depends-on:** pgserve-v2#2
+**depends-on:** Group 2
 
 ---
 
@@ -375,7 +375,7 @@ jq '.dependencies.pgserve' package.json                                   # ^2.0
 genie wish list >/dev/null && echo OK
 ```
 
-**depends-on:** pgserve-v2#4, pgserve-v2#5
+**depends-on:** Group 4, Group 5
 
 ---
 
@@ -412,7 +412,7 @@ gh release view v2.0.0 --json tagName,assets -q '{tag: .tagName, assets: [.asset
 test -f CHANGELOG.md && grep -q "## 2.0.0" CHANGELOG.md
 ```
 
-**depends-on:** pgserve-v2#7
+**depends-on:** Group 7
 
 ## Dependencies
 
