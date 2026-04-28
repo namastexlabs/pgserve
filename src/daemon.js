@@ -25,7 +25,6 @@
 
 /* global Bun */
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { EventEmitter } from 'events';
 import { PostgresManager } from './postgres.js';
