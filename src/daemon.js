@@ -10,8 +10,9 @@
  * the control socket. A second daemon invocation refuses with the live PID;
  * a stale lock (process gone) is cleaned up automatically on next boot.
  *
- * Wave-2 scope (this file): transport layer only.
- *   - Group 3 will hook fingerprint derivation into `handleControlAccept`.
+ * Wave-2 scope (this file): transport layer + fingerprint accept hook.
+ *   - Group 3: every accept derives a kernel-rooted peer fingerprint and
+ *     audits a `connection_routed` event.
  *   - Group 4 will rewrite the startup-message database parameter.
  *   - Group 5 will install GC sweep triggers on the daemon.
  *   - Group 6 will add the optional `--listen` TCP bind.
@@ -30,6 +31,8 @@ import { EventEmitter } from 'events';
 import { PostgresManager } from './postgres.js';
 import { extractDatabaseName } from './protocol.js';
 import { createLogger } from './logger.js';
+import { handleControlAccept, initFingerprintFfi } from './fingerprint.js';
+import { configureAudit } from './audit.js';
 
 const PROTOCOL_VERSION_3 = 196608;
 const SSL_REQUEST_CODE = 80877103;
@@ -225,6 +228,8 @@ export class PgserveDaemon extends EventEmitter {
     this.autoProvision = options.autoProvision !== false;
     this.baseDir = options.baseDir || null;
     this.useRam = options.useRam || false;
+    this.auditLogFile = options.auditLogFile || null;
+    this.auditTarget = options.auditTarget || null;
     this.logger = options.logger || createLogger({ level: options.logLevel || 'info' });
 
     this.pgManager = options.pgManager || new PostgresManager({
@@ -277,6 +282,21 @@ export class PgserveDaemon extends EventEmitter {
     // Best-effort: tighten directory perms in case the dir pre-existed
     // from a previous user (e.g. /tmp/pgserve world-writable parent).
     try { fs.chmodSync(this.controlSocketDir, 0o700); } catch { /* swallow */ }
+
+    // Wire up audit-log destination + fingerprint FFI before any accept
+    // can fire, so handleSocketOpen always sees a primed environment.
+    if (this.auditLogFile || this.auditTarget) {
+      configureAudit({
+        ...(this.auditLogFile ? { logFile: this.auditLogFile } : {}),
+        ...(this.auditTarget ? { target: this.auditTarget } : {}),
+      });
+    }
+    try {
+      await initFingerprintFfi();
+    } catch (err) {
+      this.releaseLock();
+      throw err;
+    }
 
     this.installSignalHandlers();
 
@@ -435,12 +455,21 @@ export class PgserveDaemon extends EventEmitter {
   /**
    * Route a client connection through to the underlying PG Unix socket.
    *
-   * Wave-2 implementation: same proxy logic as `MultiTenantRouter`, minus
-   * the TCP plumbing. Group 3 will replace the per-accept "no-op fingerprint"
-   * with a real SO_PEERCRED-derived id; Group 4 will rewrite the startup
-   * `database` param before forwarding.
+   * Per-accept fingerprint derivation is live: SO_PEERCRED → /proc walk →
+   * package.json hash, with a `connection_routed` audit emit. Fingerprint
+   * info is parked on socketState so Group 4 (database-per-fingerprint)
+   * can resolve the tenant DB without re-deriving on every byte.
    */
   handleSocketOpen(socket) {
+    let fingerprint = null;
+    try {
+      fingerprint = handleControlAccept(socket);
+    } catch (err) {
+      this.logger.warn?.(
+        { err: err?.message || String(err) },
+        'Failed to derive peer fingerprint on accept',
+      );
+    }
     this.socketState.set(socket, {
       buffer: null,
       pgSocket: null,
@@ -449,8 +478,12 @@ export class PgserveDaemon extends EventEmitter {
       startupInProgress: false,
       pendingToPg: null,
       pendingToClient: null,
+      fingerprint,
     });
     this.connections.add(socket);
+    if (fingerprint) {
+      this.emit('accept', { fingerprint, socket });
+    }
   }
 
   handleSocketData(socket, data) {
