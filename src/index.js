@@ -13,6 +13,17 @@ export { RestoreManager } from './restore.js';
 export { Dashboard } from './dashboard.js';
 export { StatsCollector } from './stats-collector.js';
 export { StatsDashboard } from './stats-dashboard.js';
+export {
+  PgserveDaemon,
+  startDaemon,
+  stopDaemon,
+  resolveControlSocketDir,
+  resolveControlSocketPath,
+  resolvePidLockPath,
+  resolveLibpqCompatPath,
+  acquirePidLock,
+  isProcessAlive,
+} from './daemon.js';
 
 // Default export
 export { startMultiTenantServer as default } from './router.js';

@@ -168,6 +168,90 @@ pgserve --sync-to "postgresql://user:pass@db.example.com:5432/prod"
 
 <br>
 
+## Running as Daemon
+
+`pgserve@2` introduces a singleton daemon mode that binds a Unix control
+socket inside `$XDG_RUNTIME_DIR/pgserve` (fallback `/tmp/pgserve`). One
+daemon per host serves every consumer on the box — no port conflicts, no
+credentials, kernel-rooted identity.
+
+```bash
+# Foreground
+pgserve daemon
+
+# Stop a running daemon
+pgserve daemon stop
+```
+
+A second `pgserve daemon` invocation while the first is running exits with
+`already running, pid N`. A daemon killed with `kill -9` leaves an orphan
+PID file + socket; the next `pgserve daemon` boot detects the dead pid and
+cleans both up automatically.
+
+Connect from any libpq client (no host/port/user/password required —
+the daemon authenticates via SO_PEERCRED on accept):
+
+```bash
+psql -h "${XDG_RUNTIME_DIR:-/tmp}/pgserve" -d myapp
+# or via connection URI
+psql "postgresql:///myapp?host=${XDG_RUNTIME_DIR:-/tmp}/pgserve"
+```
+
+### Supervised by PM2
+
+`ecosystem.config.cjs` snippet:
+
+```javascript
+module.exports = {
+  apps: [{
+    name: 'pgserve',
+    script: 'pgserve',
+    args: 'daemon',
+    autorestart: true,
+    max_memory_restart: '1G',
+    env: { XDG_RUNTIME_DIR: '/run/user/1000' },
+  }],
+};
+```
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 save
+```
+
+### Supervised by systemd
+
+`/etc/systemd/user/pgserve.service`:
+
+```ini
+[Unit]
+Description=pgserve daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env npx pgserve daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Enable for the current user:
+
+```bash
+systemctl --user enable --now pgserve
+journalctl --user -u pgserve -f
+```
+
+The systemd user unit inherits `XDG_RUNTIME_DIR` automatically; the daemon
+binds `${XDG_RUNTIME_DIR}/pgserve/control.sock` (mode 0600, dir mode 0700)
+plus a `.s.PGSQL.5432` symlink so off-the-shelf PostgreSQL clients connect
+without further configuration.
+
+<br>
+
 ## API
 
 ```javascript

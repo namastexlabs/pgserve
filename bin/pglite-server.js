@@ -12,6 +12,12 @@ import path from 'path';
 import os from 'os';
 import { startMultiTenantServer } from '../src/index.js';
 import { startClusterServer } from '../src/cluster.js';
+import {
+  PgserveDaemon,
+  stopDaemon,
+  resolveControlSocketDir,
+  resolveControlSocketPath,
+} from '../src/daemon.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -25,8 +31,121 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-// Parse CLI arguments
+// Parse CLI arguments — `pgserve daemon [stop]` is dispatched before the
+// classic `pgserve [options]` parser so daemon-mode flags do not collide
+// with router flags.
 const args = process.argv.slice(2);
+
+if (args[0] === 'daemon') {
+  await runDaemonSubcommand(args.slice(1));
+}
+
+async function runDaemonSubcommand(daemonArgs) {
+  if (daemonArgs[0] === 'stop') {
+    const result = stopDaemon();
+    if (result.stopped) {
+      console.log(`pgserve daemon stopped (pid ${result.pid})`);
+      process.exit(0);
+    }
+    if (result.reason === 'no-pid-file') {
+      console.error('pgserve daemon: no PID file found — is the daemon running?');
+      process.exit(1);
+    }
+    if (result.reason === 'stale-pid' || result.reason === 'invalid-pid-file') {
+      console.log(`pgserve daemon: cleaned up stale lock (pid ${result.pid ?? '?'})`);
+      process.exit(0);
+    }
+    if (result.reason === 'timeout') {
+      console.error(`pgserve daemon: pid ${result.pid} did not exit within timeout`);
+      process.exit(1);
+    }
+    console.error(`pgserve daemon stop: ${result.reason}${result.error ? ` (${result.error})` : ''}`);
+    process.exit(1);
+  }
+
+  // `pgserve daemon` (long-running)
+  const opts = parseDaemonArgs(daemonArgs);
+  const daemon = new PgserveDaemon(opts);
+  try {
+    await daemon.start();
+  } catch (err) {
+    if (err.code === 'EALREADYRUNNING') {
+      console.error(`pgserve daemon: already running, pid ${err.pid}`);
+      process.exit(1);
+    }
+    console.error('pgserve daemon: failed to start:', err.message);
+    process.exit(1);
+  }
+  const dir = resolveControlSocketDir();
+  console.log(`
+pgserve daemon — singleton mode
+
+  Control socket: ${resolveControlSocketPath(dir)}
+  PID lock:       ${path.join(dir, 'pgserve.pid')}
+  PG socket:      ${daemon.pgManager.getSocketPath() || '(TCP fallback)'}
+
+  Connect:        psql 'host=${dir} dbname=mydb'
+
+  Press Ctrl+C or send SIGTERM to stop.
+`);
+
+  // Daemon installs its own SIGTERM/SIGINT handlers; just wait forever.
+  await new Promise(() => {});
+}
+
+function parseDaemonArgs(daemonArgs) {
+  const opts = {
+    baseDir: null,
+    useRam: false,
+    logLevel: 'info',
+    autoProvision: true,
+  };
+  for (let i = 0; i < daemonArgs.length; i++) {
+    const arg = daemonArgs[i];
+    switch (arg) {
+      case '--data':
+      case '-d':
+        opts.baseDir = daemonArgs[++i];
+        break;
+      case '--ram':
+        opts.useRam = true;
+        break;
+      case '--log':
+      case '-l':
+        opts.logLevel = daemonArgs[++i];
+        break;
+      case '--no-provision':
+        opts.autoProvision = false;
+        break;
+      case '--help':
+        console.log(`
+pgserve daemon — singleton control-socket mode
+
+USAGE:
+  pgserve daemon [options]
+  pgserve daemon stop
+
+OPTIONS:
+  --data <path>   Persistent data directory (default: in-memory)
+  --ram           Use /dev/shm storage (Linux only)
+  --log <level>   Log level: error|warn|info|debug (default: info)
+  --no-provision  Disable auto-provisioning of databases
+  --help          Show this help
+
+The daemon binds $XDG_RUNTIME_DIR/pgserve/control.sock (fallback /tmp/pgserve/control.sock).
+A second invocation while the first is running exits with "already running".
+`);
+        process.exit(0);
+        // falls through (unreachable)
+      default:
+        if (arg.startsWith('-')) {
+          console.error(`Unknown daemon option: ${arg}`);
+          process.exit(1);
+        }
+    }
+  }
+  return opts;
+}
 
 /**
  * Print usage help

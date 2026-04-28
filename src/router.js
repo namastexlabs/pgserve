@@ -12,6 +12,14 @@
  * - Memory mode (default) or persistent storage
  *
  * PERFORMANCE: Uses Bun.listen() and Bun.connect() for 2-3x throughput improvement
+ *
+ * v2 NOTE: The MultiTenantRouter is the **direct-embed** path — callers that
+ * spawn their own PostgresManager and bind a TCP port get a per-pid Unix
+ * socket from `pgManager.getSocketPath()` (preserved by PR #24). The new
+ * **daemon** path (`src/daemon.js`) binds a singleton control socket at
+ * `$XDG_RUNTIME_DIR/pgserve/control.sock` and is the v2 default for the
+ * `pgserve daemon` CLI subcommand. Both paths coexist; direct-embed callers
+ * are not affected by daemon mode.
  */
 
 import fs from 'fs';
