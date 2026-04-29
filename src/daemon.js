@@ -251,7 +251,7 @@ export class PgserveDaemon extends EventEmitter {
 
     this.pgManager = options.pgManager || new PostgresManager({
       dataDir: this.baseDir,
-      port: options.pgPort || 5433,
+      port: options.pgPort ?? 0,
       logger: this.logger.child ? this.logger.child({ component: 'postgres' }) : this.logger,
       useRam: this.useRam,
       enablePgvector: options.enablePgvector || false,
