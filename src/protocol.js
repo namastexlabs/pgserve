@@ -217,6 +217,53 @@ export function rewriteDatabaseName(data, newDbName, opts = {}) {
   return out;
 }
 
+/**
+ * Build a PostgreSQL ErrorResponse (`'E'`) frame.
+ *
+ * Used by the daemon to reject cross-fingerprint connection attempts
+ * with SQLSTATE `28P01 invalid_authorization_specification` before the
+ * peer's startup message ever reaches the underlying PG instance.
+ *
+ * Frame layout (PG protocol v3):
+ *   'E' (1 byte) | length (4 bytes, includes itself) | <fields...> | '\0'
+ *
+ * Each field: type-byte | utf8 string | '\0'
+ * Required fields per PG docs: 'S' (Severity), 'C' (SQLSTATE), 'M' (Message).
+ * 'V' (localized severity, server >= 9.6) is included for parity with the
+ * frames real Postgres emits — psql / pg drivers parse both transparently.
+ *
+ * @param {{severity?: string, sqlstate: string, message: string}} args
+ * @returns {Buffer}
+ */
+export function buildErrorResponse({ severity = 'FATAL', sqlstate, message }) {
+  if (typeof sqlstate !== 'string' || sqlstate.length !== 5) {
+    throw new TypeError('buildErrorResponse: sqlstate must be a 5-character string');
+  }
+  if (typeof message !== 'string' || message.length === 0) {
+    throw new TypeError('buildErrorResponse: message must be a non-empty string');
+  }
+  const field = (typeChar, value) => {
+    const valBytes = Buffer.byteLength(value, 'utf8');
+    const buf = Buffer.alloc(1 + valBytes + 1);
+    buf.writeUInt8(typeChar.charCodeAt(0), 0);
+    buf.write(value, 1, 'utf8');
+    buf.writeUInt8(0, 1 + valBytes);
+    return buf;
+  };
+  const body = Buffer.concat([
+    field('S', severity),
+    field('V', severity),
+    field('C', sqlstate),
+    field('M', message),
+    Buffer.from([0]),
+  ]);
+  const frameLength = 4 + body.length;
+  const header = Buffer.alloc(5);
+  header.writeUInt8(0x45, 0); // 'E'
+  header.writeUInt32BE(frameLength, 1);
+  return Buffer.concat([header, body]);
+}
+
 // Pre-allocated buffer pool for startup message parsing (avoids allocation per connection)
 const STARTUP_BUFFER_SIZE = 8192; // Max startup message is typically < 1KB
 const bufferPool = [];

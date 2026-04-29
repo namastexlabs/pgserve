@@ -29,13 +29,24 @@ import fs from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
 import { PostgresManager } from './postgres.js';
-import { extractDatabaseName, extractApplicationName, rewriteDatabaseName } from './protocol.js';
+import { extractDatabaseName, extractApplicationName, rewriteDatabaseName, buildErrorResponse } from './protocol.js';
 import { createLogger } from './logger.js';
 import { handleControlAccept, initFingerprintFfi } from './fingerprint.js';
 import { configureAudit, audit, AUDIT_EVENTS } from './audit.js';
-import { ensureMetaSchema, verifyToken } from './control-db.js';
+import {
+  ensureMetaSchema,
+  verifyToken,
+  findRowByFingerprint,
+  recordDbCreated,
+  touchLastConnection,
+} from './control-db.js';
 import { createAdminClient, writeAdminDiscovery, removeAdminDiscovery } from './admin-client.js';
 import { parseTcpAuth, hashToken } from './tokens.js';
+import {
+  resolveTenantDatabaseName,
+  isFingerprintEnforcementDisabled,
+  KILL_SWITCH_ENV,
+} from './tenancy.js';
 
 const PROTOCOL_VERSION_3 = 196608;
 const SSL_REQUEST_CODE = 80877103;
@@ -236,6 +247,18 @@ export class PgserveDaemon extends EventEmitter {
     // Group 6: opt-in TCP binds. Each entry is `{host, port}`. Empty array
     // (the default) means "Unix socket only" — no TCP port is bound.
     this.tcpListens = normalizeTcpListens(options.tcpListens);
+    // Group 4: fingerprint enforcement is on by default; the kill-switch env
+    // var (`PGSERVE_DISABLE_FINGERPRINT_ENFORCEMENT=1`) flips it off and is
+    // surfaced as a deprecation warning at start(). Tests pass an explicit
+    // boolean override.
+    this.enforcementDisabled = options.enforcementDisabled !== undefined
+      ? !!options.enforcementDisabled
+      : isFingerprintEnforcementDisabled();
+    // Group 4 test seam: per-accept overrides for fingerprint derivation.
+    // Production omits this and the daemon walks `/proc/$pid/cwd` for real.
+    this._fingerprintAcceptOpts = typeof options._fingerprintAcceptOpts === 'function'
+      ? options._fingerprintAcceptOpts
+      : null;
     this.logger = options.logger || createLogger({ level: options.logLevel || 'info' });
 
     this.pgManager = options.pgManager || new PostgresManager({
@@ -273,6 +296,19 @@ export class PgserveDaemon extends EventEmitter {
     }
 
     ensureDir(this.controlSocketDir);
+
+    // Group 4: surface the kill switch loudly at boot. The audit log records
+    // every bypassed connection later, but operators should see this in
+    // the daemon's own stderr the moment the process starts.
+    if (this.enforcementDisabled) {
+      const msg =
+        `[pgserve] WARNING: ${KILL_SWITCH_ENV}=1 is set — fingerprint ` +
+        `enforcement is DISABLED. Cross-tenant connections will be ` +
+        `permitted. This kill switch is deprecated and will be removed ` +
+        `in pgserve v3.`;
+      try { process.stderr.write(`${msg}\n`); } catch { /* swallow */ }
+      this.logger.warn?.({ env: KILL_SWITCH_ENV }, 'Fingerprint enforcement disabled — deprecated kill switch in use');
+    }
 
     const lock = acquirePidLock({
       pidLockPath: this.pidLockPath,
@@ -519,7 +555,8 @@ export class PgserveDaemon extends EventEmitter {
   handleSocketOpen(socket) {
     let fingerprint = null;
     try {
-      fingerprint = handleControlAccept(socket);
+      const opts = this._fingerprintAcceptOpts ? (this._fingerprintAcceptOpts(socket) || {}) : {};
+      fingerprint = handleControlAccept(socket, opts);
     } catch (err) {
       this.logger.warn?.(
         { err: err?.message || String(err) },
@@ -608,11 +645,42 @@ export class PgserveDaemon extends EventEmitter {
     }
 
     const startupMessage = buffer.subarray(0, messageLength);
-    const dbName = extractDatabaseName(startupMessage);
-    state.dbName = dbName;
+    const requestedDb = extractDatabaseName(startupMessage);
+    state.dbName = requestedDb;
     state.startupInProgress = true;
 
     try {
+      // Group 4: resolve the tenant database for this peer's fingerprint.
+      // Auto-provisions on first connect, denies cross-tenant attempts
+      // (unless the kill switch is set), and rewrites the startup-message
+      // database parameter so the underlying PG sees the canonical name.
+      const resolution = await this.resolveTenantDatabase(state, requestedDb);
+      if (resolution.deny) {
+        const errFrame = buildErrorResponse({
+          severity: 'FATAL',
+          sqlstate: '28P01',
+          message: resolution.message,
+        });
+        try {
+          // Bun's TCPSocket.end(data) writes then closes atomically — using
+          // write()+end() can race the FIN past the data on some kernels and
+          // leave the peer waiting for AuthOK indefinitely.
+          socket.end(errFrame);
+        } catch { /* swallow */ }
+        this.emit('connection-denied', {
+          fingerprint: state.fingerprint?.fingerprint || null,
+          requested: requestedDb,
+          owned: resolution.ownedDatabaseName,
+        });
+        return;
+      }
+
+      const dbName = resolution.databaseName;
+      state.dbName = dbName;
+      const outgoingStartup = (dbName !== requestedDb)
+        ? rewriteDatabaseName(startupMessage, dbName)
+        : startupMessage;
+
       if (this.autoProvision) {
         await this.pgManager.createDatabase(dbName);
       }
@@ -635,7 +703,7 @@ export class PgserveDaemon extends EventEmitter {
           }
         },
         open(pgSocket) {
-          pgSocket.write(startupMessage);
+          pgSocket.write(outgoingStartup);
           state.handshakeComplete = true;
         },
         close() {
@@ -677,12 +745,133 @@ export class PgserveDaemon extends EventEmitter {
 
       this.emit('connection', { dbName, socket });
     } catch (err) {
-      this.logger.error?.({ dbName, err: err?.message || String(err) }, 'Daemon connection error');
+      this.logger.error?.({ dbName: state.dbName, err: err?.message || String(err) }, 'Daemon connection error');
       try { socket.end(); } catch { /* swallow */ }
-      this.emit('connection-error', { error: err, dbName });
+      this.emit('connection-error', { error: err, dbName: state.dbName });
     } finally {
       state.startupInProgress = false;
     }
+  }
+
+  /**
+   * Group 4 — wire identity to tenancy.
+   *
+   * On first connect: provision a per-fingerprint database, audit the create.
+   * On reconnect: bump last_connection_at + liveness_pid.
+   * On cross-tenant attempt: deny with SQLSTATE 28P01, OR (when the kill
+   * switch is on) bypass and audit `enforcement_kill_switch_used`.
+   *
+   * Returns either `{databaseName}` (proceed with that name) or
+   * `{deny: true, message, ownedDatabaseName}` (caller writes ErrorResponse
+   * and closes).
+   *
+   * @param {object} state — socket state holding the fingerprint info
+   * @param {string} requestedDb — database name extracted from startup msg
+   */
+  async resolveTenantDatabase(state, requestedDb) {
+    const fp = state.fingerprint;
+    // No fingerprint (FFI unavailable, accept hook failed) or no admin
+    // client (init failed) → behave as v1: route the requested name through
+    // unchanged. Tenancy enforcement is best-effort, never load-bearing for
+    // basic connectivity.
+    if (!fp || !this._adminClient) {
+      return { databaseName: requestedDb };
+    }
+
+    const { fingerprint, name, uid, pid, packageRealpath } = fp;
+
+    let row = null;
+    try {
+      row = await findRowByFingerprint(this._adminClient, fingerprint);
+    } catch (err) {
+      this.logger.warn?.(
+        { err: err?.message || String(err), fingerprint },
+        'pgserve_meta lookup failed — falling back to requested DB',
+      );
+      return { databaseName: requestedDb };
+    }
+
+    if (!row) {
+      const newName = resolveTenantDatabaseName({ name, fingerprint });
+      try {
+        await this.pgManager.createDatabase(newName);
+        await recordDbCreated(this._adminClient, {
+          databaseName: newName,
+          fingerprint,
+          peerUid: typeof uid === 'number' ? uid : -1,
+          packageRealpath: packageRealpath || null,
+          livenessPid: typeof pid === 'number' && pid > 0 ? pid : null,
+          persist: false,
+        });
+        audit(AUDIT_EVENTS.DB_CREATED, {
+          database: newName,
+          fingerprint,
+          peer_uid: uid,
+          peer_pid: pid,
+          package_realpath: packageRealpath || null,
+          name,
+        });
+      } catch (err) {
+        this.logger.error?.(
+          { err: err?.message || String(err), fingerprint, dbName: newName },
+          'Failed to provision per-fingerprint database',
+        );
+        // Bubble — the catch block in processStartupMessage closes the socket.
+        throw err;
+      }
+      row = { databaseName: newName, fingerprint, peerUid: uid, allowedTokens: [] };
+    } else {
+      try {
+        await touchLastConnection(this._adminClient, {
+          databaseName: row.databaseName,
+          livenessPid: typeof pid === 'number' && pid > 0 ? pid : null,
+        });
+      } catch (err) {
+        this.logger.warn?.(
+          { err: err?.message || String(err), database: row.databaseName },
+          'touchLastConnection failed (non-fatal)',
+        );
+      }
+    }
+
+    // Enforcement: peer asked for an explicit database that isn't theirs.
+    // libpq's default `database = user` is treated the same as `postgres` —
+    // both are "I don't care, give me whatever you have for me", so we
+    // silently route them into the fingerprint's DB.
+    const requested = (typeof requestedDb === 'string' && requestedDb.length > 0)
+      ? requestedDb
+      : 'postgres';
+    const isImplicit = requested === 'postgres' || requested === row.databaseName;
+    if (!isImplicit) {
+      if (this.enforcementDisabled) {
+        audit(AUDIT_EVENTS.ENFORCEMENT_KILL_SWITCH_USED, {
+          fingerprint,
+          peer_uid: uid,
+          peer_pid: pid,
+          requested_database: requested,
+          owned_database: row.databaseName,
+        });
+        // Kill switch: route the peer wherever they asked, just like v1.
+        try { await this.pgManager.createDatabase(requested); } catch { /* swallow */ }
+        return { databaseName: requested };
+      }
+      audit(AUDIT_EVENTS.CONNECTION_DENIED_FINGERPRINT_MISMATCH, {
+        fingerprint,
+        peer_uid: uid,
+        peer_pid: pid,
+        requested_database: requested,
+        owned_database: row.databaseName,
+      });
+      return {
+        deny: true,
+        ownedDatabaseName: row.databaseName,
+        message:
+          `database fingerprint mismatch: peer ${fingerprint} owns ` +
+          `${row.databaseName}, requested ${requested}`,
+      };
+    }
+
+    return { databaseName: row.databaseName };
   }
 
   handleSocketClose(socket) {
