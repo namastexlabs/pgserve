@@ -14,12 +14,13 @@
 /* global Bun */
 import fs from 'fs';
 import { extractDatabaseName, rewriteDatabaseName, buildErrorResponse } from './protocol.js';
-import { handleControlAccept } from './fingerprint.js';
+import { handleControlAccept, readPersistFlag } from './fingerprint.js';
 import { audit, AUDIT_EVENTS } from './audit.js';
 import {
   findRowByFingerprint,
   recordDbCreated,
   touchLastConnection,
+  markPersist,
 } from './control-db.js';
 import {
   resolveTenantDatabaseName,
@@ -279,6 +280,11 @@ async function resolveTenantDatabase(state, requestedDb) {
     return { databaseName: requestedDb };
   }
 
+  // Group 5: read pgserve.persist from the resolved package.json so the row
+  // we (re)write reflects the peer's lifecycle preference. Script-mode peers
+  // never get persist=true (no package.json to opt in from).
+  const persistRequested = packageRealpath ? readPersistFlag(packageRealpath) : false;
+
   if (!row) {
     const newName = resolveTenantDatabaseName({ name, fingerprint });
     try {
@@ -289,7 +295,7 @@ async function resolveTenantDatabase(state, requestedDb) {
         peerUid: typeof uid === 'number' ? uid : -1,
         packageRealpath: packageRealpath || null,
         livenessPid: typeof pid === 'number' && pid > 0 ? pid : null,
-        persist: false,
+        persist: persistRequested,
       });
       audit(AUDIT_EVENTS.DB_CREATED, {
         database: newName,
@@ -298,6 +304,7 @@ async function resolveTenantDatabase(state, requestedDb) {
         peer_pid: pid,
         package_realpath: packageRealpath || null,
         name,
+        persist: persistRequested,
       });
     } catch (err) {
       this.logger.error?.(
@@ -317,6 +324,17 @@ async function resolveTenantDatabase(state, requestedDb) {
       this.logger.warn?.(
         { err: err?.message || String(err), database: row.databaseName },
         'touchLastConnection failed (non-fatal)',
+      );
+    }
+    // Group 5: keep persist in sync when the peer's package.json toggles the
+    // flag between connections — the previous run might have started without
+    // persist:true and the operator just added it (or vice versa).
+    try {
+      await markPersist(this._adminClient, row.databaseName, persistRequested);
+    } catch (err) {
+      this.logger.warn?.(
+        { err: err?.message || String(err), database: row.databaseName },
+        'markPersist failed (non-fatal)',
       );
     }
   }

@@ -268,6 +268,25 @@ export function readPackageName(packageJsonPath) {
   }
 }
 
+/**
+ * Read the `pgserve.persist` flag from a package.json file. Returns false on
+ * any error (missing file, malformed JSON, missing field) — the default
+ * lifecycle is ephemeral; persist must be explicitly opted in.
+ *
+ * @param {string} packageJsonPath
+ * @returns {boolean}
+ */
+export function readPersistFlag(packageJsonPath) {
+  if (!packageJsonPath) return false;
+  try {
+    const raw = fs.readFileSync(packageJsonPath, 'utf8');
+    const pkg = JSON.parse(raw);
+    return pkg?.pgserve?.persist === true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Fingerprint derivations
 // ---------------------------------------------------------------------------

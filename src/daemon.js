@@ -43,6 +43,7 @@ import {
 import { flushPending } from './daemon-shared.js';
 import { attachControlHandlers } from './daemon-control.js';
 import { attachTcpHandlers } from './daemon-tcp.js';
+import { installSweepTriggers } from './gc.js';
 
 /**
  * Resolve the directory that holds the daemon's control socket and pid lock.
@@ -265,6 +266,13 @@ export class PgserveDaemon extends EventEmitter {
     this._stopping = false;
     // Lazy-initialised admin DB client (Group 6 token validation).
     this._adminClient = null;
+    // Group 5: GC sweep handle ({stop, sweep}). Installed once the admin
+    // client is up and torn down on stop().
+    this._gcHandle = null;
+    // Group 5 test seam — opt out of the boot sweep / hourly timer when
+    // tests want to drive sweeps manually. Default: enabled.
+    this.gcEnabled = options.gcEnabled !== false;
+    this.gcOptions = options.gcOptions || {};
 
     this.setMaxListeners(this.maxConnections + 10);
   }
@@ -425,6 +433,23 @@ export class PgserveDaemon extends EventEmitter {
       this.tcpServers.push(tcp);
     }
 
+    // Group 5: install GC sweep triggers (boot + hourly + on-connect sample)
+    // once the admin client is provisioned. Disabled when gcEnabled=false
+    // (tests that drive sweeps manually) or when no admin client exists.
+    if (this.gcEnabled && this._adminClient) {
+      try {
+        this._gcHandle = installSweepTriggers(this, {
+          adminClient: this._adminClient,
+          ...this.gcOptions,
+        });
+      } catch (err) {
+        this.logger.warn?.(
+          { err: err?.message || String(err) },
+          'GC sweep install failed — orphan reaping disabled',
+        );
+      }
+    }
+
     this.logger.info?.({
       pid: process.pid,
       controlSocketPath: this.controlSocketPath,
@@ -461,6 +486,13 @@ export class PgserveDaemon extends EventEmitter {
       try { tcp.stop(); } catch { /* swallow */ }
     }
     this.tcpServers = [];
+
+    // Group 5: detach GC triggers before the admin client closes so an
+    // in-flight sweep doesn't try to query a closed connection.
+    if (this._gcHandle) {
+      try { await this._gcHandle.stop(); } catch { /* swallow */ }
+      this._gcHandle = null;
+    }
 
     if (this._adminClient) {
       try { await this._adminClient.end(); } catch { /* swallow */ }
