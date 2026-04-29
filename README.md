@@ -531,10 +531,10 @@ CREATE EXTENSION IF NOT EXISTS vector;
   <tr>
     <th>Scenario</th>
     <th>SQLite</th>
-    <th>PGlite</th>
     <th>PostgreSQL</th>
-    <th>pgserve</th>
-    <th>pgserve --ram</th>
+    <th>pgserve 1.2.0</th>
+    <th>pgserve v2</th>
+    <th>pgserve v2 --ram</th>
   </tr>
   <tr>
     <td><b>Concurrent Writes</b> (10 agents)</td>
@@ -567,10 +567,10 @@ CREATE EXTENSION IF NOT EXISTS vector;
 <table>
   <tr>
     <th>Metric</th>
-    <th>PGlite</th>
     <th>PostgreSQL</th>
-    <th>pgserve</th>
-    <th>pgserve --ram</th>
+    <th>pgserve 1.2.0</th>
+    <th>pgserve v2</th>
+    <th>pgserve v2 --ram</th>
   </tr>
   <tr>
     <td><b>Vector INSERT</b> (1000 × 1536-dim)</td>
@@ -619,7 +619,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
     <td>117</td>
   </tr>
   <tr>
-    <td>PGlite</td>
+    <td>pgserve 1.2.0</td>
     <td>305</td>
     <td>65</td>
     <td>100%</td>
@@ -637,7 +637,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
     <td>1,067</td>
   </tr>
   <tr>
-    <td>pgserve</td>
+    <td>pgserve v2</td>
     <td>2,145</td>
     <td>149</td>
     <td>100%</td>
@@ -646,7 +646,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
     <td>1,347</td>
   </tr>
   <tr>
-    <td><b>pgserve --ram</b></td>
+    <td><b>pgserve v2 --ram</b></td>
     <td><b>3,541</b></td>
     <td><b>381</b></td>
     <td><b>100%</b></td>

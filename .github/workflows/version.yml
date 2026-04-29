@@ -87,7 +87,7 @@ jobs:
             --windows-description="Embedded PostgreSQL Server - Zero config, auto-provision, unlimited connections" `
             --windows-version="$WIN_VERSION" `
             --windows-copyright="Copyright (c) 2025 Namastex Labs" `
-            bin/pglite-server.js --outfile dist/${{ matrix.output }}
+            bin/postgres-server.js --outfile dist/${{ matrix.output }}
           Get-ChildItem dist/
         shell: pwsh
 
@@ -97,7 +97,7 @@ jobs:
         run: |
           mkdir -p dist
           VERSION=$(node -p "require('./package.json').version")
-          bun build --compile --define BUILD_VERSION="'$VERSION'" bin/pglite-server.js --outfile dist/${{ matrix.output }}
+          bun build --compile --define BUILD_VERSION="'$VERSION'" bin/postgres-server.js --outfile dist/${{ matrix.output }}
           ls -lh dist/
 
       - name: Upload artifact

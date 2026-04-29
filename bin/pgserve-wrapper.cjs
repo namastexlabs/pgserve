@@ -61,19 +61,19 @@ if (!bunPath) {
 // then exits instantly with:
 //   Error: Bun's postinstall script was not run.
 //
-// pglite-server.js's TCP readiness poll can't distinguish this from a slow
+// postgres-server.js's TCP readiness poll can't distinguish this from a slow
 // startup, so users see a confusing 30s timeout. Detect the specific error
 // here, attempt the documented self-heal once (`node install.js`), and retry.
 // If self-heal also fails, surface the real error instead of hanging later.
 ensureBunHealthy(bunPath);
 
-const scriptPath = path.join(__dirname, 'pglite-server.js');
+const scriptPath = path.join(__dirname, 'postgres-server.js');
 
 /**
  * Verify the selected bun binary can execute. If it fails with the known
  * "postinstall script was not run" signature, attempt a one-shot repair via
  * the bun npm package's install.js. Throws (with a useful message) rather
- * than letting pglite-server.js hang on the TCP readiness poll for 30s.
+ * than letting postgres-server.js hang on the TCP readiness poll for 30s.
  */
 function ensureBunHealthy(bunExe) {
   const probe = probeBun(bunExe);

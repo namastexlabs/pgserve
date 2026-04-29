@@ -27,9 +27,7 @@ function silentLogger() {
 }
 
 function makeIsolated(tag) {
-  const dir = path.join(os.tmpdir(), `pgserve-daemon-fp-${tag}-${process.pid}-${Date.now()}`);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return dir;
+  return fs.mkdtempSync(path.join('/tmp', `pgs-fp-${tag}-`));
 }
 
 function readAuditLines(logFile) {
@@ -53,6 +51,10 @@ describe('Group 3 — daemon emits connection_routed on accept', () => {
       auditLogFile,
       auditTarget: 'file',
       logger: silentLogger(),
+      _fingerprintAcceptOpts: () => ({
+        cwdOverride: dir,
+        cmdlineOverride: [process.execPath, import.meta.url],
+      }),
     });
     await daemon.start();
 

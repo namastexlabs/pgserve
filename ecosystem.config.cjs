@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'pgserve',
-      script: './bin/pglite-server.js',
+      script: './bin/postgres-server.js',
       args: 'router --port 8432',
       cwd: '/home/namastex/dev/pgserve',
       interpreter: 'node',
@@ -13,8 +13,8 @@ module.exports = {
       env: {
         NODE_ENV: 'production'
       },
-      error_file: '/home/namastex/logs/pglite-server-error.log',
-      out_file: '/home/namastex/logs/pglite-server-out.log',
+      error_file: '/home/namastex/logs/postgres-server-error.log',
+      out_file: '/home/namastex/logs/postgres-server-out.log',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       merge_logs: true,
       time: true

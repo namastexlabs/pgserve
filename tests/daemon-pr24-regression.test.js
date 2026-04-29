@@ -16,7 +16,6 @@
 
 import { describe, test, expect } from 'bun:test';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
 import { PostgresManager } from '../src/postgres.js';
@@ -36,9 +35,7 @@ function silentLogger() {
 // Each test uses a unique controlSocketDir under tmp so concurrent runs
 // (and the existing host's real /run/user/<uid>/pgserve) cannot collide.
 function makeDaemonDirs(tag) {
-  const dir = path.join(os.tmpdir(), `pgserve-daemon-test-${tag}-${process.pid}-${Date.now()}`);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return dir;
+  return fs.mkdtempSync(path.join('/tmp', `pgs-${tag}-`));
 }
 
 describe('PR #24 regression — PostgresManager lifecycle', () => {

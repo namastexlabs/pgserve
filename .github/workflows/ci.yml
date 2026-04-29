@@ -80,7 +80,7 @@ jobs:
       - name: Build executable
         run: |
           mkdir -p dist
-          bun build --compile bin/pglite-server.js --outfile dist/pgserve
+          bun build --compile bin/postgres-server.js --outfile dist/pgserve
 
       - name: Verify executable
         run: |
