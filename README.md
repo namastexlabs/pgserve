@@ -35,6 +35,8 @@ Connect from any PostgreSQL client — databases auto-create on first connection
 psql postgresql://localhost:8432/myapp
 ```
 
+> Note: v2 default is the Unix socket — see [Daemon mode](#daemon-mode). The TCP form above is the v1 compat path.
+
 <br>
 
 ## Features
@@ -168,15 +170,16 @@ pgserve --sync-to "postgresql://user:pass@db.example.com:5432/prod"
 
 <br>
 
-## Running as Daemon
+## Daemon mode
 
-`pgserve@2` introduces a singleton daemon mode that binds a Unix control
-socket inside `$XDG_RUNTIME_DIR/pgserve` (fallback `/tmp/pgserve`). One
-daemon per host serves every consumer on the box — no port conflicts, no
-credentials, kernel-rooted identity.
+`pgserve@2` ships a singleton daemon that binds a Unix control socket
+inside `$XDG_RUNTIME_DIR/pgserve` (fallback `/tmp/pgserve`). One daemon
+per host serves every consumer on the box — no port conflicts, no
+credentials, kernel-rooted identity. Run it under PM2 or systemd so it
+restarts automatically.
 
 ```bash
-# Foreground
+# Foreground (for debugging)
 pgserve daemon
 
 # Stop a running daemon
@@ -215,8 +218,7 @@ module.exports = {
 ```
 
 ```bash
-pm2 start ecosystem.config.cjs
-pm2 save
+pm2 start ecosystem.config.cjs && pm2 save
 ```
 
 ### Supervised by systemd
@@ -249,68 +251,6 @@ The systemd user unit inherits `XDG_RUNTIME_DIR` automatically; the daemon
 binds `${XDG_RUNTIME_DIR}/pgserve/control.sock` (mode 0600, dir mode 0700)
 plus a `.s.PGSQL.5432` symlink so off-the-shelf PostgreSQL clients connect
 without further configuration.
-
-<br>
-
-## Daemon mode
-
-`pgserve@2` ships a singleton daemon. One `pgserve daemon` per host serves
-every consumer through the Unix control socket — no port conflicts, no
-credentials, no per-app process zoo. Run it under PM2 or systemd so it
-restarts automatically.
-
-```bash
-# Foreground (for debugging)
-pgserve daemon
-
-# Stop a running daemon
-pgserve daemon stop
-```
-
-PM2 (`ecosystem.config.cjs`):
-
-```javascript
-module.exports = {
-  apps: [{
-    name: 'pgserve',
-    script: 'pgserve',
-    args: 'daemon',
-    autorestart: true,
-    max_memory_restart: '1G',
-    env: { XDG_RUNTIME_DIR: '/run/user/1000' },
-  }],
-};
-```
-
-```bash
-pm2 start ecosystem.config.cjs && pm2 save
-```
-
-systemd user unit (`/etc/systemd/user/pgserve.service`):
-
-```ini
-[Unit]
-Description=pgserve daemon
-After=default.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/env npx pgserve daemon
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-
-```bash
-systemctl --user enable --now pgserve
-journalctl --user -u pgserve -f
-```
-
-A second `pgserve daemon` invocation while the first is running exits with
-`already running, pid N`. A daemon killed with `kill -9` leaves an orphan
-PID file + socket; the next boot detects the dead pid and cleans both up.
 
 <br>
 
