@@ -26,6 +26,8 @@
  * (matches `pg.Client` / `pg.Pool` directly; trivial to wrap Bun.SQL).
  */
 
+import { timingSafeEqual } from './tokens.js';
+
 const REAPABLE_QUERY = `
   SELECT database_name, fingerprint, last_connection_at, liveness_pid, persist
   FROM pgserve_meta
@@ -305,7 +307,7 @@ export async function verifyToken(client, { fingerprint, tokenHash }) {
   if (!tokenHash) throw new Error('verifyToken: tokenHash required');
   const row = await findRowByFingerprint(client, fingerprint);
   if (!row) return null;
-  const match = row.allowedTokens.find((t) => t.hash === tokenHash);
+  const match = row.allowedTokens.find((t) => timingSafeEqual(t.hash, tokenHash));
   if (!match) return null;
   return { tokenId: match.id, databaseName: row.databaseName };
 }

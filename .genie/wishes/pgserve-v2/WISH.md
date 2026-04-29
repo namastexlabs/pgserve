@@ -42,6 +42,7 @@ Cut **pgserve v2.0.0** — breaking semver bump that bundles GC, singleton daemo
 - Multi-host coordination — pgserve v2 is single-host by design.
 - Cross-DB foreign keys / cross-app SELECT — still impossible, by design.
 - `pgserve.audit.target: "url"` (HTTP webhook) — deferred to v2.1.
+- `pgserve.toml` allowlist form for TCP token auth (Group 6 deliverable #2 alternative) — deferred to v2.1; the JSONB `pgserve_meta.allowed_tokens` path ships in v2.0.
 - `pgserve.fingerprintRoot: "monorepo-root"` escape hatch — deferred until demand surfaces.
 - Encryption-at-rest, TLS for control socket, multi-tenant role permissions — separate hardening wishes.
 - Cosign + SLSA provenance — separate supply-chain hardening wish.
@@ -321,7 +322,7 @@ grep -c db_reaped_ ~/.pgserve/audit.log   # >= 240 after the test
 
 **Deliverables:**
 1. Daemon CLI accepts `--listen [host:]port` (repeatable for multiple binds).
-2. TCP accept hook: requires `?fingerprint=<hex>&token=<bearer>` style auth in libpq application_name, OR a `pgserve.toml` allowlist mapping fingerprints to bearer tokens. Tokens hashed at rest. Without auth: connection refused.
+2. TCP accept hook: requires `?fingerprint=<hex>&token=<bearer>` style auth in libpq application_name. Tokens hashed at rest, verified with constant-time compare. Without auth: connection refused. (`pgserve.toml` allowlist form deferred to v2.1 — see OUT.)
 3. Auth tokens issued via `pgserve daemon issue-token --fingerprint <hex>` CLI command — prints token once, hashes into `pgserve_meta.allowed_tokens` jsonb column (added in this group's schema migration).
 4. Audit events: `tcp_token_issued`, `tcp_token_used`, `tcp_token_denied` added to the audit enum.
 5. Tests:
