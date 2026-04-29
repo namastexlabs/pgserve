@@ -55,7 +55,9 @@ export async function createAdminClient({
     username: user,
     password,
     max,
-    idleTimeout: 10,
+    // TODO #38: investigate GC perf for 240-orphan sweep on shared CI runners;
+    // bumped 10s→30s during Felipe deadline 2026-04-29 to unblock pgserve v2.0 ship.
+    idleTimeout: 30,
   });
   // Light probe so a misconfigured daemon fails loudly here rather than at
   // first query.

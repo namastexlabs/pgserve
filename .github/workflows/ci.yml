@@ -36,6 +36,10 @@ jobs:
   test-matrix:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # macOS is best-effort for v2.0 — Darwin reader implemented but unverified per
+    # WISH.md ("Linux-only for v2.0, revisit in v2.1") and PR #37 body. Tests still
+    # run + surface as warnings but don't block merge. Tracking in issue #39.
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
