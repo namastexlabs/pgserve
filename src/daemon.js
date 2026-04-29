@@ -29,10 +29,13 @@ import fs from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
 import { PostgresManager } from './postgres.js';
-import { extractDatabaseName } from './protocol.js';
+import { extractDatabaseName, extractApplicationName, rewriteDatabaseName } from './protocol.js';
 import { createLogger } from './logger.js';
 import { handleControlAccept, initFingerprintFfi } from './fingerprint.js';
-import { configureAudit } from './audit.js';
+import { configureAudit, audit, AUDIT_EVENTS } from './audit.js';
+import { ensureMetaSchema, verifyToken } from './control-db.js';
+import { createAdminClient, writeAdminDiscovery, removeAdminDiscovery } from './admin-client.js';
+import { parseTcpAuth, hashToken } from './tokens.js';
 
 const PROTOCOL_VERSION_3 = 196608;
 const SSL_REQUEST_CODE = 80877103;
@@ -230,6 +233,9 @@ export class PgserveDaemon extends EventEmitter {
     this.useRam = options.useRam || false;
     this.auditLogFile = options.auditLogFile || null;
     this.auditTarget = options.auditTarget || null;
+    // Group 6: opt-in TCP binds. Each entry is `{host, port}`. Empty array
+    // (the default) means "Unix socket only" — no TCP port is bound.
+    this.tcpListens = normalizeTcpListens(options.tcpListens);
     this.logger = options.logger || createLogger({ level: options.logLevel || 'info' });
 
     this.pgManager = options.pgManager || new PostgresManager({
@@ -241,11 +247,14 @@ export class PgserveDaemon extends EventEmitter {
     });
 
     this.server = null;
+    this.tcpServers = [];
     this.connections = new Set();
     this.socketState = new WeakMap();
     this._lockAcquired = false;
     this._signalHandlersInstalled = false;
     this._stopping = false;
+    // Lazy-initialised admin DB client (Group 6 token validation).
+    this._adminClient = null;
 
     this.setMaxListeners(this.maxConnections + 10);
   }
@@ -365,11 +374,40 @@ export class PgserveDaemon extends EventEmitter {
       this.logger.warn?.({ err: e.message }, 'Failed to publish libpq compat symlink');
     }
 
+    // Group 6: open the admin DB client + provision the meta schema before
+    // we accept any connection that might rely on it (TCP token verify).
+    try {
+      this._adminClient = await createAdminClient({
+        socketDir: this.pgManager.socketDir,
+        port: this.pgManager.port,
+      });
+      await ensureMetaSchema(this._adminClient);
+      writeAdminDiscovery({
+        controlSocketDir: this.controlSocketDir,
+        socketDir: this.pgManager.socketDir,
+        port: this.pgManager.port,
+      });
+    } catch (err) {
+      this.logger.warn?.(
+        { err: err?.message || String(err) },
+        'admin DB init failed — TCP listen will refuse connections',
+      );
+    }
+
+    // Group 6: bind any opt-in TCP listeners. Errors here are fatal — if the
+    // operator asked for TCP they want to know it failed (port collision,
+    // EACCES) rather than silently fall back to Unix-only.
+    for (const listen of this.tcpListens) {
+      const tcp = await this.bindTcpListener(listen);
+      this.tcpServers.push(tcp);
+    }
+
     this.logger.info?.({
       pid: process.pid,
       controlSocketPath: this.controlSocketPath,
       pidLockPath: this.pidLockPath,
       pgPort: this.pgManager.port,
+      tcpListens: this.tcpListens,
     }, 'pgserve daemon listening');
 
     this.emit('listening');
@@ -393,6 +431,24 @@ export class PgserveDaemon extends EventEmitter {
     if (this.server) {
       try { this.server.stop(); } catch { /* swallow */ }
       this.server = null;
+    }
+
+    // Group 6: tear down opt-in TCP listeners.
+    for (const tcp of this.tcpServers) {
+      try { tcp.stop(); } catch { /* swallow */ }
+    }
+    this.tcpServers = [];
+
+    if (this._adminClient) {
+      try { await this._adminClient.end(); } catch { /* swallow */ }
+      this._adminClient = null;
+    }
+    try {
+      removeAdminDiscovery(this.controlSocketDir);
+    } catch (e) {
+      if (e.code !== 'ENOENT') {
+        this.logger.warn?.({ err: e.message }, 'Failed to remove admin discovery file');
+      }
     }
 
     try {
@@ -675,6 +731,307 @@ function flushPending(target, pending) {
   if (written === 0) return pending;
   return pending.subarray(written);
 }
+
+/**
+ * Normalise the `--listen` form. Accepts:
+ *   - omitted / null / [] → no TCP listeners
+ *   - "5432"              → bind 0.0.0.0:5432
+ *   - ":5432"             → bind 0.0.0.0:5432
+ *   - "127.0.0.1:5432"    → bind localhost only
+ *   - array of any of the above
+ *
+ * Returns an array of `{host, port}` objects. Throws on garbage input.
+ */
+export function normalizeTcpListens(listens) {
+  if (listens === undefined || listens === null) return [];
+  const arr = Array.isArray(listens) ? listens : [listens];
+  return arr.filter(Boolean).map(parseSingleListen);
+}
+
+function parseSingleListen(spec) {
+  if (typeof spec === 'object' && typeof spec.port === 'number') {
+    return { host: spec.host || '0.0.0.0', port: spec.port };
+  }
+  if (typeof spec !== 'string') {
+    throw new Error(`pgserve daemon --listen: bad spec ${JSON.stringify(spec)}`);
+  }
+  let s = spec.trim();
+  if (s.startsWith(':')) s = s.slice(1);
+  let host = '0.0.0.0';
+  let portText = s;
+  const lastColon = s.lastIndexOf(':');
+  if (lastColon !== -1) {
+    host = s.slice(0, lastColon);
+    portText = s.slice(lastColon + 1);
+  }
+  const port = parseInt(portText, 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`pgserve daemon --listen: invalid port "${spec}"`);
+  }
+  return { host: host || '0.0.0.0', port };
+}
+
+/**
+ * Add TCP-bind + auth flow methods to PgserveDaemon. These hang off the
+ * prototype rather than re-opening the class so the diff reads as one
+ * cohesive Group-6 surface.
+ */
+PgserveDaemon.prototype.bindTcpListener = async function bindTcpListener({ host, port }) {
+  const daemon = this;
+  return Bun.listen({
+    hostname: host,
+    port,
+    socket: {
+      data(socket, data) { daemon.handleTcpData(socket, data); },
+      open(socket) { daemon.handleTcpOpen(socket); },
+      close(socket) { daemon.handleTcpClose(socket); },
+      error(socket, error) { daemon.handleTcpError(socket, error); },
+      drain(socket) {
+        const state = daemon.socketState.get(socket);
+        if (!state) return;
+        if (state.pendingToClient) {
+          state.pendingToClient = flushPending(socket, state.pendingToClient);
+        }
+        if (!state.pendingToClient && state.pgSocket) {
+          state.pgSocket.resume();
+        }
+      },
+    },
+  });
+};
+
+PgserveDaemon.prototype.handleTcpOpen = function handleTcpOpen(socket) {
+  // TCP peers cannot use SO_PEERCRED; identity is established via the
+  // application_name token in the startup message.
+  this.socketState.set(socket, {
+    transport: 'tcp',
+    buffer: null,
+    pgSocket: null,
+    dbName: null,
+    handshakeComplete: false,
+    startupInProgress: false,
+    pendingToPg: null,
+    pendingToClient: null,
+    fingerprint: null,
+    tokenId: null,
+  });
+  this.connections.add(socket);
+};
+
+PgserveDaemon.prototype.handleTcpData = function handleTcpData(socket, data) {
+  const state = this.socketState.get(socket);
+  if (!state) return;
+
+  if (state.handshakeComplete && state.pgSocket) {
+    if (state.pendingToPg) {
+      state.pendingToPg = Buffer.concat([state.pendingToPg, Buffer.from(data)]);
+      socket.pause();
+      return;
+    }
+    const written = state.pgSocket.write(data);
+    if (written < data.byteLength) {
+      state.pendingToPg = written === 0 ? Buffer.from(data) : Buffer.from(data.subarray(written));
+      socket.pause();
+    }
+    return;
+  }
+
+  const incomingSize = state.buffer ? state.buffer.length + data.byteLength : data.byteLength;
+  if (incomingSize > MAX_STARTUP_BUFFER_SIZE) {
+    this.logger.warn?.(
+      { incomingSize, limit: MAX_STARTUP_BUFFER_SIZE },
+      'TCP pre-handshake buffer exceeded limit — closing connection',
+    );
+    socket.end();
+    return;
+  }
+  state.buffer = state.buffer ? Buffer.concat([state.buffer, Buffer.from(data)]) : Buffer.from(data);
+
+  this.processTcpStartupMessage(socket, state).catch((err) => {
+    this.logger.error?.({ err: err.message }, 'TCP processStartupMessage failed');
+    try { socket.end(); } catch { /* swallow */ }
+  });
+};
+
+PgserveDaemon.prototype.processTcpStartupMessage = async function processTcpStartupMessage(socket, state) {
+  if (state.startupInProgress) return;
+  const buffer = state.buffer;
+  if (!buffer || buffer.length < 8) return;
+  const messageLength = buffer.readUInt32BE(0);
+  if (buffer.length < messageLength) return;
+  const code = buffer.readUInt32BE(4);
+
+  if (code === SSL_REQUEST_CODE || code === GSSAPI_REQUEST_CODE) {
+    socket.write(Buffer.from('N'));
+    state.buffer = buffer.length > messageLength ? buffer.subarray(messageLength) : null;
+    return;
+  }
+  if (code === CANCEL_REQUEST_CODE) {
+    socket.end();
+    return;
+  }
+  if (code !== PROTOCOL_VERSION_3) {
+    this.logger.warn?.({ code }, 'TCP unsupported protocol version');
+    socket.end();
+    return;
+  }
+
+  const startupMessage = buffer.subarray(0, messageLength);
+  const applicationName = extractApplicationName(startupMessage);
+  const auth = parseTcpAuth(applicationName);
+  state.startupInProgress = true;
+
+  // Validate before opening any PG socket. The denied path emits exactly
+  // one audit event then closes — the peer gets no oracle distinguishing
+  // "unknown fingerprint" from "bad token".
+  let validated = null;
+  try {
+    if (auth && this._adminClient) {
+      const tokenHash = hashToken(auth.token);
+      validated = await verifyToken(this._adminClient, {
+        fingerprint: auth.fingerprint,
+        tokenHash,
+      });
+    }
+  } catch (err) {
+    this.logger.warn?.({ err: err.message }, 'verifyToken failed');
+    validated = null;
+  }
+
+  if (!validated) {
+    audit(AUDIT_EVENTS.TCP_TOKEN_DENIED, {
+      fingerprint: auth?.fingerprint || null,
+      remote_address: socket.remoteAddress || null,
+      reason: !auth ? 'missing_or_malformed_application_name' : 'token_unknown',
+    });
+    try { socket.end(); } catch { /* swallow */ }
+    state.startupInProgress = false;
+    return;
+  }
+
+  state.fingerprint = auth.fingerprint;
+  state.tokenId = validated.tokenId;
+  state.dbName = validated.databaseName;
+
+  audit(AUDIT_EVENTS.TCP_TOKEN_USED, {
+    fingerprint: auth.fingerprint,
+    token_id: validated.tokenId,
+    database: validated.databaseName,
+    remote_address: socket.remoteAddress || null,
+  });
+
+  // Force the peer into its fingerprint's database — even if the libpq
+  // client asked for something else. Drop application_name on the way
+  // through: the auth blob easily exceeds Postgres' 63-char NAMEDATALEN
+  // and would otherwise trigger a truncation NOTICE on every connect.
+  let outgoingStartup;
+  try {
+    outgoingStartup = rewriteDatabaseName(startupMessage, validated.databaseName, {
+      dropParams: ['application_name'],
+    });
+  } catch (err) {
+    this.logger.error?.({ err: err.message }, 'rewriteDatabaseName failed for TCP peer');
+    try { socket.end(); } catch { /* swallow */ }
+    state.startupInProgress = false;
+    return;
+  }
+
+  try {
+    if (this.autoProvision) {
+      await this.pgManager.createDatabase(validated.databaseName);
+    }
+    const pgSocketPath = this.pgManager.getSocketPath();
+    const daemon = this;
+    const pgHandler = {
+      data(_pgSocket, pgData) {
+        if (state.pendingToClient) {
+          state.pendingToClient = Buffer.concat([state.pendingToClient, Buffer.from(pgData)]);
+          _pgSocket.pause();
+          return;
+        }
+        const written = socket.write(pgData);
+        if (written < pgData.byteLength) {
+          state.pendingToClient = written === 0
+            ? Buffer.from(pgData)
+            : Buffer.from(pgData.subarray(written));
+          _pgSocket.pause();
+        }
+      },
+      open(pgSocket) {
+        pgSocket.write(outgoingStartup);
+        state.handshakeComplete = true;
+      },
+      close() {
+        try { socket.end(); } catch { /* swallow */ }
+      },
+      error(_pgSocket, error) {
+        daemon.logger.error?.(
+          { dbName: validated.databaseName, err: error?.message || String(error) },
+          'TCP-side PG proxy socket error',
+        );
+        try { socket.end(); } catch { /* swallow */ }
+      },
+      drain(_pgSocket) {
+        if (state.pendingToPg) {
+          state.pendingToPg = flushPending(_pgSocket, state.pendingToPg);
+        }
+        if (!state.pendingToPg) {
+          socket.resume();
+        }
+      },
+    };
+
+    const useUnix = pgSocketPath && fs.existsSync(pgSocketPath);
+    if (useUnix) {
+      state.pgSocket = await Bun.connect({ unix: pgSocketPath, socket: pgHandler });
+    } else {
+      state.pgSocket = await Bun.connect({
+        hostname: '127.0.0.1',
+        port: this.pgManager.port,
+        socket: pgHandler,
+      });
+    }
+    this.emit('tcp-connection', { dbName: validated.databaseName, fingerprint: auth.fingerprint });
+  } catch (err) {
+    this.logger.error?.(
+      { dbName: validated.databaseName, err: err?.message || String(err) },
+      'TCP daemon connection error',
+    );
+    try { socket.end(); } catch { /* swallow */ }
+    this.emit('connection-error', { error: err, dbName: validated.databaseName });
+  } finally {
+    state.startupInProgress = false;
+  }
+};
+
+PgserveDaemon.prototype.handleTcpClose = function handleTcpClose(socket) {
+  const state = this.socketState.get(socket);
+  if (state) {
+    state.pendingToPg = null;
+    state.pendingToClient = null;
+    if (state.pgSocket) {
+      try { state.pgSocket.end(); } catch { /* swallow */ }
+    }
+  }
+  this.connections.delete(socket);
+  this.socketState.delete(socket);
+};
+
+PgserveDaemon.prototype.handleTcpError = function handleTcpError(socket, error) {
+  if (error?.code !== 'ECONNRESET') {
+    this.logger.error?.({ err: error?.message || String(error) }, 'TCP socket error');
+  }
+  const state = this.socketState.get(socket);
+  if (state) {
+    state.pendingToPg = null;
+    state.pendingToClient = null;
+    if (state.pgSocket) {
+      try { state.pgSocket.end(); } catch { /* swallow */ }
+    }
+  }
+  this.connections.delete(socket);
+  this.socketState.delete(socket);
+};
 
 /**
  * Convenience entry — used by the CLI subcommand.

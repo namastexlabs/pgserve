@@ -133,6 +133,90 @@ export function extractDatabaseName(data) {
   }
 }
 
+/**
+ * Extract `application_name` from a startup message buffer. Returns null when
+ * absent or when the buffer is malformed (callers fall back to no-auth).
+ *
+ * @param {Buffer} data
+ * @returns {string|null}
+ */
+export function extractApplicationName(data) {
+  try {
+    const params = parseStartupMessage(data, /* fastPath */ false);
+    return typeof params.application_name === 'string' ? params.application_name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return a new startup-message buffer with the `database` parameter replaced
+ * by `newDbName`. All other parameters (and their order) are preserved by
+ * default; pass `dropParams: ['application_name', ...]` to strip noisy
+ * fields the daemon would rather not forward to PG verbatim. The 4-byte
+ * length prefix at the start of the buffer is recomputed.
+ *
+ * Group 6 uses this on TCP-authenticated connections so a peer that presents
+ * a token for fingerprint X is forced into fingerprint X's database, even
+ * if the libpq client requested a different one.
+ *
+ * @param {Buffer} data — original startup message
+ * @param {string} newDbName
+ * @param {{dropParams?: string[]}} [opts]
+ * @returns {Buffer}
+ */
+export function rewriteDatabaseName(data, newDbName, opts = {}) {
+  if (!Buffer.isBuffer(data)) throw new Error('rewriteDatabaseName: buffer required');
+  if (typeof newDbName !== 'string' || newDbName.length === 0) {
+    throw new Error('rewriteDatabaseName: non-empty newDbName required');
+  }
+  const length = data.readInt32BE(0);
+  const version = data.readInt32BE(4);
+  const drop = new Set(opts.dropParams || []);
+
+  // Walk parameters; build a list of (key, value) pairs replacing 'database'.
+  const pairs = [];
+  let offset = 8;
+  let sawDatabase = false;
+  while (offset < length - 1) {
+    const keyEnd = data.indexOf(0, offset);
+    if (keyEnd === -1 || keyEnd >= length) break;
+    const key = data.toString('utf8', offset, keyEnd);
+    offset = keyEnd + 1;
+    const valueEnd = data.indexOf(0, offset);
+    if (valueEnd === -1 || valueEnd >= length) break;
+    const value = data.toString('utf8', offset, valueEnd);
+    offset = valueEnd + 1;
+    if (drop.has(key)) continue;
+    if (key === 'database') {
+      pairs.push(['database', newDbName]);
+      sawDatabase = true;
+    } else {
+      pairs.push([key, value]);
+    }
+  }
+  if (!sawDatabase) pairs.push(['database', newDbName]);
+
+  // Compute new buffer size: 4 (length) + 4 (version) + sum(key+1 + value+1) + 1 (terminator).
+  let bodyLen = 0;
+  for (const [k, v] of pairs) {
+    bodyLen += Buffer.byteLength(k, 'utf8') + 1 + Buffer.byteLength(v, 'utf8') + 1;
+  }
+  const total = 4 + 4 + bodyLen + 1;
+  const out = Buffer.alloc(total);
+  out.writeInt32BE(total, 0);
+  out.writeInt32BE(version, 4);
+  let cur = 8;
+  for (const [k, v] of pairs) {
+    cur += out.write(k, cur, 'utf8');
+    out[cur++] = 0;
+    cur += out.write(v, cur, 'utf8');
+    out[cur++] = 0;
+  }
+  out[cur++] = 0; // final terminator
+  return out;
+}
+
 // Pre-allocated buffer pool for startup message parsing (avoids allocation per connection)
 const STARTUP_BUFFER_SIZE = 8192; // Max startup message is typically < 1KB
 const bufferPool = [];

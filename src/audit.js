@@ -9,7 +9,7 @@
  * `pgserve.audit.target` field; the daemon (Group 3) resolves it per peer
  * and threads the value through `audit(event, fields, { target })`.
  *
- * The seven event names defined for v2.0 (one row per audit() call):
+ * The event names defined for v2.0 (one row per audit() call):
  *   db_created
  *   db_reaped_ttl
  *   db_reaped_liveness
@@ -17,6 +17,9 @@
  *   connection_routed
  *   connection_denied_fingerprint_mismatch
  *   enforcement_kill_switch_used
+ *   tcp_token_issued
+ *   tcp_token_used
+ *   tcp_token_denied
  */
 
 import fs from 'fs';
@@ -32,6 +35,9 @@ export const AUDIT_EVENTS = Object.freeze({
   CONNECTION_ROUTED: 'connection_routed',
   CONNECTION_DENIED_FINGERPRINT_MISMATCH: 'connection_denied_fingerprint_mismatch',
   ENFORCEMENT_KILL_SWITCH_USED: 'enforcement_kill_switch_used',
+  TCP_TOKEN_ISSUED: 'tcp_token_issued',
+  TCP_TOKEN_USED: 'tcp_token_used',
+  TCP_TOKEN_DENIED: 'tcp_token_denied',
 });
 
 const VALID_EVENTS = new Set(Object.values(AUDIT_EVENTS));

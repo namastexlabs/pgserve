@@ -18,6 +18,14 @@ import {
   resolveControlSocketDir,
   resolveControlSocketPath,
 } from '../src/daemon.js';
+import { createAdminClient, readAdminDiscovery } from '../src/admin-client.js';
+import {
+  ensureMetaSchema,
+  addAllowedToken,
+  revokeAllowedToken,
+} from '../src/control-db.js';
+import { mintToken } from '../src/tokens.js';
+import { audit, AUDIT_EVENTS } from '../src/audit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -63,6 +71,15 @@ async function runDaemonSubcommand(daemonArgs) {
     process.exit(1);
   }
 
+  if (daemonArgs[0] === 'issue-token') {
+    await runIssueTokenSubcommand(daemonArgs.slice(1));
+    return;
+  }
+  if (daemonArgs[0] === 'revoke-token') {
+    await runRevokeTokenSubcommand(daemonArgs.slice(1));
+    return;
+  }
+
   // `pgserve daemon` (long-running)
   const opts = parseDaemonArgs(daemonArgs);
   const daemon = new PgserveDaemon(opts);
@@ -99,6 +116,7 @@ function parseDaemonArgs(daemonArgs) {
     useRam: false,
     logLevel: 'info',
     autoProvision: true,
+    tcpListens: [],
   };
   for (let i = 0; i < daemonArgs.length; i++) {
     const arg = daemonArgs[i];
@@ -117,6 +135,9 @@ function parseDaemonArgs(daemonArgs) {
       case '--no-provision':
         opts.autoProvision = false;
         break;
+      case '--listen':
+        opts.tcpListens.push(daemonArgs[++i]);
+        break;
       case '--help':
         console.log(`
 pgserve daemon — singleton control-socket mode
@@ -124,16 +145,24 @@ pgserve daemon — singleton control-socket mode
 USAGE:
   pgserve daemon [options]
   pgserve daemon stop
+  pgserve daemon issue-token --fingerprint <hex>
+  pgserve daemon revoke-token <id>
 
 OPTIONS:
   --data <path>   Persistent data directory (default: in-memory)
   --ram           Use /dev/shm storage (Linux only)
   --log <level>   Log level: error|warn|info|debug (default: info)
   --no-provision  Disable auto-provisioning of databases
+  --listen [host:]port  Bind opt-in TCP listener (repeatable)
   --help          Show this help
 
 The daemon binds $XDG_RUNTIME_DIR/pgserve/control.sock (fallback /tmp/pgserve/control.sock).
 A second invocation while the first is running exits with "already running".
+
+TCP peers (--listen) MUST authenticate via libpq application_name shaped
+"?fingerprint=<12hex>&token=<bearer>". Issue tokens with
+"pgserve daemon issue-token --fingerprint <hex>". Revoke with
+"pgserve daemon revoke-token <id>".
 `);
         process.exit(0);
         // falls through (unreachable)
@@ -145,6 +174,110 @@ A second invocation while the first is running exits with "already running".
     }
   }
   return opts;
+}
+
+async function runIssueTokenSubcommand(args) {
+  let fingerprint = null;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--fingerprint') fingerprint = args[++i];
+    else if (arg === '--help') {
+      console.log(`
+pgserve daemon issue-token --fingerprint <12hex>
+
+Issues a fresh bearer token for an existing fingerprint. Prints the token
+to stdout exactly once; only the sha256 hash is persisted. Use the printed
+value in libpq application_name shaped "?fingerprint=<hex>&token=<bearer>".
+`);
+      process.exit(0);
+    } else {
+      console.error(`Unknown option: ${arg}`);
+      process.exit(1);
+    }
+  }
+  if (!fingerprint || !/^[0-9a-f]{12}$/.test(fingerprint)) {
+    console.error('issue-token: --fingerprint <12hex> required');
+    process.exit(1);
+  }
+
+  let admin;
+  try {
+    const dir = resolveControlSocketDir();
+    const disc = readAdminDiscovery(dir);
+    admin = await createAdminClient({ socketDir: disc.socketDir, port: disc.port });
+  } catch (err) {
+    console.error('issue-token: cannot reach running daemon admin socket:', err.message);
+    console.error('Hint: start the daemon first with `pgserve daemon`.');
+    process.exit(1);
+  }
+
+  try {
+    await ensureMetaSchema(admin);
+    const { id, cleartext, hash } = mintToken();
+    const result = await addAllowedToken(admin, {
+      fingerprint,
+      tokenId: id,
+      tokenHash: hash,
+    });
+    audit(AUDIT_EVENTS.TCP_TOKEN_ISSUED, {
+      fingerprint,
+      token_id: id,
+      database: result.databaseName,
+    });
+    console.log('Token issued. Save the bearer value below — it will not be shown again:');
+    console.log('');
+    console.log(`  id:          ${id}`);
+    console.log(`  fingerprint: ${fingerprint}`);
+    console.log(`  database:    ${result.databaseName}`);
+    console.log(`  token:       ${cleartext}`);
+    console.log('');
+    console.log('Use as libpq application_name:');
+    console.log(`  application_name='?fingerprint=${fingerprint}&token=${cleartext}'`);
+    process.exit(0);
+  } catch (err) {
+    if (err.code === 'EUNKNOWNFINGERPRINT') {
+      console.error(`issue-token: fingerprint ${fingerprint} not provisioned yet.`);
+      console.error('Connect once via Unix socket so pgserve creates the database first.');
+      process.exit(2);
+    }
+    console.error('issue-token failed:', err.message);
+    process.exit(1);
+  } finally {
+    try { await admin.end(); } catch { /* swallow */ }
+  }
+}
+
+async function runRevokeTokenSubcommand(args) {
+  if (args.length === 0 || args[0] === '--help') {
+    console.log('Usage: pgserve daemon revoke-token <id>');
+    process.exit(args.length === 0 ? 1 : 0);
+  }
+  const tokenId = args[0];
+
+  let admin;
+  try {
+    const dir = resolveControlSocketDir();
+    const disc = readAdminDiscovery(dir);
+    admin = await createAdminClient({ socketDir: disc.socketDir, port: disc.port });
+  } catch (err) {
+    console.error('revoke-token: cannot reach running daemon admin socket:', err.message);
+    process.exit(1);
+  }
+
+  try {
+    const affected = await revokeAllowedToken(admin, tokenId);
+    if (affected === 0) {
+      console.error(`revoke-token: no token with id ${tokenId} found`);
+      process.exit(2);
+    }
+    console.log(`Token ${tokenId} revoked (affected ${affected} row${affected === 1 ? '' : 's'})`);
+    process.exit(0);
+  } catch (err) {
+    console.error('revoke-token failed:', err.message);
+    process.exit(1);
+  } finally {
+    try { await admin.end(); } catch { /* swallow */ }
+  }
 }
 
 /**

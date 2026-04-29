@@ -16,6 +16,10 @@ import {
   markPersist,
   forEachReapable,
   deleteMetaRow,
+  addAllowedToken,
+  revokeAllowedToken,
+  verifyToken,
+  findRowByFingerprint,
 } from '../src/control-db.js';
 
 const { Client } = pg;
@@ -74,6 +78,7 @@ test('ensureMetaSchema creates table on first call', async () => {
     'last_connection_at',
     'liveness_pid',
     'persist',
+    'allowed_tokens',
   ]);
 });
 
@@ -223,4 +228,58 @@ test('recordDbCreated rejects bad input', async () => {
   await expect(
     recordDbCreated(client, { databaseName: 'd', fingerprint: 'f', peerUid: 'nope' }),
   ).rejects.toThrow(/peerUid must be number/);
+});
+
+test('addAllowedToken refuses unknown fingerprint', async () => {
+  await client.query('TRUNCATE pgserve_meta');
+  await expect(
+    addAllowedToken(client, { fingerprint: 'deadbeef0000', tokenId: 'tk1', tokenHash: 'h1' }),
+  ).rejects.toThrow(/no pgserve_meta row/);
+});
+
+test('addAllowedToken appends, verifyToken finds it, revokeAllowedToken removes it', async () => {
+  await client.query('TRUNCATE pgserve_meta');
+  await recordDbCreated(client, {
+    databaseName: 'app_demo_4444aabbccdd',
+    fingerprint: '4444aabbccdd',
+    peerUid: 1000,
+  });
+  await addAllowedToken(client, {
+    fingerprint: '4444aabbccdd',
+    tokenId: 'aaaa1111',
+    tokenHash: 'hash-1',
+  });
+  await addAllowedToken(client, {
+    fingerprint: '4444aabbccdd',
+    tokenId: 'bbbb2222',
+    tokenHash: 'hash-2',
+  });
+
+  const row = await findRowByFingerprint(client, '4444aabbccdd');
+  expect(row).not.toBeNull();
+  expect(row.allowedTokens.length).toBe(2);
+  expect(row.allowedTokens.map(t => t.id).sort()).toEqual(['aaaa1111', 'bbbb2222']);
+
+  const ok = await verifyToken(client, { fingerprint: '4444aabbccdd', tokenHash: 'hash-2' });
+  expect(ok).toEqual({ tokenId: 'bbbb2222', databaseName: 'app_demo_4444aabbccdd' });
+
+  const miss = await verifyToken(client, { fingerprint: '4444aabbccdd', tokenHash: 'no-such' });
+  expect(miss).toBeNull();
+
+  const affected = await revokeAllowedToken(client, 'aaaa1111');
+  expect(affected).toBe(1);
+
+  const after = await findRowByFingerprint(client, '4444aabbccdd');
+  expect(after.allowedTokens.map(t => t.id)).toEqual(['bbbb2222']);
+});
+
+test('revokeAllowedToken returns 0 for unknown id', async () => {
+  await client.query('TRUNCATE pgserve_meta');
+  await recordDbCreated(client, {
+    databaseName: 'app_x_5555aabbccdd',
+    fingerprint: '5555aabbccdd',
+    peerUid: 1000,
+  });
+  const affected = await revokeAllowedToken(client, 'nonexistent');
+  expect(affected).toBe(0);
 });

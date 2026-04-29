@@ -62,7 +62,7 @@ test('audit() creates the parent directory if missing', () => {
   expect(fs.existsSync(nested)).toBe(true);
 });
 
-test('all 7 v2.0 event names are exported', () => {
+test('all v2.0 event names are exported (incl. Group 6 tcp_*)', () => {
   expect(Object.values(AUDIT_EVENTS).sort()).toEqual([
     'connection_denied_fingerprint_mismatch',
     'connection_routed',
@@ -71,6 +71,9 @@ test('all 7 v2.0 event names are exported', () => {
     'db_reaped_liveness',
     'db_reaped_ttl',
     'enforcement_kill_switch_used',
+    'tcp_token_denied',
+    'tcp_token_issued',
+    'tcp_token_used',
   ]);
 });
 
