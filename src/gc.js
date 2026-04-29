@@ -349,9 +349,3 @@ export function installSweepTriggers(daemon, opts = {}) {
 
   return handle;
 }
-
-export const _internals = Object.freeze({
-  TTL_MS_DEFAULT,
-  HOURLY_MS,
-  defaultIsProcessAlive,
-});

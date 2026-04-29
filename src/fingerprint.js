@@ -451,9 +451,3 @@ export function handleControlAccept(socket, opts = {}) {
 export function _setPeerCredImpl(fn) {
   _peerCredOverride = fn;
 }
-
-export const _internals = Object.freeze({
-  extractFd,
-  readProcCwd,
-  readProcCmdline,
-});
