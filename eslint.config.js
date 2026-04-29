@@ -17,6 +17,8 @@ export default [
         clearTimeout: 'readonly',
         setInterval: 'readonly',
         clearInterval: 'readonly',
+        setImmediate: 'readonly',
+        clearImmediate: 'readonly',
         URL: 'readonly',
         __dirname: 'readonly',
         // Bun globals

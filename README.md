@@ -10,7 +10,7 @@
     <a href="https://discord.gg/xcW8c7fF3R"><img src="https://img.shields.io/discord/1095114867012292758?style=flat-square&color=00D9FF&label=discord" alt="Discord"></a>
   </p>
 
-  <p><em>Zero config, auto-provision databases, unlimited concurrent connections. Just works.</em></p>
+  <p><em>npx pgserve and it just works, no credentials needed. Zero config, auto-provision databases, unlimited concurrent connections.</em></p>
 
   <p>
     <a href="#-quick-start">Quick Start</a> •
@@ -34,6 +34,8 @@ Connect from any PostgreSQL client — databases auto-create on first connection
 ```bash
 psql postgresql://localhost:8432/myapp
 ```
+
+> Note: v2 default is the Unix socket — see [Daemon mode](#daemon-mode). The TCP form above is the v1 compat path.
 
 <br>
 
@@ -165,6 +167,189 @@ pgserve --sync-to "postgresql://user:pass@db.example.com:5432/prod"
 ```
 
 </details>
+
+<br>
+
+## Daemon mode
+
+`pgserve@2` ships a singleton daemon that binds a Unix control socket
+inside `$XDG_RUNTIME_DIR/pgserve` (fallback `/tmp/pgserve`). One daemon
+per host serves every consumer on the box — no port conflicts, no
+credentials, kernel-rooted identity. Run it under PM2 or systemd so it
+restarts automatically.
+
+```bash
+# Foreground (for debugging)
+pgserve daemon
+
+# Stop a running daemon
+pgserve daemon stop
+```
+
+A second `pgserve daemon` invocation while the first is running exits with
+`already running, pid N`. A daemon killed with `kill -9` leaves an orphan
+PID file + socket; the next `pgserve daemon` boot detects the dead pid and
+cleans both up automatically.
+
+Connect from any libpq client (no host/port/user/password required —
+the daemon authenticates via SO_PEERCRED on accept):
+
+```bash
+psql -h "${XDG_RUNTIME_DIR:-/tmp}/pgserve" -d myapp
+# or via connection URI
+psql "postgresql:///myapp?host=${XDG_RUNTIME_DIR:-/tmp}/pgserve"
+```
+
+### Supervised by PM2
+
+`ecosystem.config.cjs` snippet:
+
+```javascript
+module.exports = {
+  apps: [{
+    name: 'pgserve',
+    script: 'pgserve',
+    args: 'daemon',
+    autorestart: true,
+    max_memory_restart: '1G',
+    env: { XDG_RUNTIME_DIR: '/run/user/1000' },
+  }],
+};
+```
+
+```bash
+pm2 start ecosystem.config.cjs && pm2 save
+```
+
+### Supervised by systemd
+
+`/etc/systemd/user/pgserve.service`:
+
+```ini
+[Unit]
+Description=pgserve daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env npx pgserve daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Enable for the current user:
+
+```bash
+systemctl --user enable --now pgserve
+journalctl --user -u pgserve -f
+```
+
+The systemd user unit inherits `XDG_RUNTIME_DIR` automatically; the daemon
+binds `${XDG_RUNTIME_DIR}/pgserve/control.sock` (mode 0600, dir mode 0700)
+plus a `.s.PGSQL.5432` symlink so off-the-shelf PostgreSQL clients connect
+without further configuration.
+
+<br>
+
+## Fingerprint isolation
+
+Each consumer is identified by a **kernel-rooted fingerprint** derived from
+the peer's `SO_PEERCRED` plus the resolved `package.json` `name`, collapsed
+to 12 hex chars. The daemon auto-creates one database per fingerprint —
+`app_<sanitized-name>_<12hex>` — and refuses to route a peer into any other
+database with SQLSTATE `28P01 invalid_authorization — database fingerprint
+mismatch`.
+
+```bash
+# What `psql -l` shows on a host with three consumers:
+$ psql -h "${XDG_RUNTIME_DIR:-/tmp}/pgserve" -l
+        Name           |  Owner   | ...
+-----------------------+----------+----
+ app_genie_a1b2c3d4e5f6 | postgres | ...
+ app_brain_4f3e2d1c0b9a | postgres | ...
+ app_omni_9876543210ab  | postgres | ...
+```
+
+**Monorepo rule:** the **root** `package.json` `name` wins. Every workspace
+under it shares one fingerprint and one database — sub-packages do **not**
+get their own. If you need separate isolation, run them from separate
+checkouts.
+
+**Sanitization:** non-`[a-z0-9]` runs collapse to `_`, lowercased, truncated
+to 30 chars so the final DB name stays within PostgreSQL's 63-char limit.
+A name like `@scope/foo bar` becomes `_scope_foo_bar`.
+
+**Emergency kill switch:** `PGSERVE_DISABLE_FINGERPRINT_ENFORCEMENT=1`
+disables enforcement for the daemon process. Use it as a debugging tool
+only — every bypassed connection emits an `enforcement_kill_switch_used`
+audit event and the daemon logs a deprecation warning at boot.
+
+<br>
+
+## Long-running apps: `pgserve.persist`
+
+Default lifecycle is **ephemeral**: a database whose `liveness_pid` is dead
+AND whose `last_connection_at` is older than 24h is dropped on the next GC
+sweep (boot, hourly, sampled on-connect). Reaped DBs emit
+`db_reaped_ttl` or `db_reaped_liveness` audit events.
+
+If your app holds state worth keeping past 24h of idle — genie's wish/agent
+store, internal dashboards, anything you'd be unhappy to lose — declare
+persistence in `package.json`:
+
+```jsonc
+{
+  "name": "my-long-lived-app",
+  "pgserve": { "persist": true }
+}
+```
+
+Persisted databases are **never** reaped, regardless of liveness or TTL.
+Dev workloads with long debug cycles do not normally need this — any new
+connection slides the TTL window forward. Reach for `pgserve.persist` when
+the app is genuinely long-lived (production daemon, dashboard, durable
+agent state), not just for convenience.
+
+<br>
+
+## Compat TCP via `--listen`
+
+TCP is **off by default** in v2. Bring it back only when you need it
+(Kubernetes pods, remote sync, legacy clients that cannot speak Unix
+sockets) by opting in:
+
+```bash
+pgserve daemon --listen :5432
+# Repeatable for multiple binds:
+pgserve daemon --listen :5432 --listen 0.0.0.0:5433
+```
+
+TCP peers cannot use `SO_PEERCRED`, so they **must** authenticate at
+connect time. Issue a bearer token bound to a known fingerprint:
+
+```bash
+# Prints the token ONCE; the daemon stores only its hash.
+pgserve daemon issue-token --fingerprint a1b2c3d4e5f6
+
+# TCP client passes it via libpq application_name:
+#   ?fingerprint=a1b2c3d4e5f6&token=<bearer>
+
+# Revoke when done:
+pgserve daemon revoke-token <token-id>
+```
+
+Audit events: `tcp_token_issued`, `tcp_token_used`, `tcp_token_denied`.
+Tokens are verified with constant-time compare. Without a valid token a
+TCP connection is refused — there is no anonymous TCP path.
+
+Verify no port is bound when `--listen` is **not** set:
+
+```bash
+ss -tlnp | grep pgserve   # no rows expected
+```
 
 <br>
 

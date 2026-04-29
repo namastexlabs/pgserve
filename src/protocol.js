@@ -133,6 +133,137 @@ export function extractDatabaseName(data) {
   }
 }
 
+/**
+ * Extract `application_name` from a startup message buffer. Returns null when
+ * absent or when the buffer is malformed (callers fall back to no-auth).
+ *
+ * @param {Buffer} data
+ * @returns {string|null}
+ */
+export function extractApplicationName(data) {
+  try {
+    const params = parseStartupMessage(data, /* fastPath */ false);
+    return typeof params.application_name === 'string' ? params.application_name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return a new startup-message buffer with the `database` parameter replaced
+ * by `newDbName`. All other parameters (and their order) are preserved by
+ * default; pass `dropParams: ['application_name', ...]` to strip noisy
+ * fields the daemon would rather not forward to PG verbatim. The 4-byte
+ * length prefix at the start of the buffer is recomputed.
+ *
+ * Group 6 uses this on TCP-authenticated connections so a peer that presents
+ * a token for fingerprint X is forced into fingerprint X's database, even
+ * if the libpq client requested a different one.
+ *
+ * @param {Buffer} data — original startup message
+ * @param {string} newDbName
+ * @param {{dropParams?: string[]}} [opts]
+ * @returns {Buffer}
+ */
+export function rewriteDatabaseName(data, newDbName, opts = {}) {
+  if (!Buffer.isBuffer(data)) throw new Error('rewriteDatabaseName: buffer required');
+  if (typeof newDbName !== 'string' || newDbName.length === 0) {
+    throw new Error('rewriteDatabaseName: non-empty newDbName required');
+  }
+  const length = data.readInt32BE(0);
+  const version = data.readInt32BE(4);
+  const drop = new Set(opts.dropParams || []);
+
+  // Walk parameters; build a list of (key, value) pairs replacing 'database'.
+  const pairs = [];
+  let offset = 8;
+  let sawDatabase = false;
+  while (offset < length - 1) {
+    const keyEnd = data.indexOf(0, offset);
+    if (keyEnd === -1 || keyEnd >= length) break;
+    const key = data.toString('utf8', offset, keyEnd);
+    offset = keyEnd + 1;
+    const valueEnd = data.indexOf(0, offset);
+    if (valueEnd === -1 || valueEnd >= length) break;
+    const value = data.toString('utf8', offset, valueEnd);
+    offset = valueEnd + 1;
+    if (drop.has(key)) continue;
+    if (key === 'database') {
+      pairs.push(['database', newDbName]);
+      sawDatabase = true;
+    } else {
+      pairs.push([key, value]);
+    }
+  }
+  if (!sawDatabase) pairs.push(['database', newDbName]);
+
+  // Compute new buffer size: 4 (length) + 4 (version) + sum(key+1 + value+1) + 1 (terminator).
+  let bodyLen = 0;
+  for (const [k, v] of pairs) {
+    bodyLen += Buffer.byteLength(k, 'utf8') + 1 + Buffer.byteLength(v, 'utf8') + 1;
+  }
+  const total = 4 + 4 + bodyLen + 1;
+  const out = Buffer.alloc(total);
+  out.writeInt32BE(total, 0);
+  out.writeInt32BE(version, 4);
+  let cur = 8;
+  for (const [k, v] of pairs) {
+    cur += out.write(k, cur, 'utf8');
+    out[cur++] = 0;
+    cur += out.write(v, cur, 'utf8');
+    out[cur++] = 0;
+  }
+  out[cur++] = 0; // final terminator
+  return out;
+}
+
+/**
+ * Build a PostgreSQL ErrorResponse (`'E'`) frame.
+ *
+ * Used by the daemon to reject cross-fingerprint connection attempts
+ * with SQLSTATE `28P01 invalid_authorization_specification` before the
+ * peer's startup message ever reaches the underlying PG instance.
+ *
+ * Frame layout (PG protocol v3):
+ *   'E' (1 byte) | length (4 bytes, includes itself) | <fields...> | '\0'
+ *
+ * Each field: type-byte | utf8 string | '\0'
+ * Required fields per PG docs: 'S' (Severity), 'C' (SQLSTATE), 'M' (Message).
+ * 'V' (localized severity, server >= 9.6) is included for parity with the
+ * frames real Postgres emits — psql / pg drivers parse both transparently.
+ *
+ * @param {{severity?: string, sqlstate: string, message: string}} args
+ * @returns {Buffer}
+ */
+export function buildErrorResponse({ severity = 'FATAL', sqlstate, message }) {
+  if (typeof sqlstate !== 'string' || sqlstate.length !== 5) {
+    throw new TypeError('buildErrorResponse: sqlstate must be a 5-character string');
+  }
+  if (typeof message !== 'string' || message.length === 0) {
+    throw new TypeError('buildErrorResponse: message must be a non-empty string');
+  }
+  const field = (typeChar, value) => {
+    const valBytes = Buffer.byteLength(value, 'utf8');
+    const buf = Buffer.alloc(1 + valBytes + 1);
+    buf.writeUInt8(typeChar.charCodeAt(0), 0);
+    buf.write(value, 1, 'utf8');
+    buf.writeUInt8(0, 1 + valBytes);
+    return buf;
+  };
+  const body = Buffer.concat([
+    field('S', severity),
+    field('V', severity),
+    field('C', sqlstate),
+    field('M', message),
+    Buffer.from([0]),
+  ]);
+  const frameLength = 4 + body.length;
+  const header = Buffer.alloc(5);
+  header.writeUInt8(0x45, 0); // 'E'
+  header.writeUInt32BE(frameLength, 1);
+  return Buffer.concat([header, body]);
+}
+
 // Pre-allocated buffer pool for startup message parsing (avoids allocation per connection)
 const STARTUP_BUFFER_SIZE = 8192; // Max startup message is typically < 1KB
 const bufferPool = [];
