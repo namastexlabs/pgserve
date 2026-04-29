@@ -7,7 +7,7 @@
 # pgserve-wrapper.cjs must detect this and self-heal via `node install.js`.
 #
 # This test stages a synthetic broken install tree, runs the wrapper, and
-# asserts that it recovers and spawns pglite-server.
+# asserts that it recovers and spawns postgres-server.
 
 set -e
 
@@ -37,10 +37,10 @@ mkdir -p "$FIXTURE/node_modules/pgserve/bin"
 
 cp "$WRAPPER" "$FIXTURE/node_modules/pgserve/bin/pgserve-wrapper.cjs"
 
-# Stub pglite-server so we can detect a successful spawn without needing
+# Stub postgres-server so we can detect a successful spawn without needing
 # postgres binaries in the fixture.
-cat > "$FIXTURE/node_modules/pgserve/bin/pglite-server.js" <<'EOF'
-console.log("pglite-server-spawned");
+cat > "$FIXTURE/node_modules/pgserve/bin/postgres-server.js" <<'EOF'
+console.log("postgres-server-spawned");
 process.exit(0);
 EOF
 
@@ -97,13 +97,13 @@ if ! echo "$OUTPUT" | grep -q "bun runtime recovered"; then
   exit 1
 fi
 
-if ! echo "$OUTPUT" | grep -q "pglite-server-spawned"; then
-  echo "✗ pglite-server was not spawned after self-heal"
+if ! echo "$OUTPUT" | grep -q "postgres-server-spawned"; then
+  echo "✗ postgres-server was not spawned after self-heal"
   echo "$OUTPUT"
   exit 1
 fi
 
-echo "✓ self-heal path: wrapper detected, repaired, and spawned pglite-server"
+echo "✓ self-heal path: wrapper detected, repaired, and spawned postgres-server"
 
 echo ""
 echo "=== Testing healthy path is unaffected ==="
@@ -122,13 +122,13 @@ if echo "$OUTPUT" | grep -q "self-heal\|recovered"; then
   exit 1
 fi
 
-if ! echo "$OUTPUT" | grep -q "pglite-server-spawned"; then
-  echo "✗ pglite-server was not spawned on healthy path"
+if ! echo "$OUTPUT" | grep -q "postgres-server-spawned"; then
+  echo "✗ postgres-server was not spawned on healthy path"
   echo "$OUTPUT"
   exit 1
 fi
 
-echo "✓ healthy path: wrapper was silent and spawned pglite-server directly"
+echo "✓ healthy path: wrapper was silent and spawned postgres-server directly"
 
 echo ""
 echo "=== Testing non-postinstall errors surface raw ==="

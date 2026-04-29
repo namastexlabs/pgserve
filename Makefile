@@ -79,13 +79,13 @@ bench: ## Run benchmarks
 .PHONY: test-local
 test-local: ## Test server locally
 	@echo "$(CYAN)🧪 Testing server...$(RESET)"
-	@./bin/pglite-server.js start ./data/test-local --port 12050 --log info &
+	@./bin/postgres-server.js start ./data/test-local --port 12050 --log info &
 	@TESTPID=$$!; \
 	sleep 3; \
-	./bin/pglite-server.js list; \
-	./bin/pglite-server.js health --port 12050; \
+	./bin/postgres-server.js list; \
+	./bin/postgres-server.js health --port 12050; \
 	kill $$TESTPID 2>/dev/null || true; \
-	./bin/pglite-server.js cleanup
+	./bin/postgres-server.js cleanup
 	@echo "$(GREEN)✅ Server test passed!$(RESET)"
 
 # ==========================================
@@ -152,7 +152,7 @@ check-version: ## Check if version tag exists
 
 check-files: ## Check required files exist
 	@echo "$(CYAN)🔍 Checking required files...$(RESET)"
-	@for file in package.json README.md LICENSE src/index.js bin/pglite-server.js; do \
+	@for file in package.json README.md LICENSE src/index.js bin/postgres-server.js; do \
 		if [ ! -f "$$file" ]; then \
 			echo "$(RED)❌ Missing required file: $$file$(RESET)"; \
 			exit 1; \
@@ -172,26 +172,26 @@ $(DIST_DIR):
 
 build: $(DIST_DIR) ## Build standalone executable for current platform
 	@echo "$(CYAN)🔨 Building standalone executable...$(RESET)"
-	@bun build --compile bin/pglite-server.js --outfile $(DIST_DIR)/pgserve
+	@bun build --compile bin/postgres-server.js --outfile $(DIST_DIR)/pgserve
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve$(RESET)"
 
 build-linux: $(DIST_DIR) ## Build for Linux (x64 + arm64)
 	@echo "$(CYAN)🐧 Building for Linux...$(RESET)"
-	@bun build --compile --target=bun-linux-x64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-linux-x64
-	@bun build --compile --target=bun-linux-arm64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-linux-arm64
+	@bun build --compile --target=bun-linux-x64 bin/postgres-server.js --outfile $(DIST_DIR)/pgserve-linux-x64
+	@bun build --compile --target=bun-linux-arm64 bin/postgres-server.js --outfile $(DIST_DIR)/pgserve-linux-arm64
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-linux-x64$(RESET)"
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-linux-arm64$(RESET)"
 
 build-macos: $(DIST_DIR) ## Build for macOS (x64 + arm64)
 	@echo "$(CYAN)🍎 Building for macOS...$(RESET)"
-	@bun build --compile --target=bun-darwin-x64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-darwin-x64
-	@bun build --compile --target=bun-darwin-arm64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-darwin-arm64
+	@bun build --compile --target=bun-darwin-x64 bin/postgres-server.js --outfile $(DIST_DIR)/pgserve-darwin-x64
+	@bun build --compile --target=bun-darwin-arm64 bin/postgres-server.js --outfile $(DIST_DIR)/pgserve-darwin-arm64
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-darwin-x64$(RESET)"
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-darwin-arm64$(RESET)"
 
 build-windows: $(DIST_DIR) ## Build for Windows (x64)
 	@echo "$(CYAN)🪟 Building for Windows...$(RESET)"
-	@bun build --compile --target=bun-windows-x64 bin/pglite-server.js --outfile $(DIST_DIR)/pgserve-windows-x64.exe
+	@bun build --compile --target=bun-windows-x64 bin/postgres-server.js --outfile $(DIST_DIR)/pgserve-windows-x64.exe
 	@echo "$(GREEN)✅ Built: $(DIST_DIR)/pgserve-windows-x64.exe$(RESET)"
 
 build-all: build-linux build-macos build-windows ## Build for all platforms
@@ -254,7 +254,7 @@ publish: ## ⚠️ [DEPRECATED] Releases run from CI on push to main
 clean: ## Clean generated files
 	@echo "$(CYAN)🧹 Cleaning...$(RESET)"
 	@rm -rf data/test-* data/genieos-local
-	@./bin/pglite-server.js cleanup
+	@./bin/postgres-server.js cleanup
 	@echo "$(GREEN)✅ Cleaned!$(RESET)"
 
 clean-all: clean ## Deep clean (including node_modules)

@@ -11,9 +11,9 @@
     "bench": "bun tests/benchmarks/runner.js",
     "test": "bun test tests/**/*.test.js",
     "test:watch": "bun test --watch tests/**/*.test.js",
-    "dev": "bun --watch bin/pglite-server.js",
-    "start": "bun bin/pglite-server.js",
-    "build": "bun build --compile bin/pglite-server.js --outfile dist/pgserve",
+    "dev": "bun --watch bin/postgres-server.js",
+    "start": "bun bin/postgres-server.js",
+    "build": "bun build --compile bin/postgres-server.js --outfile dist/pgserve",
     "build:all": "make build-all",
     "lint": "eslint src/ bin/",
     "lint:fix": "eslint src/ bin/ --fix",
@@ -48,7 +48,6 @@
     "@embedded-postgres/windows-x64": "18.2.0-beta.16"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.2.17",
     "eslint": "^9.39.1",
     "eslint-plugin-unused-imports": "^4.3.0",
     "husky": "^9.1.7",
