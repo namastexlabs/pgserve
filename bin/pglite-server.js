@@ -117,6 +117,7 @@ function parseDaemonArgs(daemonArgs) {
     logLevel: 'info',
     autoProvision: true,
     tcpListens: [],
+    enablePgvector: false,
   };
   for (let i = 0; i < daemonArgs.length; i++) {
     const arg = daemonArgs[i];
@@ -138,6 +139,9 @@ function parseDaemonArgs(daemonArgs) {
       case '--listen':
         opts.tcpListens.push(daemonArgs[++i]);
         break;
+      case '--pgvector':
+        opts.enablePgvector = true;
+        break;
       case '--help':
         console.log(`
 pgserve daemon — singleton control-socket mode
@@ -154,6 +158,7 @@ OPTIONS:
   --log <level>   Log level: error|warn|info|debug (default: info)
   --no-provision  Disable auto-provisioning of databases
   --listen [host:]port  Bind opt-in TCP listener (repeatable)
+  --pgvector      Auto-enable pgvector extension on new databases
   --help          Show this help
 
 The daemon binds $XDG_RUNTIME_DIR/pgserve/control.sock (fallback /tmp/pgserve/control.sock).

@@ -24,6 +24,26 @@ export {
   acquirePidLock,
   isProcessAlive,
 } from './daemon.js';
+export {
+  buildDaemonArgs,
+  daemonClientOptions,
+  ensureDaemon,
+  probeDaemon,
+  resolveBundledCliBin,
+} from './sdk.js';
+export {
+  derivePackageFingerprint,
+  deriveScriptFingerprint,
+  fingerprintFromCred,
+  findNearestPackageJson,
+  readPackageName,
+  readPersistFlag,
+} from './fingerprint.js';
+export {
+  hashToken,
+  mintToken,
+  parseTcpAuth,
+} from './tokens.js';
 
 // Default export
 export { startMultiTenantServer as default } from './router.js';

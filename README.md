@@ -355,6 +355,27 @@ ss -tlnp | grep pgserve   # no rows expected
 
 ## API
 
+Daemon-first apps can let the first caller install/start the singleton and
+then connect through the Unix socket. The daemon derives the app identity
+from kernel peer credentials and routes it to that app's signed fingerprint
+database.
+
+```javascript
+import { daemonClientOptions, ensureDaemon } from 'pgserve';
+import postgres from 'postgres';
+
+await ensureDaemon({
+  dataDir: `${process.env.HOME}/.pgserve/data`,
+  logLevel: 'warn',
+});
+
+const sql = postgres(daemonClientOptions());
+await sql`SELECT current_database()`;
+```
+
+The classic TCP router API remains available for explicit v1-compatible
+embedded servers:
+
 ```javascript
 import { startMultiTenantServer } from 'pgserve';
 
