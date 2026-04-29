@@ -6,7 +6,7 @@
  *
  *   1. SO_PEERCRED (Linux) / getpeereid + LOCAL_PEERPID (macOS)
  *      → kernel-attested {pid, uid, gid}
- *   2. /proc/$pid/cwd  → peer's current working directory (Linux only)
+ *   2. peer cwd lookup → /proc/$pid/cwd on Linux, lsof on macOS
  *   3. walk upward to the nearest package.json
  *   4. if found:  fingerprint = sha256(realpath \0 name \0 uid)[:12]   mode='package'
  *      else:      fingerprint = sha256(uid \0 cwd \0 cmdline[1])[:12]  mode='script'
@@ -29,6 +29,7 @@
  */
 
 import crypto from 'crypto';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { audit, AUDIT_EVENTS } from './audit.js';
@@ -175,23 +176,48 @@ function makeDarwinReader(symbols, ptr) {
 }
 
 // ---------------------------------------------------------------------------
-// /proc reads — Linux-only; macOS daemon support is best-effort
+// Peer process metadata reads
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the cwd of a peer process via /proc/$pid/cwd. Linux-only.
- * Returns null if the symlink cannot be read (process gone, EACCES, etc).
+ * Resolve the cwd of a peer process. Linux uses /proc/$pid/cwd; macOS has no
+ * /proc, so it shells out to the platform lsof binary and parses the cwd row.
+ * Returns null if the process disappeared, permissions deny the lookup, or the
+ * host does not expose a cwd for the peer.
  *
  * @param {number} pid
  * @returns {string | null}
  */
 export function readProcCwd(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === 'darwin') return readDarwinCwd(pid);
   if (process.platform !== 'linux') return null;
   try {
     return fs.readlinkSync(`/proc/${pid}/cwd`);
   } catch {
     return null;
   }
+}
+
+function readDarwinCwd(pid) {
+  const lsof = process.env.PGSERVE_LSOF_BIN || '/usr/sbin/lsof';
+  try {
+    const output = execFileSync(lsof, ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], {
+      encoding: 'utf8',
+      timeout: 1000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return parseDarwinLsofCwd(output);
+  } catch {
+    return null;
+  }
+}
+
+export function parseDarwinLsofCwd(output) {
+  for (const line of String(output || '').split(/\r?\n/)) {
+    if (line.startsWith('n') && line.length > 1) return line.slice(1);
+  }
+  return null;
 }
 
 /**

@@ -20,6 +20,8 @@ import {
   initFingerprintFfi,
   getPeerCred,
   findNearestPackageJson,
+  parseDarwinLsofCwd,
+  readProcCwd,
   readPackageName,
   derivePackageFingerprint,
   deriveScriptFingerprint,
@@ -78,6 +80,18 @@ test('getPeerCred reads kernel-attested pid/uid/gid via Unix socket pair', async
   expect(cred.pid).toBe(expectedPid);
   expect(cred.uid).toBe(expectedUid);
   expect(cred.gid).toBe(expectedGid);
+});
+
+test('macOS lsof parser extracts cwd field output', () => {
+  const cwd = path.join(scratch, 'project');
+  const output = `p12345\nn${cwd}\n`;
+  expect(parseDarwinLsofCwd(output)).toBe(cwd);
+  expect(parseDarwinLsofCwd('p12345\n')).toBeNull();
+});
+
+test('readProcCwd resolves the current process cwd on supported platforms', () => {
+  if (process.platform !== 'linux' && process.platform !== 'darwin') return;
+  expect(readProcCwd(process.pid)).toBe(process.cwd());
 });
 
 // ---------------------------------------------------------------------------

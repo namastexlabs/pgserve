@@ -406,10 +406,23 @@ export function pgvectorMetaMatches(meta, runtime) {
   return true;
 }
 
+function findAvailableTcpPort() {
+  const server = Bun.listen({
+    hostname: '127.0.0.1',
+    port: 0,
+    socket: {
+      data() {},
+    },
+  });
+  const port = server.port;
+  server.stop(true);
+  return port;
+}
+
 export class PostgresManager {
   constructor(options = {}) {
     this.dataDir = options.dataDir || null; // null = memory mode (temp dir)
-    this.port = options.port || 5433; // Internal PG port (router listens on different port)
+    this.port = options.port ?? 5433; // Internal PG port (router listens on different port)
     this.user = options.user || 'postgres';
     this.password = options.password || 'postgres';
     this.logger = options.logger;
@@ -464,6 +477,10 @@ export class PostgresManager {
     // Make binaries executable
     await fs.promises.chmod(this.binaries.initdb, '755');
     await fs.promises.chmod(this.binaries.postgres, '755');
+
+    if (this.port === 0) {
+      this.port = findAvailableTcpPort();
+    }
 
     // Determine data directory
     if (this.persistent) {
@@ -568,7 +585,8 @@ export class PostgresManager {
       const initdbCmd = [
         this.binaries.initdb,
         `--pgdata=${this.databaseDir}`,
-        '--auth=password',
+        '--auth-local=trust',
+        '--auth-host=password',
         `--username=${this.user}`,
         `--pwfile=${passwordFile}`,
       ];
@@ -744,11 +762,13 @@ export class PostgresManager {
       // Whichever succeeds first wins
 
       const markReady = (method) => {
-        if (!started) {
-          started = true;
-          this.logger.info({ port: this.port, method }, 'PostgreSQL ready');
-          resolve();
-        }
+        if (started || processExited) return true;
+        const socketPath = this.getSocketPath();
+        if (socketPath && !fs.existsSync(socketPath)) return false;
+        started = true;
+        this.logger.info({ port: this.port, method }, 'PostgreSQL ready');
+        resolve();
+        return true;
       };
 
       // Read stderr - detect port binding in logs (locale-independent: just look for port number)
@@ -873,14 +893,19 @@ export class PostgresManager {
           if (processExited) return;
 
           try {
+            const socketPath = this.getSocketPath();
+            if (socketPath && fs.existsSync(socketPath)) {
+              markReady('unix-socket');
+              return;
+            }
             await tryConnect();
             // On Windows, TCP port opens before PostgreSQL is fully ready for protocol handshakes
             // Add delay to let PostgreSQL complete its startup sequence
             if (isWindows) {
               await Bun.sleep(2000); // 2 second delay for Windows
             }
-            markReady('tcp');
-            return;
+            if (processExited) return;
+            if (markReady('tcp')) return;
           } catch {
             await Bun.sleep(200);
           }
