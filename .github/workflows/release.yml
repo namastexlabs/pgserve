@@ -86,7 +86,7 @@ jobs:
           TAG="${{ steps.bump.outputs.tag }}"
           git add package.json
           git commit -m "[skip ci] release ${TAG}"
-          git tag "${TAG}"
+          git tag -a "${TAG}" -m "release ${TAG}"
           git push origin HEAD --follow-tags
 
   # ---------------------------------------------------------------------------
