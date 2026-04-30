@@ -130,6 +130,14 @@ describe('pgserve install', () => {
     // `pgserve install` must NOT pass `--min-uptime` so it stays compatible
     // across pm2 5.x → 6.x. See cli-install.cjs:HARDENED_DEFAULTS.
     expect(startCall).not.toContain('--min-uptime');
+    // The script args MUST be the legacy multi-tenant TCP mode (no subcommand),
+    // not `daemon` (Unix-socket singleton — no --port support). Asserting
+    // negatively guards against a regression: the previous code was
+    // `pm2 start ... -- daemon --port N --data ...`, which crashed at boot
+    // with "Unknown daemon option: --port". See cli-install.cjs comment.
+    expect(startCall).not.toContain('daemon');
+    expect(startCall).toContain('--port');
+    expect(startCall).toContain('8432');
     expect(startCall).toContain('--exp-backoff-restart-delay');
     expect(startCall).toContain('--max-memory-restart');
     expect(startCall).toContain('4G');

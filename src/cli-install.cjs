@@ -179,7 +179,13 @@ function buildPm2StartArgs({ scriptPath, port, dataDir }) {
     '--error',
     logs.error,
     '--',
-    'daemon',
+    // NOTE: do NOT pass `daemon` here. `pgserve daemon` is the singleton
+    // Unix-socket mode (different argv parser, only accepts --data/--ram/
+    // --log/--listen/--pgvector — NOT --port). The canonical pm2-supervised
+    // pgserve must listen on TCP so omni/genie can connect via DATABASE_URL,
+    // which is the legacy multi-tenant mode (no subcommand). Caught live
+    // 2026-04-30: passing `daemon --port 8432` triggered "Unknown daemon
+    // option: --port" in a restart loop.
     '--port',
     String(port),
     '--data',
