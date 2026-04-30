@@ -124,7 +124,10 @@ describe('pgserve install', () => {
     expect(startCall).toContain('pgserve');
     expect(startCall).toContain('--max-restarts');
     expect(startCall).toContain('50');
-    expect(startCall).toContain('--min-uptime');
+    // `--min-uptime` was removed in pm2 6.x — see cli-install.cjs comment.
+    // Asserting NEGATIVELY ensures we don't reintroduce the flag and break
+    // pgserve install on pm2@^6.0 again.
+    expect(startCall).not.toContain('--min-uptime');
     expect(startCall).toContain('--exp-backoff-restart-delay');
     expect(startCall).toContain('--max-memory-restart');
     expect(startCall).toContain('4G');

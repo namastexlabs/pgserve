@@ -47,8 +47,10 @@ const DEFAULT_PORT = 8432;
  * Revised defaults:
  *   - 4G memory ceiling — covers realistic load while still bounded so
  *     a runaway query can't eat the host.
- *   - 50 max restarts BUT only counted when min_uptime < 10s ("rapid"
- *     failures). Healthy long-uptime crashes don't count against the cap.
+ *   - 50 max restarts. (Original design used `--min-uptime` to filter
+ *     "rapid failures only", but pm2 6.x dropped that CLI flag — so the
+ *     budget now counts every restart. Combined with exp-backoff below,
+ *     the host is still protected from runaway loops.)
  *   - Exponential backoff on repeated failures (100ms → 60s) so we don't
  *     hammer on persistent issues.
  *   - 60s graceful shutdown window — Postgres needs time to flush WAL.
@@ -62,7 +64,6 @@ const DEFAULT_PORT = 8432;
  */
 const HARDENED_DEFAULTS = {
   maxRestarts: 50,
-  minUptimeMs: 10_000,
   restartDelayMs: 4000,
   expBackoffRestartDelayMs: 100,
   // pm2 caps `--exp-backoff-restart-delay` ramp at the current backoff
@@ -149,11 +150,14 @@ function buildPm2StartArgs({ scriptPath, port, dataDir }) {
     'none',
     '--max-restarts',
     String(HARDENED_DEFAULTS.maxRestarts),
-    // `--min-uptime` makes `--max-restarts` count only RAPID failures
-    // (process crashed within N ms of starting). Healthy long-uptime
-    // crashes don't burn the budget.
-    '--min-uptime',
-    String(HARDENED_DEFAULTS.minUptimeMs),
+    // NOTE: `--min-uptime` was dropped from pm2's CLI flag set in pm2 6.x.
+    // Passing it makes `pm2 start` exit with `unknown option '--min-uptime'`,
+    // which broke `pgserve install` against pm2@^6.0 (live failure on
+    // 2026-04-30). min_uptime is still supported via ecosystem.config.js
+    // JSON form, but not as a CLI flag. For our supervision profile
+    // (max-restarts=50 + exp-backoff), losing the rapid-failure-only filter
+    // means the restart budget burns slightly faster on long-uptime
+    // crashes — acceptable.
     '--restart-delay',
     String(HARDENED_DEFAULTS.restartDelayMs),
     // Exponential backoff between successive failures: starts at 100ms,
