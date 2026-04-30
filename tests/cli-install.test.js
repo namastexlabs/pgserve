@@ -123,7 +123,13 @@ describe('pgserve install', () => {
     expect(startCall).toContain('--name');
     expect(startCall).toContain('pgserve');
     expect(startCall).toContain('--max-restarts');
-    expect(startCall).toContain('10');
+    expect(startCall).toContain('50');
+    expect(startCall).toContain('--min-uptime');
+    expect(startCall).toContain('--exp-backoff-restart-delay');
+    expect(startCall).toContain('--max-memory-restart');
+    expect(startCall).toContain('4G');
+    expect(startCall).toContain('--kill-timeout');
+    expect(startCall).toContain('60000');
     expect(startCall).toContain('--interpreter');
     expect(startCall).toContain('none');
   });
@@ -155,6 +161,17 @@ describe('pgserve install', () => {
     const result = runCli(['install', '--port', 'not-a-number']);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('invalid --port');
+  });
+
+  test('PGSERVE_MAX_MEMORY env overrides the default memory ceiling', () => {
+    const result = runCli(['install'], { PGSERVE_MAX_MEMORY: '8G' });
+    expect(result.status).toBe(0);
+    const calls = readCallLog(stubBin.calls);
+    const startCall = calls.find((c) => c[0] === 'start');
+    // The env value flows through to pm2's --max-memory-restart flag so
+    // operators on big-iron hosts can tune up without a recompile.
+    expect(startCall).toContain('8G');
+    expect(startCall).not.toContain('4G');
   });
 
   test('fails clearly when pm2 is missing', () => {
