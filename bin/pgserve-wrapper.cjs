@@ -29,14 +29,39 @@ const fs = require('fs');
 // sees the original `daemon` token.
 // ────────────────────────────────────────────────────────────────────────
 const __subcommand = process.argv[2];
-const __installSubcommands = new Set(['install', 'uninstall', 'status', 'url', 'port']);
+const __installSubcommands = new Set([
+  'install',
+  'uninstall',
+  'status',
+  'url',
+  'port',
+  // autopg-console-settings (Group 2): config / restart / ui are pure node
+  // wrappers that read/write `~/.autopg/settings.json` (and shell out to
+  // pm2 for restart). They don't need bun, so route them BEFORE the bun
+  // probe — same rationale as the wave-1 install commands.
+  'config',
+  'restart',
+  'ui',
+]);
 if (__subcommand && __installSubcommands.has(__subcommand)) {
   const cli = require(path.join(__dirname, '..', 'src', 'cli-install.cjs'));
-  process.exit(
-    cli.dispatch(__subcommand, process.argv.slice(3), {
-      scriptPath: path.join(__dirname, 'postgres-server.js'),
-    }),
-  );
+  const result = cli.dispatch(__subcommand, process.argv.slice(3), {
+    scriptPath: path.join(__dirname, 'postgres-server.js'),
+    wrapperPath: __filename,
+  });
+  // `ui` returns a Promise that never resolves (the server parks on
+  // signals). Other subcommands return a number directly. Handle both.
+  if (result && typeof result.then === 'function') {
+    result.then(
+      (code) => process.exit(typeof code === 'number' ? code : 0),
+      (err) => {
+        process.stderr.write(`pgserve: ${err?.message ?? err}\n`);
+        process.exit(1);
+      },
+    );
+    return;
+  }
+  process.exit(typeof result === 'number' ? result : 0);
 }
 if (__subcommand === 'serve') {
   // Alias `serve` → `daemon` so the wish's canonical command name maps

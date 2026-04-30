@@ -19,6 +19,8 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { loadEffectiveConfig } from './settings-loader.cjs';
+import { buildPostgresArgs } from './settings-pg-args.cjs';
 
 /**
  * Get platform key for binary lookup (e.g., 'windows-x64', 'linux-x64', 'darwin-arm64')
@@ -763,12 +765,22 @@ export class PostgresManager extends EventEmitter {
   async _startPostgres() {
     await this._ensureNoStalePostmasterLock();
     return new Promise((resolve, reject) => {
+      // Resolve effective postgres settings (defaults < ~/.autopg/settings.json
+      // < env). Curated GUCs land first; `postgres._extra` is layered in
+      // beneath them so curated values win on conflict. Invalid entries are
+      // dropped with a logger.warn — postgres still starts.
+      const { settings } = loadEffectiveConfig({ logger: this.logger });
+      const { args: gucArgs, applied: appliedGucs } = buildPostgresArgs(
+        settings.postgres,
+        { logger: this.logger },
+      );
+
       // Build PostgreSQL arguments
       const pgArgs = [
         this.binaries.postgres,
         '-D', this.databaseDir,
         '-p', this.port.toString(),
-        '-c', 'max_connections=1000',  // Support high connection counts for stress testing
+        ...gucArgs,
       ];
 
       // Enable Unix socket for faster local connections (Linux/macOS)
@@ -779,17 +791,16 @@ export class PostgresManager extends EventEmitter {
         pgArgs.push('-k', ''); // Disable Unix socket on Windows
       }
 
-      // Add logical replication settings when sync is enabled
-      // These settings enable PostgreSQL's native WAL-based replication
-      // with ZERO hot path impact (handled by PostgreSQL's WAL writer process)
-      if (this.syncEnabled) {
-        pgArgs.push(
-          '-c', 'wal_level=logical',           // Enable logical decoding
-          '-c', 'max_replication_slots=10',    // Support multiple subscriptions
-          '-c', 'max_wal_senders=10',          // Parallel replication streams
-          '-c', 'wal_keep_size=512MB',         // Retain WAL for catchup
+      // Surface the WAL block as an info log when sync is enabled, the same
+      // signal the previous hardcoded path emitted. The actual GUCs are now
+      // schema defaults (wal_level=logical, max_replication_slots=10,
+      // max_wal_senders=10, wal_keep_size=512MB) so they ship in `gucArgs`
+      // already — this log just preserves the operator-visible breadcrumb.
+      if (this.syncEnabled || settings.sync?.enabled) {
+        this.logger.info(
+          { walLevel: appliedGucs.wal_level },
+          'Logical replication enabled for sync',
         );
-        this.logger.info('Logical replication enabled for sync');
       }
 
       this.process = Bun.spawn(buildCommand(pgArgs, this.binaries.libDir), {

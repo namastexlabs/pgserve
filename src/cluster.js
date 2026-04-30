@@ -16,6 +16,7 @@ import { createLogger } from './logger.js';
 import { PostgresManager } from './postgres.js';
 import { extractDatabaseName } from './protocol.js';
 import { EventEmitter } from 'events';
+import { loadEffectiveConfig } from './settings-loader.cjs';
 
 // PostgreSQL protocol constants
 const PROTOCOL_VERSION_3 = 196608;
@@ -427,21 +428,31 @@ export async function startClusterServer(options = {}) {
     const workers = new Map();
     const workerStats = new Map(); // Track stats from each worker
 
-    // Fork workers with PostgreSQL connection info
+    // Fork workers with PostgreSQL connection info.
+    //
+    // Pass through using AUTOPG_<X> (the primary names) so workers don't
+    // emit the legacy-PGSERVE deprecation log for our own internal IPC.
+    // PGSERVE_WORKER stays as-is — it's an internal flag, not part of the
+    // settings precedence chain.
+    const workerEnv = () => ({
+      PGSERVE_WORKER: 'true',
+      AUTOPG_PORT: String(port),
+      AUTOPG_HOST: host,
+      AUTOPG_PG_SOCKET: pgSocketPath || '',
+      AUTOPG_PG_PORT: String(pgPort),
+      AUTOPG_PG_USER: 'postgres',
+      AUTOPG_PG_PASSWORD: 'postgres',
+      AUTOPG_LOG_LEVEL: options.logLevel || 'info',
+      AUTOPG_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false',
+      // max_connections is a postgres GUC, not a server-level env. Workers
+      // read it from settings.postgres via loadEffectiveConfig; we still
+      // ship the value here so a CLI override (e.g. `--max-connections`)
+      // reaches the worker before the daemon writes settings.json.
+      AUTOPG_MAX_CONNECTIONS: String(options.maxConnections || 1000),
+      AUTOPG_ENABLE_PGVECTOR: options.enablePgvector ? 'true' : 'false',
+    });
     for (let i = 0; i < numWorkers; i++) {
-      const worker = cluster.fork({
-        PGSERVE_WORKER: 'true',
-        PGSERVE_PORT: String(port),
-        PGSERVE_HOST: host,
-        PGSERVE_PG_SOCKET: pgSocketPath || '',
-        PGSERVE_PG_PORT: String(pgPort),
-        PGSERVE_PG_USER: 'postgres',
-        PGSERVE_PG_PASSWORD: 'postgres',
-        PGSERVE_LOG_LEVEL: options.logLevel || 'info',
-        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false',
-        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000),
-        PGSERVE_ENABLE_PGVECTOR: options.enablePgvector ? 'true' : 'false'
-      });
+      const worker = cluster.fork(workerEnv());
       workers.set(worker.id, worker);
     }
 
@@ -457,19 +468,7 @@ export async function startClusterServer(options = {}) {
       }
 
       console.log(`[pgserve] Worker ${worker.id} died (${signal || code}), restarting...`);
-      const newWorker = cluster.fork({
-        PGSERVE_WORKER: 'true',
-        PGSERVE_PORT: String(port),
-        PGSERVE_HOST: host,
-        PGSERVE_PG_SOCKET: pgSocketPath || '',
-        PGSERVE_PG_PORT: String(pgPort),
-        PGSERVE_PG_USER: 'postgres',
-        PGSERVE_PG_PASSWORD: 'postgres',
-        PGSERVE_LOG_LEVEL: options.logLevel || 'info',
-        PGSERVE_AUTO_PROVISION: options.autoProvision !== false ? 'true' : 'false',
-        PGSERVE_MAX_CONNECTIONS: String(options.maxConnections || 1000),
-        PGSERVE_ENABLE_PGVECTOR: options.enablePgvector ? 'true' : 'false'
-      });
+      const newWorker = cluster.fork(workerEnv());
       workers.set(newWorker.id, newWorker);
     });
 
@@ -545,18 +544,24 @@ export async function startClusterServer(options = {}) {
       pgManager
     };
   } else {
-    // WORKER: Only run TCP routing, connect to PRIMARY's PostgreSQL
+    // WORKER: Only run TCP routing, connect to PRIMARY's PostgreSQL.
+    //
+    // Worker config comes from loadEffectiveConfig() (defaults < file < env).
+    // The primary fork() above sets PGSERVE_* env vars so existing supervised
+    // installs keep working; AUTOPG_* env vars take precedence when set, and
+    // a one-time deprecation note is emitted for legacy-only PGSERVE_* hits.
+    const { settings } = loadEffectiveConfig();
     const router = new ClusterRouter({
-      port: parseInt(process.env.PGSERVE_PORT) || 8432,
-      host: process.env.PGSERVE_HOST || '127.0.0.1',
-      pgSocketPath: process.env.PGSERVE_PG_SOCKET || null,
-      pgPort: parseInt(process.env.PGSERVE_PG_PORT) || 6432,
-      pgUser: process.env.PGSERVE_PG_USER || 'postgres',
-      pgPassword: process.env.PGSERVE_PG_PASSWORD || 'postgres',
-      logLevel: process.env.PGSERVE_LOG_LEVEL || 'info',
-      autoProvision: process.env.PGSERVE_AUTO_PROVISION === 'true',
-      maxConnections: parseInt(process.env.PGSERVE_MAX_CONNECTIONS) || 1000,
-      enablePgvector: process.env.PGSERVE_ENABLE_PGVECTOR === 'true'
+      port: settings.server.port,
+      host: settings.server.host,
+      pgSocketPath: settings.server.pgSocketPath || null,
+      pgPort: settings.server.pgPort,
+      pgUser: settings.server.pgUser,
+      pgPassword: settings.server.pgPassword,
+      logLevel: settings.runtime.logLevel,
+      autoProvision: settings.runtime.autoProvision,
+      maxConnections: settings.postgres.max_connections,
+      enablePgvector: settings.runtime.enablePgvector,
     });
 
     await router.start();

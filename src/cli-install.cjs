@@ -406,10 +406,16 @@ function ensureMigrationOnce() {
 }
 
 /**
- * Entry point invoked by the wrapper. Returns the exit code. Throws on
- * unknown subcommand so the wrapper's normal flow can take over (the
- * router treats any non-recognized subcommand as "pass through to the
- * postgres-server.js dispatcher").
+ * Entry point invoked by the wrapper. Returns the exit code (or a Promise
+ * for async subcommands such as `ui`). Throws on unknown subcommand so
+ * the wrapper's normal flow can take over (the router treats any
+ * non-recognized subcommand as "pass through to the postgres-server.js
+ * dispatcher").
+ *
+ * `ctx.scriptPath` is the path to `bin/postgres-server.js` (used by
+ * install for the pm2 entry point). For `restart` and `ui` we need the
+ * wrapper script path instead — `ctx.wrapperPath`. The wrapper provides
+ * both before calling dispatch.
  */
 function dispatch(subcommand, args, ctx) {
   ensureMigrationOnce();
@@ -424,6 +430,19 @@ function dispatch(subcommand, args, ctx) {
       return cmdUrl();
     case 'port':
       return cmdPort();
+    case 'config': {
+      const cfg = require('./cli-config.cjs');
+      const [sub, ...rest] = args;
+      return cfg.dispatch(sub, rest);
+    }
+    case 'restart': {
+      const restart = require('./cli-restart.cjs');
+      return restart.dispatch(args, { scriptPath: ctx.wrapperPath });
+    }
+    case 'ui': {
+      const ui = require('./cli-ui.cjs');
+      return ui.dispatch(args, { scriptPath: ctx.wrapperPath });
+    }
     default:
       throw new Error(`pgserve: dispatch called with unknown subcommand "${subcommand}"`);
   }
