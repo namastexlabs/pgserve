@@ -290,6 +290,52 @@ export class PgserveDaemon extends EventEmitter {
     this.gcOptions = options.gcOptions || {};
 
     this.setMaxListeners(this.maxConnections + 10);
+
+    // Watchdog: forcibly close any control-socket peer that has been accepted
+    // but hasn't completed the postgres handshake within this deadline. The
+    // env override is for tests (or for operators who want a tighter bound).
+    // See pgserve#45: peers that connected and never sent a StartupMessage
+    // would pile up indefinitely in `state.handshakeComplete=false`,
+    // exhausting connection slots.
+    const envDeadline = Number.parseInt(process.env.PGSERVE_HANDSHAKE_DEADLINE_MS ?? '', 10);
+    this.handshakeDeadlineMs =
+      Number.isFinite(envDeadline) && envDeadline > 0
+        ? envDeadline
+        : (options.handshakeDeadlineMs ?? 30_000);
+    // Sweep cadence: small enough to bound the worst-case slop on top of the
+    // deadline (5s default → 30s deadline becomes "killed within 30-35s").
+    this.handshakeSweepIntervalMs = Math.max(
+      1000,
+      Math.min(this.handshakeDeadlineMs, options.handshakeSweepIntervalMs ?? 5_000),
+    );
+    this._handshakeWatchdogTimer = null;
+  }
+
+  /**
+   * Iterate accepted sockets and force-close any that have been waiting on
+   * the postgres handshake for longer than `handshakeDeadlineMs`. Exposed on
+   * the prototype so tests can drive it deterministically without waiting for
+   * the timer.
+   */
+  _sweepStuckHandshakes() {
+    const now = Date.now();
+    let closed = 0;
+    for (const socket of this.connections) {
+      const state = this.socketState.get(socket);
+      if (!state) continue;
+      if (state.handshakeComplete) continue;
+      const acceptedAt = state.acceptedAt ?? now;
+      if (now - acceptedAt < this.handshakeDeadlineMs) continue;
+      this.logger.warn?.(
+        { acceptedAt, ageMs: now - acceptedAt, deadlineMs: this.handshakeDeadlineMs, fingerprint: state.fingerprint },
+        'Closing peer stuck in pre-handshake state past deadline',
+      );
+      try { socket.end(); } catch { /* swallow */ }
+      this.connections.delete(socket);
+      this.socketState.delete(socket);
+      closed++;
+    }
+    return closed;
   }
 
   /**
@@ -473,7 +519,19 @@ export class PgserveDaemon extends EventEmitter {
       pidLockPath: this.pidLockPath,
       pgPort: this.pgManager.port,
       tcpListens: this.tcpListens,
+      handshakeDeadlineMs: this.handshakeDeadlineMs,
     }, 'pgserve daemon listening');
+
+    // Arm the handshake watchdog. unref() so the timer doesn't keep the
+    // process alive on its own — the daemon already awaits the wrapper's
+    // forever-promise.
+    this._handshakeWatchdogTimer = setInterval(
+      () => this._sweepStuckHandshakes(),
+      this.handshakeSweepIntervalMs,
+    );
+    if (typeof this._handshakeWatchdogTimer.unref === 'function') {
+      this._handshakeWatchdogTimer.unref();
+    }
 
     this.emit('listening');
     return this;
@@ -487,6 +545,11 @@ export class PgserveDaemon extends EventEmitter {
     this._stopping = true;
 
     this.logger.info?.('Stopping pgserve daemon');
+
+    if (this._handshakeWatchdogTimer) {
+      clearInterval(this._handshakeWatchdogTimer);
+      this._handshakeWatchdogTimer = null;
+    }
 
     for (const socket of this.connections) {
       try { socket.end(); } catch { /* swallow */ }

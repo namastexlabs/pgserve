@@ -1,6 +1,6 @@
 {
   "name": "pgserve",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "description": "Embedded PostgreSQL server with true concurrent connections - zero config, auto-provision databases",
   "main": "src/index.js",
   "type": "module",
