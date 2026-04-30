@@ -124,7 +124,12 @@ describe('pgserve install', () => {
     expect(startCall).toContain('pgserve');
     expect(startCall).toContain('--max-restarts');
     expect(startCall).toContain('50');
-    expect(startCall).toContain('--min-uptime');
+    // pm2 ≥ 6.0 dropped `--min-uptime` from the CLI surface — it now lives
+    // only inside ecosystem files. Passing it on the command line aborts
+    // `pm2 start` with `error: unknown option --min-uptime`. Lock that out:
+    // `pgserve install` must NOT pass `--min-uptime` so it stays compatible
+    // across pm2 5.x → 6.x. See cli-install.cjs:HARDENED_DEFAULTS.
+    expect(startCall).not.toContain('--min-uptime');
     expect(startCall).toContain('--exp-backoff-restart-delay');
     expect(startCall).toContain('--max-memory-restart');
     expect(startCall).toContain('4G');
