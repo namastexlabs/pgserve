@@ -130,6 +130,7 @@ async function processStartupMessage(socket, state) {
   if (code === SSL_REQUEST_CODE || code === GSSAPI_REQUEST_CODE) {
     socket.write(Buffer.from('N'));
     state.buffer = buffer.length > messageLength ? buffer.subarray(messageLength) : null;
+    if (state.buffer) await processStartupMessage.call(this, socket, state);
     return;
   }
 
@@ -268,10 +269,11 @@ async function resolveTenantDatabase(state, requestedDb) {
   }
 
   const { fingerprint, name, uid, pid, packageRealpath } = fp;
+  const lookupOpts = { timeoutMs: this.adminLookupTimeoutMs };
 
   let row = null;
   try {
-    row = await findRowByFingerprint(this._adminClient, fingerprint);
+    row = await findRowByFingerprint(this._adminClient, fingerprint, lookupOpts);
   } catch (err) {
     this.logger.warn?.(
       { err: err?.message || String(err), fingerprint },
@@ -296,7 +298,7 @@ async function resolveTenantDatabase(state, requestedDb) {
         packageRealpath: packageRealpath || null,
         livenessPid: typeof pid === 'number' && pid > 0 ? pid : null,
         persist: persistRequested,
-      });
+      }, lookupOpts);
       audit(AUDIT_EVENTS.DB_CREATED, {
         database: newName,
         fingerprint,
@@ -319,7 +321,7 @@ async function resolveTenantDatabase(state, requestedDb) {
       await touchLastConnection(this._adminClient, {
         databaseName: row.databaseName,
         livenessPid: typeof pid === 'number' && pid > 0 ? pid : null,
-      });
+      }, lookupOpts);
     } catch (err) {
       this.logger.warn?.(
         { err: err?.message || String(err), database: row.databaseName },
@@ -330,7 +332,7 @@ async function resolveTenantDatabase(state, requestedDb) {
     // flag between connections — the previous run might have started without
     // persist:true and the operator just added it (or vice versa).
     try {
-      await markPersist(this._adminClient, row.databaseName, persistRequested);
+      await markPersist(this._adminClient, row.databaseName, persistRequested, lookupOpts);
     } catch (err) {
       this.logger.warn?.(
         { err: err?.message || String(err), database: row.databaseName },

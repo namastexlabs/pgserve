@@ -35,6 +35,13 @@ const REAPABLE_QUERY = `
   ORDER BY last_connection_at ASC
 `;
 
+function query(client, text, params = [], opts = {}) {
+  if (client.supportsQueryOptions && opts && Object.keys(opts).length > 0) {
+    return client.query(text, params, opts);
+  }
+  return client.query(text, params);
+}
+
 /**
  * Create the `pgserve_meta` table if it does not already exist.
  * Safe to call repeatedly — used at daemon boot and in tests.
@@ -88,12 +95,13 @@ export async function recordDbCreated(client, {
   packageRealpath = null,
   livenessPid = null,
   persist = false,
-}) {
+}, opts = {}) {
   if (!databaseName) throw new Error('recordDbCreated: databaseName required');
   if (!fingerprint) throw new Error('recordDbCreated: fingerprint required');
   if (typeof peerUid !== 'number') throw new Error('recordDbCreated: peerUid must be number');
 
-  await client.query(
+  await query(
+    client,
     `
     INSERT INTO pgserve_meta
       (database_name, fingerprint, peer_uid, package_realpath, liveness_pid, persist)
@@ -107,6 +115,7 @@ export async function recordDbCreated(client, {
       last_connection_at = now()
     `,
     [databaseName, fingerprint, peerUid, packageRealpath, livenessPid, persist],
+    opts,
   );
 }
 
@@ -117,9 +126,10 @@ export async function recordDbCreated(client, {
  * @param {{query: Function}} client
  * @param {{databaseName: string, livenessPid?: number|null}} args
  */
-export async function touchLastConnection(client, { databaseName, livenessPid = null }) {
+export async function touchLastConnection(client, { databaseName, livenessPid = null }, opts = {}) {
   if (!databaseName) throw new Error('touchLastConnection: databaseName required');
-  await client.query(
+  await query(
+    client,
     `
     UPDATE pgserve_meta
     SET last_connection_at = now(),
@@ -127,6 +137,7 @@ export async function touchLastConnection(client, { databaseName, livenessPid = 
     WHERE database_name = $1
     `,
     [databaseName, livenessPid],
+    opts,
   );
 }
 
@@ -137,11 +148,13 @@ export async function touchLastConnection(client, { databaseName, livenessPid = 
  * @param {string} databaseName
  * @param {boolean} value
  */
-export async function markPersist(client, databaseName, value) {
+export async function markPersist(client, databaseName, value, opts = {}) {
   if (!databaseName) throw new Error('markPersist: databaseName required');
-  await client.query(
+  await query(
+    client,
     `UPDATE pgserve_meta SET persist = $2 WHERE database_name = $1`,
     [databaseName, !!value],
+    opts,
   );
 }
 
@@ -203,12 +216,14 @@ export async function deleteMetaRow(client, databaseName) {
  * @param {string} fingerprint — 12 hex chars
  * @returns {Promise<{databaseName: string, fingerprint: string, peerUid: number, allowedTokens: Array<{id: string, hash: string, issued_at: string}>} | null>}
  */
-export async function findRowByFingerprint(client, fingerprint) {
+export async function findRowByFingerprint(client, fingerprint, opts = {}) {
   if (!fingerprint) throw new Error('findRowByFingerprint: fingerprint required');
-  const r = await client.query(
+  const r = await query(
+    client,
     `SELECT database_name, fingerprint, peer_uid, allowed_tokens
      FROM pgserve_meta WHERE fingerprint = $1 LIMIT 1`,
     [fingerprint],
+    opts,
   );
   if (r.rows.length === 0) return null;
   const row = r.rows[0];
@@ -239,12 +254,12 @@ function parseTokens(raw) {
  * @returns {Promise<{databaseName: string}>}
  * @throws if the fingerprint has no pgserve_meta row
  */
-export async function addAllowedToken(client, { fingerprint, tokenId, tokenHash }) {
+export async function addAllowedToken(client, { fingerprint, tokenId, tokenHash }, opts = {}) {
   if (!fingerprint) throw new Error('addAllowedToken: fingerprint required');
   if (!tokenId) throw new Error('addAllowedToken: tokenId required');
   if (!tokenHash) throw new Error('addAllowedToken: tokenHash required');
 
-  const row = await findRowByFingerprint(client, fingerprint);
+  const row = await findRowByFingerprint(client, fingerprint, opts);
   if (!row) {
     const err = new Error(
       `addAllowedToken: no pgserve_meta row for fingerprint ${fingerprint}; ` +
@@ -259,11 +274,13 @@ export async function addAllowedToken(client, { fingerprint, tokenId, tokenHash 
     hash: tokenHash,
     issued_at: new Date().toISOString(),
   };
-  await client.query(
+  await query(
+    client,
     `UPDATE pgserve_meta
      SET allowed_tokens = allowed_tokens || $2::jsonb
      WHERE database_name = $1`,
     [row.databaseName, JSON.stringify([entry])],
+    opts,
   );
   return { databaseName: row.databaseName };
 }
@@ -302,10 +319,10 @@ export async function revokeAllowedToken(client, tokenId) {
  * @param {{fingerprint: string, tokenHash: string}} args
  * @returns {Promise<{tokenId: string, databaseName: string} | null>}
  */
-export async function verifyToken(client, { fingerprint, tokenHash }) {
+export async function verifyToken(client, { fingerprint, tokenHash }, opts = {}) {
   if (!fingerprint) throw new Error('verifyToken: fingerprint required');
   if (!tokenHash) throw new Error('verifyToken: tokenHash required');
-  const row = await findRowByFingerprint(client, fingerprint);
+  const row = await findRowByFingerprint(client, fingerprint, opts);
   if (!row) return null;
   const match = row.allowedTokens.find((t) => timingSafeEqual(t.hash, tokenHash));
   if (!match) return null;
