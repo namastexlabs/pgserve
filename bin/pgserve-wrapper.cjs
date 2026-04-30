@@ -14,6 +14,37 @@ const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+// ────────────────────────────────────────────────────────────────────────
+// canonical-pgserve-pm2-supervision wish (PR #55, issue #56)
+//
+// `pgserve install / uninstall / status / url / port` are pure node + pm2
+// wrappers — they don't need bun at all. Route them BEFORE the bun
+// resolution + health probe so install works on a machine where bun
+// hasn't self-healed yet (the chicken-and-egg case the probe was designed
+// to detect — operators should be able to set up a fresh server even when
+// the bun-postinstall failed).
+//
+// `pgserve serve` is an alias for the existing `pgserve daemon` (the
+// long-lived process pm2 invokes); we rewrite argv so postgres-server.js
+// sees the original `daemon` token.
+// ────────────────────────────────────────────────────────────────────────
+const __subcommand = process.argv[2];
+const __installSubcommands = new Set(['install', 'uninstall', 'status', 'url', 'port']);
+if (__subcommand && __installSubcommands.has(__subcommand)) {
+  const cli = require(path.join(__dirname, '..', 'src', 'cli-install.cjs'));
+  process.exit(
+    cli.dispatch(__subcommand, process.argv.slice(3), {
+      scriptPath: path.join(__dirname, 'postgres-server.js'),
+    }),
+  );
+}
+if (__subcommand === 'serve') {
+  // Alias `serve` → `daemon` so the wish's canonical command name maps
+  // cleanly to the existing long-lived process. Replacing argv preserves
+  // any flags the operator (or pm2) passed after `serve`.
+  process.argv[2] = 'daemon';
+}
+
 // Detect platform
 const isWindows = process.platform === 'win32';
 const bunBin = isWindows ? 'bun.exe' : 'bun';
@@ -53,6 +84,8 @@ if (!bunPath) {
   process.exit(1);
 }
 
+const scriptPath = path.join(__dirname, 'postgres-server.js');
+
 // Pre-flight health check: verify bun can actually execute.
 //
 // When pgserve is installed via `bun install` (as a global or transitive dep),
@@ -66,8 +99,6 @@ if (!bunPath) {
 // here, attempt the documented self-heal once (`node install.js`), and retry.
 // If self-heal also fails, surface the real error instead of hanging later.
 ensureBunHealthy(bunPath);
-
-const scriptPath = path.join(__dirname, 'postgres-server.js');
 
 /**
  * Verify the selected bun binary can execute. If it fails with the known

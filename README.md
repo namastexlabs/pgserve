@@ -200,9 +200,33 @@ psql -h "${XDG_RUNTIME_DIR:-/tmp}/pgserve" -d myapp
 psql "postgresql:///myapp?host=${XDG_RUNTIME_DIR:-/tmp}/pgserve"
 ```
 
-### Supervised by PM2
+### Supervised by PM2 — `pgserve install` (recommended)
 
-`ecosystem.config.cjs` snippet:
+`pgserve install` registers pgserve as a hardened pm2 process in one
+command. Idempotent: re-running it is a no-op when already installed.
+
+```bash
+pgserve install                    # one-shot register + start under pm2
+pgserve install --port 8442        # custom port
+pgserve install --data /data/pg    # custom data dir
+
+pgserve url                        # postgres://localhost:8432/postgres
+pgserve port                       # 8432
+pgserve status                     # pm2 + on-disk config snapshot
+pgserve uninstall                  # remove from pm2; keep data dir
+```
+
+The hardened defaults pgserve registers itself with: `--max-restarts 10`,
+`--restart-delay 5000`, `--max-memory-restart 1G`, `--kill-timeout 20000`,
+log-date-format `YYYY-MM-DD HH:mm:ss.SSS`, output/error logs in
+`~/.pgserve/logs/`. Config is written to `~/.pgserve/config.json`
+(override the directory with `PGSERVE_CONFIG_DIR`).
+
+Downstream services that need a Postgres connection can shell out to
+`pgserve install` (no-op if already running) and read the canonical URL
+from `pgserve url` instead of spinning up their own embedded pgserve.
+
+#### Manual ecosystem.config.cjs (legacy)
 
 ```javascript
 module.exports = {
