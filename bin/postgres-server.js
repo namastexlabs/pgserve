@@ -310,7 +310,14 @@ pgserve - Embedded PostgreSQL Server
 True concurrent connections, zero config, auto-provision databases.
 
 USAGE:
-  pgserve [options]
+  pgserve [options]                 # foreground server
+  pgserve install [--port N]        # register under pm2 (idempotent)
+  pgserve serve                     # alias for "pgserve daemon"
+  pgserve status [--json]           # report pm2 + config state
+  pgserve url                       # print canonical postgres:// URL
+  pgserve port                      # print canonical port
+  pgserve uninstall                 # remove from pm2 (keep data)
+  pgserve daemon [stop]             # singleton daemon (Unix socket)
 
 OPTIONS:
   --port <number>    PostgreSQL port (default: 8432)

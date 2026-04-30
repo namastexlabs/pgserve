@@ -200,9 +200,45 @@ psql -h "${XDG_RUNTIME_DIR:-/tmp}/pgserve" -d myapp
 psql "postgresql:///myapp?host=${XDG_RUNTIME_DIR:-/tmp}/pgserve"
 ```
 
-### Supervised by PM2
+### Supervised by PM2 — `pgserve install` (recommended)
 
-`ecosystem.config.cjs` snippet:
+`pgserve install` registers pgserve as a hardened pm2 process in one
+command. Idempotent: re-running it is a no-op when already installed.
+
+```bash
+pgserve install                    # one-shot register + start under pm2
+pgserve install --port 8442        # custom port
+pgserve install --data /data/pg    # custom data dir
+
+pgserve url                        # postgres://localhost:8432/postgres
+pgserve port                       # 8432
+pgserve status                     # pm2 + on-disk config snapshot
+pgserve uninstall                  # remove from pm2; keep data dir
+```
+
+**Hardened defaults** (tuned for production-grade Postgres workloads,
+not toy-machine values):
+
+| Flag | Default | Why |
+|------|---------|-----|
+| `--max-memory-restart` | `4G` | Postgres realistic working set: shared_buffers + autovacuum + connection backends. 1G OOM-kills under modest load. Override with `PGSERVE_MAX_MEMORY=8G pgserve install`. |
+| `--max-restarts` | `50` | Tolerates extended outages (NATS reconnect storms, host pressure). Combined with `--min-uptime`, only RAPID failures count. |
+| `--min-uptime` | `10000` ms | Restart counts against the cap only when the process crashed within 10s of starting. Healthy long-uptime crashes don't burn the budget. |
+| `--restart-delay` | `4000` ms | Initial gap between restarts. |
+| `--exp-backoff-restart-delay` | `100` → ~60000 ms | Exponential spread on repeated failures so we don't hammer pm2 + the host on persistent issues. |
+| `--kill-timeout` | `60000` ms | Postgres needs time to flush WAL on graceful shutdown; 60s headroom. |
+| `--log-date-format` | `YYYY-MM-DD HH:mm:ss.SSS` | Operator-friendly timestamps in pm2 logs. |
+| `--output` / `--error` | `~/.pgserve/logs/pgserve-{out,error}.log` | Rotates via pm2-logrotate (install separately). |
+
+Config: `~/.pgserve/config.json` (override the directory with
+`PGSERVE_CONFIG_DIR`). Memory ceiling: env-tunable via
+`PGSERVE_MAX_MEMORY` at install time.
+
+Downstream services that need a Postgres connection can shell out to
+`pgserve install` (no-op if already running) and read the canonical URL
+from `pgserve url` instead of spinning up their own embedded pgserve.
+
+#### Manual ecosystem.config.cjs (legacy)
 
 ```javascript
 module.exports = {
