@@ -137,6 +137,22 @@ describe('pgserve install', () => {
     expect(startCall).toContain('60000');
     expect(startCall).toContain('--interpreter');
     expect(startCall).toContain('none');
+
+    // pgserve install must launch the foreground multi-tenant server, NOT
+    // the daemon. Daemon mode rejects `--port` (it only accepts --data,
+    // --ram, --log, --no-provision, --listen, --pgvector) and its TCP
+    // listeners require fingerprint+token auth which downstream services
+    // (omni, genie) don't speak. Foreground mode binds plain TCP on
+    // 127.0.0.1:<port> with auto-provisioning. Lock that out:
+    expect(startCall).not.toContain('daemon');
+    // The script-arg handover (after `--`) must include `--port` so the
+    // foreground parser binds the right TCP port.
+    const dashDashIdx = startCall.indexOf('--');
+    const scriptArgs = startCall.slice(dashDashIdx + 1);
+    expect(scriptArgs).toContain('--port');
+    expect(scriptArgs).toContain('--data');
+    expect(scriptArgs).toContain('--log');
+    expect(scriptArgs).not.toContain('daemon');
   });
 
   test('second install is idempotent (no second pm2 start)', () => {
