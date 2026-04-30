@@ -47,8 +47,13 @@ const DEFAULT_PORT = 8432;
  * Revised defaults:
  *   - 4G memory ceiling — covers realistic load while still bounded so
  *     a runaway query can't eat the host.
- *   - 50 max restarts BUT only counted when min_uptime < 10s ("rapid"
- *     failures). Healthy long-uptime crashes don't count against the cap.
+ *   - 50 max restarts. Earlier drafts paired this with `--min-uptime` to
+ *     only count rapid failures, but pm2 ≥ 6.0 dropped `--min-uptime` from
+ *     the CLI surface (it survives only inside ecosystem files now). We
+ *     keep the budget generous enough that occasional long-uptime crashes
+ *     don't burn through it; if you observe restart-budget exhaustion
+ *     from non-rapid crashes, raise `maxRestarts` rather than reintroducing
+ *     `--min-uptime` (which would break install on pm2 6.x).
  *   - Exponential backoff on repeated failures (100ms → 60s) so we don't
  *     hammer on persistent issues.
  *   - 60s graceful shutdown window — Postgres needs time to flush WAL.
@@ -62,7 +67,6 @@ const DEFAULT_PORT = 8432;
  */
 const HARDENED_DEFAULTS = {
   maxRestarts: 50,
-  minUptimeMs: 10_000,
   restartDelayMs: 4000,
   expBackoffRestartDelayMs: 100,
   // pm2 caps `--exp-backoff-restart-delay` ramp at the current backoff
@@ -149,11 +153,14 @@ function buildPm2StartArgs({ scriptPath, port, dataDir }) {
     'none',
     '--max-restarts',
     String(HARDENED_DEFAULTS.maxRestarts),
-    // `--min-uptime` makes `--max-restarts` count only RAPID failures
-    // (process crashed within N ms of starting). Healthy long-uptime
-    // crashes don't burn the budget.
-    '--min-uptime',
-    String(HARDENED_DEFAULTS.minUptimeMs),
+    // NOTE: pm2 ≥ 6.0 dropped `--min-uptime` from the CLI surface — passing
+    // it produces `error: unknown option --min-uptime` and aborts the
+    // install. The flag still works inside an ecosystem file, but per the
+    // canonical-pm2-supervision wish we keep `pgserve install` as a pure
+    // CLI flow (no extra files for operators to manage). The trade-off is
+    // that `--max-restarts` now counts every restart (rapid or not) rather
+    // than only sub-`min_uptime` ones; the budget of 50 above is sized
+    // accordingly.
     '--restart-delay',
     String(HARDENED_DEFAULTS.restartDelayMs),
     // Exponential backoff between successive failures: starts at 100ms,
