@@ -126,6 +126,7 @@ async function processTcpStartupMessage(socket, state) {
   if (code === SSL_REQUEST_CODE || code === GSSAPI_REQUEST_CODE) {
     socket.write(Buffer.from('N'));
     state.buffer = buffer.length > messageLength ? buffer.subarray(messageLength) : null;
+    if (state.buffer) await processTcpStartupMessage.call(this, socket, state);
     return;
   }
   if (code === CANCEL_REQUEST_CODE) {
@@ -153,7 +154,7 @@ async function processTcpStartupMessage(socket, state) {
       validated = await verifyToken(this._adminClient, {
         fingerprint: auth.fingerprint,
         tokenHash,
-      });
+      }, { timeoutMs: this.adminLookupTimeoutMs });
     }
   } catch (err) {
     this.logger.warn?.({ err: err.message }, 'verifyToken failed');

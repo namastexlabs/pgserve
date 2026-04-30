@@ -342,6 +342,7 @@ export class MultiTenantRouter extends EventEmitter {
       socket.write(Buffer.from('N'));
       // Remove this request from buffer, wait for real startup
       state.buffer = buffer.length > messageLength ? buffer.subarray(messageLength) : null;
+      if (state.buffer) await this.processStartupMessage(socket, state);
       return;
     }
 

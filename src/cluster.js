@@ -256,6 +256,7 @@ class ClusterRouter extends EventEmitter {
     if (code === SSL_REQUEST_CODE || code === GSSAPI_REQUEST_CODE) {
       socket.write(Buffer.from('N'));
       state.buffer = buffer.length > messageLength ? buffer.subarray(messageLength) : null;
+      if (state.buffer) await this.processStartupMessage(socket, state);
       return;
     }
 

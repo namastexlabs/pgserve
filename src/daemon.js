@@ -266,6 +266,9 @@ export class PgserveDaemon extends EventEmitter {
     this._stopping = false;
     // Lazy-initialised admin DB client (Group 6 token validation).
     this._adminClient = null;
+    this.adminIdleTimeout = options.adminIdleTimeout ?? 300;
+    this.adminQueryTimeoutMs = options.adminQueryTimeoutMs ?? 0;
+    this.adminLookupTimeoutMs = options.adminLookupTimeoutMs ?? 5000;
     // Group 5: GC sweep handle ({stop, sweep}). Installed once the admin
     // client is up and torn down on stop().
     this._gcHandle = null;
@@ -411,6 +414,8 @@ export class PgserveDaemon extends EventEmitter {
       this._adminClient = await createAdminClient({
         socketDir: this.pgManager.socketDir,
         port: this.pgManager.port,
+        idleTimeout: this.adminIdleTimeout,
+        queryTimeoutMs: this.adminQueryTimeoutMs,
       });
       await ensureMetaSchema(this._adminClient);
       writeAdminDiscovery({

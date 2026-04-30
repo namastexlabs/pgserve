@@ -36,7 +36,9 @@ import path from 'path';
  * @param {string} [args.user='postgres']
  * @param {string} [args.password='postgres']
  * @param {number} [args.max=2]
- * @returns {Promise<{query: (text: string, params?: any[]) => Promise<{rows: any[], rowCount: number}>, end: () => Promise<void>, sql: any}>}
+ * @param {number} [args.idleTimeout=300]
+ * @param {number} [args.queryTimeoutMs=0]
+ * @returns {Promise<{supportsQueryOptions: boolean, query: (text: string, params?: any[], opts?: {timeoutMs?: number}) => Promise<{rows: any[], rowCount: number}>, end: () => Promise<void>, sql: any}>}
  */
 export async function createAdminClient({
   socketDir: _socketDir = null,
@@ -46,25 +48,37 @@ export async function createAdminClient({
   user = 'postgres',
   password = 'postgres',
   max = 2,
+  idleTimeout = 300,
+  queryTimeoutMs = 0,
 } = {}) {
   if (typeof port !== 'number') throw new Error('createAdminClient: port required');
-  const sql = new SQL({
+  const options = {
     hostname: host,
     port,
     database,
     username: user,
     password,
     max,
-    // TODO #38: investigate GC perf for 240-orphan sweep on shared CI runners;
-    // bumped 10s→30s during Felipe deadline 2026-04-29 to unblock pgserve v2.0 ship.
-    idleTimeout: 30,
-  });
+    idleTimeout,
+  };
+  let sql = new SQL(options);
   // Light probe so a misconfigured daemon fails loudly here rather than at
   // first query.
   await sql`SELECT 1`;
+
+  async function reopen() {
+    const closing = sql;
+    sql = new SQL(options);
+    void closing.close().catch(() => { /* swallow */ });
+    await sql`SELECT 1`;
+  }
+
   return {
-    sql,
-    async query(text, params = []) {
+    supportsQueryOptions: true,
+    get sql() {
+      return sql;
+    },
+    async query(text, params = [], opts = {}) {
       // control-db.js is written for the pg npm module's contract, which
       // requires JSON-stringified payloads bound to JSONB parameters.
       // Bun.SQL goes the other way: it stringifies JS objects when they
@@ -73,17 +87,55 @@ export async function createAdminClient({
       // it represents). Bridge the impedance mismatch here so the same
       // call sites work against either driver.
       const adapted = params.map(coerceJsonbParam);
-      const rows = await sql.unsafe(text, adapted);
-      // Bun returns an Array of plain objects with `count` set on it; turn
-      // JSONB columns back into JS values so control-db.js's parseTokens
-      // sees the array-of-objects shape it would receive from pg.
-      const out = Array.from(rows).map(decodeJsonColumns);
-      return { rows: out, rowCount: rows.count ?? rows.length ?? 0 };
+      const timeoutMs = opts.timeoutMs ?? queryTimeoutMs;
+      try {
+        return await runQueryWithTimeout(sql, text, adapted, timeoutMs);
+      } catch (err) {
+        if (!isRetriableAdminQueryError(err)) throw err;
+        await reopen();
+        return await runQueryWithTimeout(sql, text, adapted, timeoutMs);
+      }
     },
     async end() {
       try { await sql.close(); } catch { /* swallow */ }
     },
   };
+}
+
+async function runQueryWithTimeout(sql, text, params, queryTimeoutMs) {
+  const query = runQuery(sql, text, params);
+  return withTimeout(query, queryTimeoutMs);
+}
+
+async function runQuery(sql, text, params) {
+  const rows = await sql.unsafe(text, params);
+  // Bun returns an Array of plain objects with `count` set on it; turn
+  // JSONB columns back into JS values so control-db.js's parseTokens
+  // sees the array-of-objects shape it would receive from pg.
+  const out = Array.from(rows).map(decodeJsonColumns);
+  return { rows: out, rowCount: rows.count ?? rows.length ?? 0 };
+}
+
+function withTimeout(promise, timeoutMs) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`admin query timed out after ${timeoutMs}ms`);
+      err.code = 'EADMINQUERYTIMEOUT';
+      reject(err);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  promise.catch(() => { /* handled by the race winner */ });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function isRetriableAdminQueryError(err) {
+  const code = err?.code;
+  if (['EADMINQUERYTIMEOUT', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ConnectionClosed'].includes(code)) return true;
+  const message = err?.message || String(err);
+  return /connection (?:closed|terminated|reset)|socket closed|timeout|CONNECTION_ENDED|CONNECTION_DESTROYED/i.test(message);
 }
 
 /**
