@@ -37,6 +37,14 @@ psql postgresql://localhost:8432/myapp
 
 > Note: v2 default is the Unix socket — see [Daemon mode](#daemon-mode). The TCP form above is the v1 compat path.
 
+> **Naming.** The npm package stays `pgserve`. The CLI now also ships as
+> `autopg` — both bins route to the same dispatcher. Use `autopg` for the
+> new console (`autopg ui`) and configuration surface (`autopg config`,
+> `autopg restart`); `pgserve <subcommand>` keeps working as a forever
+> alias. Settings live at `~/.autopg/settings.json` and are migrated
+> from `~/.pgserve/` automatically on first run. See
+> [Console](#console-autopg-ui) and [Configuration](#configuration).
+
 <br>
 
 ## Features
@@ -120,9 +128,25 @@ pgserve-windows-x64.exe --data C:\pgserve-data
 
 ## CLI Reference
 
-```
-pgserve [options]
+`autopg` and `pgserve` are interchangeable — every subcommand routes
+through the same dispatcher. Use whichever you prefer; new examples in
+this README and in `console/` use `autopg`.
 
+```
+autopg [options]                       # foreground server (alias: pgserve)
+autopg daemon                          # long-lived background daemon
+autopg install [--port N] [--data P]   # register pgserve under pm2
+autopg uninstall                       # remove from pm2 (data dir kept)
+autopg status                          # pm2 + on-disk config snapshot
+autopg url | autopg port               # canonical connection string / port
+autopg config <list|get|set|edit|path|init>   # manage ~/.autopg/settings.json
+autopg restart                         # pm2-aware: pm2 restart pgserve, else SIGTERM+respawn
+autopg ui [--port N] [--no-open]       # local web console on 127.0.0.1
+```
+
+Foreground options accepted by `autopg` / `pgserve` (no subcommand):
+
+```
 Options:
   --port <number>       PostgreSQL port (default: 8432)
   --data <path>         Data directory for persistence (default: in-memory)
@@ -348,6 +372,86 @@ Dev workloads with long debug cycles do not normally need this — any new
 connection slides the TTL window forward. Reach for `pgserve.persist` when
 the app is genuinely long-lived (production daemon, dashboard, durable
 agent state), not just for convenience.
+
+<br>
+
+## Console (`autopg ui`)
+
+A local web console for inspecting and editing the running cluster.
+Runs in-process via `node:http`, binds 127.0.0.1 only, single-user dev
+tool — no auth, no TLS, never expose it.
+
+```bash
+autopg ui                  # walk 8433–8533 picking the first free port
+autopg ui --port 8500      # bind exactly 8500
+autopg ui --no-open        # skip browser launch (CI / headless)
+```
+
+The first stateful screen — **Settings** — is functional today: it
+renders the 6-section schema (server / runtime / sync / supervision /
+postgres / ui), validates inline, and round-trips through
+`~/.autopg/settings.json` with optimistic concurrency (sha256 etag +
+`If-Match`). The other 10 screens (Databases, Tables, SQL, Optimizer,
+Security, Ingress, Health, Sync, RLM-trace, RLM-sim) are scaffolded
+as `[ coming soon ]` placeholders — Health ships next.
+
+The UI shells out to the CLI for every mutation (`autopg config set`
+under PUT, `autopg restart` under POST). The daemon stays untouched
+— no HTTP API, no signal-based reload — so the console works even
+when no daemon is running.
+
+See [`console/README.md`](./console/README.md) for the local dev loop
+and design-system source.
+
+<br>
+
+## Configuration
+
+The CLI is the source of truth. Settings live at
+`~/.autopg/settings.json` (override the directory with
+`AUTOPG_CONFIG_DIR`; the legacy `PGSERVE_CONFIG_DIR` is still honored
+and falls back to `~/.pgserve/`). Every write is atomic, chmod 0600,
+and tagged with a sha256 etag for optimistic concurrency on the UI
+helper's PUT path.
+
+Schema sections (one per `~/.autopg/settings.json` top-level key):
+
+| Section | Purpose |
+|---------|---------|
+| `server` | Router port/host, backend socket, superuser credentials |
+| `runtime` | Log level, auto-provision, pgvector, data dir |
+| `sync` | WAL-based logical replication toggle |
+| `supervision` | pm2 hardening defaults (memory, restart, kill timeout) |
+| `postgres` | 15 curated GUCs (`shared_buffers`, `wal_level`, …) + `_extra` raw passthrough |
+| `ui` | Console theme / phosphor / density / CRT toggle |
+
+```bash
+autopg config init                              # write defaults
+autopg config list                              # KEY VALUE SOURCE table
+autopg config get postgres.shared_buffers       # machine-friendly value
+autopg config set postgres.shared_buffers 256MB # validates + atomic write
+autopg config edit                              # opens $EDITOR on settings.json
+autopg config path                              # absolute path (honors AUTOPG_CONFIG_DIR)
+```
+
+**Precedence:** `default < file < env`. `AUTOPG_*` env vars beat
+`PGSERVE_*` (the legacy form is still honored with a one-time
+deprecation log per process, so existing operators keep working).
+The console shows a yellow `OVERRIDDEN BY ENV` chip on rows whose
+env var is currently set.
+
+**GUC passthrough:** `postgres._extra` is a free-form `{ gucName: scalar }`
+map for any PostgreSQL setting outside the curated 15. Names must match
+`^[a-z][a-z0-9_]*$`; values must be string / number / boolean (no
+newlines, no leading `-`). Both layers are revalidated at boot, so a
+typo logs a `logger.warn` and is dropped — postgres still starts.
+
+**One-shot migration:** on first run, if `~/.pgserve/` exists and
+`~/.autopg/` does not, the contents are copied (preserving mtimes)
+and a `MIGRATED-FROM-PGSERVE.md` marker is dropped in the old dir.
+Idempotent — second run is a no-op.
+
+Full schema reference: [`docs/settings-schema.md`](./docs/settings-schema.md).
 
 <br>
 

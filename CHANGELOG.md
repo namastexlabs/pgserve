@@ -4,6 +4,92 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased — autopg console settings
+
+### Added
+
+- **Soft rename to `autopg`.** The npm package stays `pgserve` (no
+  `npm deprecate`); the package now also ships an `autopg` bin that
+  routes through the same dispatcher. Use either name interchangeably:
+  `autopg config list` and `pgserve config list` are byte-equivalent.
+  pm2 process name stays `pgserve` so existing supervised installs
+  upgrade cleanly with no migration step.
+- **`~/.autopg/settings.json` (schema version 1).** Six sections —
+  `server`, `runtime`, `sync`, `supervision`, `postgres`, `ui` —
+  with a curated set of 15 PostgreSQL GUCs plus a `postgres._extra`
+  raw passthrough map. Every write is atomic (`tmp + rename`),
+  chmod 0600, and tagged with a sha256 etag for optimistic
+  concurrency control on the UI helper. Override the directory with
+  `AUTOPG_CONFIG_DIR`. See [`docs/settings-schema.md`](./docs/settings-schema.md)
+  for the full key reference.
+- **`autopg config (list / get / set / edit / path / init)`** — manage
+  settings from the shell. `list` prints a `KEY VALUE SOURCE` table
+  showing where each leaf was resolved from (default / file / env).
+  `set` validates with a stable error format (`error: <field> — <CODE>:
+  <detail>`, exit code 2). Seven error codes: `INVALID_KEY`,
+  `INVALID_GUC_NAME`, `INVALID_GUC_VALUE`, `INVALID_TYPE`,
+  `OUT_OF_RANGE`, `READONLY`, `ETAG_MISMATCH`.
+- **`autopg restart`** — pm2-aware. If the `pgserve` process appears
+  in `pm2 jlist`, calls `pm2 restart pgserve` (single-fire, respects
+  the hardened defaults registered at install time). Otherwise reads
+  the pidfile, sends SIGTERM, waits, and respawns the daemon
+  detached.
+- **`autopg ui [--port N] [--no-open]`** — boots a local web console
+  on 127.0.0.1 (default port walk: 8433–8533). Single-user dev tool,
+  no auth, no TLS. Mounts four endpoints: `GET /api/settings` (returns
+  `{ settings, sources, etag }`), `PUT /api/settings` (requires
+  `If-Match`, returns 409 on stale etag), `POST /api/restart`,
+  `GET /api/status`. All handlers shell out to the CLI — the daemon
+  stays untouched, so the console works even with no daemon running.
+- **Console scaffolding (`console/`).** React + Babel via CDN, no
+  build step. All 11 routes are registered; the **Settings** screen
+  is the first stateful one and renders the full 6-section schema
+  with type-aware controls, inline validation, an `OVERRIDDEN BY ENV`
+  chip on env-overridden rows, and an etag-mismatch reload banner.
+  The remaining 10 screens (Databases, Tables, SQL, Optimizer,
+  Security, Ingress, Health, Sync, RLM-trace, RLM-sim) render
+  `[ coming soon ]` placeholders — Health ships next.
+- **Daemon now reads from settings.** `cluster.js` calls
+  `loadEffectiveConfig()` (env > file > defaults). `postgres.js`
+  emits `-c key=value` for every entry in `settings.postgres` and
+  `settings.postgres._extra`, with name regex (`^[a-z][a-z0-9_]*$`)
+  and scalar value validation enforced at boot — invalid GUCs are
+  dropped with a `logger.warn` so a typo in `_extra` doesn't crash
+  the daemon. Hardcoded `max_connections=1000` and the WAL
+  replication block (`wal_level=logical`,
+  `max_replication_slots=10`, `max_wal_senders=10`,
+  `wal_keep_size=512MB`) are now schema defaults — overridable
+  per-install via `autopg config set`.
+- **`AUTOPG_*` env vars** as the new primary form. `PGSERVE_*` is
+  still honored at the daemon (one-time deprecation log per process
+  when `PGSERVE_*` is the only one set); `AUTOPG_*` wins on
+  conflict.
+
+### Migrated
+
+- **`~/.pgserve/` → `~/.autopg/` (one-shot, idempotent).** On first
+  run, if `~/.pgserve/` exists and `~/.autopg/` does not, the contents
+  are copied (preserving mtimes). A `MIGRATED-FROM-PGSERVE.md` marker
+  is dropped in the old directory so subsequent runs skip the copy
+  cleanly. If both directories exist, neither is touched and
+  `~/.autopg/` wins. No automatic merge.
+
+### Notes for operators
+
+- pm2 process name stays `pgserve`. Running `autopg install` on a
+  host that already has the legacy install is a no-op — pm2 sees the
+  same process name. Re-issue `pm2 save` if you want pm2 to persist
+  any settings changes through reboots.
+- Local dev loop:
+  ```bash
+  bun install && npm link && autopg install && autopg ui
+  ```
+  Then edit `postgres.shared_buffers` in the UI, click Save & Restart,
+  and `psql -c "SHOW shared_buffers;"` reflects the new value.
+- The npm package name is **not changing** — keep installing with
+  `npm install pgserve` (or `npx pgserve`); both `autopg` and
+  `pgserve` bins ship in the same tarball.
+
 ## 2.0.8
 
 ### Changed
