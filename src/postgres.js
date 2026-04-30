@@ -710,10 +710,56 @@ export class PostgresManager {
   }
 
   /**
+   * Detect and remove a stale postmaster.pid that postgres would otherwise
+   * refuse to start against. Stale = the PID written into the file is not
+   * alive on this host. Called at the top of _startPostgres so that crash
+   * / SIGKILL / unclean reboot recovery is automatic.
+   *
+   * Real running backends are NEVER touched — if the PID is alive we leave
+   * the file alone and let postgres surface its normal "lock file already
+   * exists" error so the operator sees the conflict.
+   */
+  async _ensureNoStalePostmasterLock() {
+    const pidFile = path.join(this.databaseDir, 'postmaster.pid');
+    let raw;
+    try {
+      raw = await fs.promises.readFile(pidFile, 'utf-8');
+    } catch (err) {
+      if (err.code === 'ENOENT') return;
+      throw err;
+    }
+    const firstLine = (raw.split('\n')[0] ?? '').trim();
+    const pid = Number.parseInt(firstLine, 10);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      this.logger.warn(
+        { pidFile, firstLine },
+        'postmaster.pid is unparseable; removing as stale'
+      );
+      await fs.promises.unlink(pidFile).catch(() => {});
+      return;
+    }
+    let alive = false;
+    try {
+      process.kill(pid, 0);
+      alive = true;
+    } catch (err) {
+      // EPERM = process exists but we can't signal it — still alive.
+      alive = err.code === 'EPERM';
+    }
+    if (alive) return;
+    this.logger.info(
+      { pidFile, stalePid: pid },
+      'Removing stale postmaster.pid (PID not running) before postgres start'
+    );
+    await fs.promises.unlink(pidFile).catch(() => {});
+  }
+
+  /**
    * Start the PostgreSQL server process
    * Uses Bun.spawn() for ~40% faster process startup
    */
   async _startPostgres() {
+    await this._ensureNoStalePostmasterLock();
     return new Promise((resolve, reject) => {
       // Build PostgreSQL arguments
       const pgArgs = [
