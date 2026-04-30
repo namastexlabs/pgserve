@@ -257,6 +257,18 @@ export class PgserveDaemon extends EventEmitter {
       enablePgvector: options.enablePgvector || false,
     });
 
+    // Forward unexpected backend deaths to wrapper-level supervisors. A clean
+    // stop() sets PostgresManager._stopping=true so the event arrives with
+    // expected=true and we leave the daemon alone; an external SIGKILL / OOM
+    // / segfault arrives with expected=false and we re-emit so the wrapper
+    // can exit non-zero and let a process supervisor (genie serve, pm2,
+    // systemd) restart us cleanly. See pgserve#45.
+    this.pgManager.on('backendExited', (info) => {
+      if (!info.expected) {
+        this.emit('backendDiedUnexpectedly', info);
+      }
+    });
+
     this.server = null;
     this.tcpServers = [];
     this.connections = new Set();

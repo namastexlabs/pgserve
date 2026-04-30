@@ -14,6 +14,7 @@
  */
 
 /* global fetch, Bun */
+import { EventEmitter } from 'events';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
@@ -419,8 +420,9 @@ function findAvailableTcpPort() {
   return port;
 }
 
-export class PostgresManager {
+export class PostgresManager extends EventEmitter {
   constructor(options = {}) {
+    super();
     this.dataDir = options.dataDir || null; // null = memory mode (temp dir)
     this.port = options.port ?? 5433; // Internal PG port (router listens on different port)
     this.user = options.user || 'postgres';
@@ -863,6 +865,7 @@ export class PostgresManager {
       // the exit is unexpected (external kill, crash, OOM).
       this.process.exited.then((code) => {
         processExited = true;
+        const expected = !!this._stopping;
         if (!started) {
           reject(new Error(`PostgreSQL exited with code ${code} before starting: ${startupOutput}`));
         }
@@ -870,7 +873,7 @@ export class PostgresManager {
         // On unexpected exit (not via stop()), reset cached paths so that
         // getSocketPath() returns null and callers can fall back to TCP
         // or force a fresh start().
-        if (!this._stopping) {
+        if (!expected) {
           this.socketDir = null;
           this.databaseDir = null;
           this.logger?.warn(
@@ -878,6 +881,10 @@ export class PostgresManager {
             'PostgreSQL subprocess exited unexpectedly — socketDir/databaseDir reset'
           );
         }
+        // Notify supervisors. `expected=true` means stop() initiated the exit
+        // (clean shutdown); `expected=false` means the backend died on its
+        // own — supervisors should treat the latter as a fault signal.
+        this.emit('backendExited', { code, expected });
       });
 
       // Method 1: TCP connection polling (preferred, works on Linux/macOS)

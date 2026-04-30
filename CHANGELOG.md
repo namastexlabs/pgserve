@@ -4,6 +4,20 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.5
+
+### Fixed
+
+- `PostgresManager` now extends `EventEmitter` and emits `backendExited`
+  with `{ code, expected }` when the postgres child exits. `expected=true`
+  is reserved for shutdowns initiated by `stop()`; everything else is
+  treated as a fault. `PgserveDaemon` re-emits unexpected exits as
+  `backendDiedUnexpectedly`, and the daemon CLI wrapper subscribes and
+  exits non-zero so a process supervisor (`genie serve`, pm2, systemd)
+  can restart the daemon cleanly. Previously, an external SIGKILL of
+  the postgres backend left the wrapper alive in `epoll_wait` while the
+  control socket accepted connections forever — pgserve#45.
+
 ## 2.0.4
 
 ### Fixed
