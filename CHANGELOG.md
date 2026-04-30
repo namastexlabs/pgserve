@@ -4,6 +4,20 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.4
+
+### Fixed
+
+- `_startPostgres()` now removes a stale `postmaster.pid` from the data
+  directory before spawning postgres. Previously, an unclean shutdown
+  (SIGKILL, machine reboot, OOM) left a `postmaster.pid` whose recorded
+  PID was no longer alive, and postgres refused to start with
+  `FATAL: lock file "postmaster.pid" already exists` on the next boot.
+  Operators had to `rm postmaster.pid` manually to recover. A live PID
+  is never touched, so a real concurrent postmaster still surfaces the
+  normal lock conflict. ([#46](https://github.com/namastexlabs/pgserve/pull/46),
+  fixes [#45](https://github.com/namastexlabs/pgserve/issues/45))
+
 ## 2.0.0 — Unreleased
 
 > The release date will replace "Unreleased" when the v2.0.0 release workflow
