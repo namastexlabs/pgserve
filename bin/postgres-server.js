@@ -312,7 +312,7 @@ True concurrent connections, zero config, auto-provision databases.
 USAGE:
   pgserve [options]                 # foreground server
   pgserve install [--port N]        # register under pm2 (idempotent)
-  pgserve serve                     # alias for `pgserve daemon`
+  pgserve serve                     # alias for "pgserve daemon"
   pgserve status [--json]           # report pm2 + config state
   pgserve url                       # print canonical postgres:// URL
   pgserve port                      # print canonical port
