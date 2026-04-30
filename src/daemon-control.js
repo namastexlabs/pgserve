@@ -72,6 +72,13 @@ function handleSocketOpen(socket) {
     pendingToPg: null,
     pendingToClient: null,
     fingerprint,
+    // Wall-clock timestamp when this socket was accepted. The watchdog
+    // installed by PgserveDaemon.start() forcibly closes any socket that
+    // hasn't completed its postgres handshake within
+    // PGSERVE_HANDSHAKE_DEADLINE_MS. Without this, a peer that connects
+    // and never sends the StartupMessage occupies the connection slot
+    // forever — the file-descriptor leak documented in pgserve#45.
+    acceptedAt: Date.now(),
   });
   this.connections.add(socket);
   if (fingerprint) {
