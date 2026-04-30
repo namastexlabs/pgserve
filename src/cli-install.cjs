@@ -179,7 +179,24 @@ function buildPm2StartArgs({ scriptPath, port, dataDir }) {
     '--error',
     logs.error,
     '--',
-    'daemon',
+    // Foreground multi-tenant mode (`pgserve [options]`), NOT daemon mode.
+    //
+    // Daemon mode binds a unix control socket and requires libpq peers to
+    // authenticate via a fingerprint+token handshake (`pgserve daemon
+    // issue-token`). Downstream services that connect with a plain
+    // `postgres://` URL (omni, genie, anything that doesn't speak the
+    // fingerprint protocol) cannot reach a daemon-mode listener. We also
+    // observed live: `pgserve install` was passing `--port` to the daemon
+    // parser, which only accepts `--data | --ram | --log | --no-provision
+    // | --listen | --pgvector` — every install attempt crashed with
+    // `Unknown daemon option: --port` and pm2 burned its restart budget.
+    //
+    // Foreground mode (the default `pgserve [options]` invocation in
+    // postgres-server.js) accepts `--port`, auto-provisions databases on
+    // first connect, runs the cluster on multi-core hosts, and binds TCP
+    // on `127.0.0.1:<port>` with no auth dance — exactly what canonical
+    // pgserve consumers expect. Pass the same flags pgserve already
+    // documents in its own `pgserve --help` output.
     '--port',
     String(port),
     '--data',
