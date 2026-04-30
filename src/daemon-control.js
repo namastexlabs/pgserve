@@ -230,30 +230,81 @@ async function processStartupMessage(socket, state) {
     // Same #24 safety net as the router: socketPath might point at a
     // directory the PG manager has since cleaned up. Fall back to TCP
     // rather than hanging on a missing socket file.
-    const useUnix = pgSocketPath && fs.existsSync(pgSocketPath);
-    if (useUnix) {
-      state.pgSocket = await Bun.connect({ unix: pgSocketPath, socket: pgHandler });
-    } else {
-      if (pgSocketPath && !useUnix) {
-        this.logger.warn?.(
-          { pgSocketPath, dbName },
-          'PG Unix socket path stale — falling back to TCP',
-        );
-      }
-      state.pgSocket = await Bun.connect({
-        hostname: '127.0.0.1',
-        port: this.pgManager.port,
-        socket: pgHandler,
-      });
-    }
+    //
+    // Single-retry-with-backoff: if the first connect attempt fails (the
+    // backend is mid-restart, OOM-recovering, etc.), wait
+    // BACKEND_CONNECT_RETRY_DELAY_MS and try once more before giving up.
+    // On final failure, send the client a postgres ErrorResponse with
+    // SQLSTATE 57P03 (cannot_connect_now) so libpq clients can distinguish
+    // "transient backend unavailability" from real auth/network errors —
+    // pgserve#45 noted that the previous "buffer forever" path was the
+    // worst possible outcome.
+    state.pgSocket = await connectBackendWithRetry({
+      pgSocketPath,
+      pgPort: this.pgManager.port,
+      pgHandler,
+      logger: this.logger,
+      dbName,
+    });
 
     this.emit('connection', { dbName, socket });
   } catch (err) {
     this.logger.error?.({ dbName: state.dbName, err: err?.message || String(err) }, 'Daemon connection error');
-    try { socket.end(); } catch { /* swallow */ }
+    // Tell the client why we're closing rather than just dropping the
+    // socket — silent drops were one of the recovery footguns documented
+    // in pgserve#45. 57P03 = cannot_connect_now (Postgres standard).
+    try {
+      const errFrame = buildErrorResponse({
+        severity: 'FATAL',
+        sqlstate: '57P03',
+        message: 'backend unavailable, retry shortly',
+      });
+      // socket.end(data) writes-then-closes atomically; same idempotent
+      // pattern used for the 28P01 deny branch above.
+      socket.end(errFrame);
+    } catch { /* swallow */ }
     this.emit('connection-error', { error: err, dbName: state.dbName });
   } finally {
     state.startupInProgress = false;
+  }
+}
+
+const BACKEND_CONNECT_RETRY_DELAY_MS = 200;
+
+/**
+ * Connect to the postgres backend with one retry on failure. Honours the
+ * existing `useUnix vs TCP fallback` policy (PR #24 safety net): every
+ * attempt re-checks whether the Unix socket path still exists, because the
+ * PG manager may have nulled it between attempts.
+ *
+ * Throws the final connect error after the retry; callers translate that
+ * into a 57P03 ErrorResponse for the client.
+ */
+async function connectBackendWithRetry({ pgSocketPath, pgPort, pgHandler, logger, dbName }) {
+  const tryOnce = async () => {
+    const useUnix = pgSocketPath && fs.existsSync(pgSocketPath);
+    if (useUnix) {
+      return await Bun.connect({ unix: pgSocketPath, socket: pgHandler });
+    }
+    if (pgSocketPath && !useUnix) {
+      logger?.warn?.({ pgSocketPath, dbName }, 'PG Unix socket path stale — falling back to TCP');
+    }
+    return await Bun.connect({
+      hostname: '127.0.0.1',
+      port: pgPort,
+      socket: pgHandler,
+    });
+  };
+
+  try {
+    return await tryOnce();
+  } catch (firstErr) {
+    logger?.warn?.(
+      { dbName, err: firstErr?.message || String(firstErr), retryAfterMs: BACKEND_CONNECT_RETRY_DELAY_MS },
+      'Backend connect failed — retrying once',
+    );
+    await new Promise((r) => setTimeout(r, BACKEND_CONNECT_RETRY_DELAY_MS));
+    return await tryOnce();
   }
 }
 

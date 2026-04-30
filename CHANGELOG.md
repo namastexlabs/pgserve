@@ -4,6 +4,18 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.7
+
+### Fixed
+
+- The control-socket startup path now retries the backend connect once
+  (after a 200ms backoff) before failing. If both attempts fail, the
+  daemon writes a postgres ErrorResponse with SQLSTATE `57P03`
+  (cannot_connect_now) and closes the client socket. Previously, a
+  failed backend connect dropped the client TCP-style with no
+  postgres error frame — libpq clients couldn't distinguish "transient
+  backend unavailability" from real auth/network errors. pgserve#45.
+
 ## 2.0.6
 
 ### Fixed
