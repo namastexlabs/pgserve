@@ -83,6 +83,20 @@ async function runDaemonSubcommand(daemonArgs) {
   // `pgserve daemon` (long-running)
   const opts = parseDaemonArgs(daemonArgs);
   const daemon = new PgserveDaemon(opts);
+
+  // When the postgres backend dies on us (SIGKILL, OOM, segfault, anything
+  // other than a clean stop()), exit non-zero so a process supervisor can
+  // restart the daemon cleanly. Without this, the wrapper sat alive in
+  // epoll_wait while postgres was dead, and clients got "control.sock
+  // accepts but never replies" — pgserve#45.
+  daemon.on('backendDiedUnexpectedly', ({ code }) => {
+    console.error(
+      `pgserve daemon: postgres backend exited unexpectedly (code=${code}); ` +
+      `the wrapper is exiting so a process supervisor can restart it.`
+    );
+    process.exit(1);
+  });
+
   try {
     await daemon.start();
   } catch (err) {
