@@ -4,6 +4,18 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.8
+
+### Changed
+
+- Bumped embedded postgres binaries from `18.2.0-beta.16` to
+  `18.3.0-beta.17` for all four platforms (linux-x64, darwin-arm64,
+  darwin-x64, windows-x64). Picks up upstream PostgreSQL 18.3 fixes
+  and the matching `@embedded-postgres` package revision.
+- The hardcoded `pkgVersion` in `src/postgres.js` (used when binaries
+  are not yet cached and pgserve fetches them from npm) was updated
+  in lockstep with `package.json`.
+
 ## 2.0.7
 
 ### Fixed
