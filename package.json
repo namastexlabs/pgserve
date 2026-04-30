@@ -5,8 +5,18 @@
   "main": "src/index.js",
   "type": "module",
   "bin": {
+    "autopg": "./bin/autopg-wrapper.cjs",
     "pgserve": "./bin/pgserve-wrapper.cjs"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "console/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
   "scripts": {
     "bench": "bun tests/benchmarks/runner.js",
     "test": "bun test tests/**/*.test.js",

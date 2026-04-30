@@ -73,8 +73,22 @@ const HARDENED_DEFAULTS = {
   logDateFormat: 'YYYY-MM-DD HH:mm:ss.SSS',
 };
 
+/**
+ * Resolve the config directory. AUTOPG_CONFIG_DIR (the new var) wins,
+ * PGSERVE_CONFIG_DIR (the legacy var) is honored as a fall-through, and
+ * `~/.autopg/` is the new default. The legacy default `~/.pgserve/` is
+ * NOT consulted here — `settings-migrate.js` handles the one-shot copy.
+ *
+ * Soft-rename rule: AUTOPG_<X> beats PGSERVE_<X>. When only the legacy
+ * env is set we still honor it but the loader emits a one-time
+ * deprecation log via logger.warn (see settings-loader.js).
+ */
 function getConfigDir() {
-  return process.env.PGSERVE_CONFIG_DIR || path.join(os.homedir(), '.pgserve');
+  return (
+    process.env.AUTOPG_CONFIG_DIR ||
+    process.env.PGSERVE_CONFIG_DIR ||
+    path.join(os.homedir(), '.autopg')
+  );
 }
 
 function getConfigPath() {
@@ -369,12 +383,36 @@ function parseDataDir(args) {
 }
 
 /**
+ * One-shot migration check from `~/.pgserve/` → `~/.autopg/`. Runs once
+ * per process at the top of dispatch() so every CLI entry point gets
+ * the cutover. Fully best-effort: any failure is swallowed (we never
+ * want migration to block an `autopg status` invocation).
+ */
+let _migrationChecked = false;
+function ensureMigrationOnce() {
+  if (_migrationChecked) return;
+  _migrationChecked = true;
+  try {
+    const { migrateIfNeeded } = require('./settings-migrate.cjs');
+    const result = migrateIfNeeded();
+    if (result.migrated) {
+      process.stderr.write(
+        `autopg: migrated ${result.legacy} → ${result.fresh} (one-time)\n`,
+      );
+    }
+  } catch {
+    // Swallow — operator can re-run migration manually if needed.
+  }
+}
+
+/**
  * Entry point invoked by the wrapper. Returns the exit code. Throws on
  * unknown subcommand so the wrapper's normal flow can take over (the
  * router treats any non-recognized subcommand as "pass through to the
  * postgres-server.js dispatcher").
  */
 function dispatch(subcommand, args, ctx) {
+  ensureMigrationOnce();
   switch (subcommand) {
     case 'install':
       return cmdInstall(args, ctx);
