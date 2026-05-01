@@ -132,6 +132,7 @@ function parseDaemonArgs(daemonArgs) {
     autoProvision: true,
     tcpListens: [],
     enablePgvector: false,
+    maxConnections: null,
   };
   for (let i = 0; i < daemonArgs.length; i++) {
     const arg = daemonArgs[i];
@@ -156,6 +157,21 @@ function parseDaemonArgs(daemonArgs) {
       case '--pgvector':
         opts.enablePgvector = true;
         break;
+      case '--max-connections': {
+        // Accept the same flag the foreground/router mode takes so callers
+        // (genie's `getOrStartDaemon`, anything that spawns `pgserve daemon`
+        // with a tuned cap) can override the postmaster's `max_connections`.
+        // The `PgserveDaemon` constructor already honors `options.maxConnections`
+        // (see src/daemon.js — defaults to 1000); we just plumb it through.
+        const raw = daemonArgs[++i];
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          console.error(`--max-connections: expected a positive integer, got "${raw}"`);
+          process.exit(1);
+        }
+        opts.maxConnections = parsed;
+        break;
+      }
       case '--help':
         console.log(`
 pgserve daemon — singleton control-socket mode
@@ -167,13 +183,14 @@ USAGE:
   pgserve daemon revoke-token <id>
 
 OPTIONS:
-  --data <path>   Persistent data directory (default: in-memory)
-  --ram           Use /dev/shm storage (Linux only)
-  --log <level>   Log level: error|warn|info|debug (default: info)
-  --no-provision  Disable auto-provisioning of databases
-  --listen [host:]port  Bind opt-in TCP listener (repeatable)
-  --pgvector      Auto-enable pgvector extension on new databases
-  --help          Show this help
+  --data <path>          Persistent data directory (default: in-memory)
+  --ram                  Use /dev/shm storage (Linux only)
+  --log <level>          Log level: error|warn|info|debug (default: info)
+  --no-provision         Disable auto-provisioning of databases
+  --listen [host:]port   Bind opt-in TCP listener (repeatable)
+  --pgvector             Auto-enable pgvector extension on new databases
+  --max-connections <n>  Override the postmaster's max_connections (default: 1000)
+  --help                 Show this help
 
 The daemon binds $XDG_RUNTIME_DIR/pgserve/control.sock (fallback /tmp/pgserve/control.sock).
 A second invocation while the first is running exits with "already running".
