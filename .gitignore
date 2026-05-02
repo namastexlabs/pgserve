@@ -1,5 +1,7 @@
 # Dependencies
-node_modules/
+# No trailing slash — `node_modules/` matches only directories, but a
+# symlink-to-node_modules slips through. Slashless form catches both.
+node_modules
 .pnpm-store/
 
 # Build outputs
