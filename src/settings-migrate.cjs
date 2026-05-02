@@ -75,21 +75,37 @@ function resolveDirs({ home = os.homedir(), env = process.env, allowOverrides = 
 }
 
 /**
+ * Top-level directory names under the legacy `~/.pgserve/` that we DON'T
+ * carry over during the soft-rename migration:
+ *
+ *   - `bin/`  — embedded-postgres binary cache, ~120 MB. Postgres binaries
+ *               are version-specific; the new daemon re-fetches the pinned
+ *               version on first boot via the version-aware cache check
+ *               in `src/postgres.js`. Copying defeats that AND wastes disk.
+ *
+ * Persistent `data/` and pm2 `logs/` ARE migrated — users with stateful
+ * setups expect them to survive the rename.
+ */
+const LEGACY_SKIP_TOPLEVEL = new Set(['bin']);
+
+/**
  * Recursively copy `src` to `dest` preserving mtimes. Skips the marker
  * file (so a re-migration after marker removal doesn't carry it over)
  * and skips any path under `dest` that already exists (we never
- * overwrite during migration).
+ * overwrite during migration). At the top level, also skips the
+ * heavy/version-specific directories listed in `LEGACY_SKIP_TOPLEVEL`.
  */
-function copyTree(src, dest) {
+function copyTree(src, dest, depth = 0) {
   const entries = fs.readdirSync(src, { withFileTypes: true });
   if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true, mode: 0o700 });
 
   for (const entry of entries) {
     if (entry.name === MARKER_FILENAME) continue;
+    if (depth === 0 && LEGACY_SKIP_TOPLEVEL.has(entry.name)) continue;
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
-      copyTree(srcPath, destPath);
+      copyTree(srcPath, destPath, depth + 1);
     } else if (entry.isFile()) {
       if (fs.existsSync(destPath)) continue;
       fs.copyFileSync(srcPath, destPath);
