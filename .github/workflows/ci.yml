@@ -29,8 +29,13 @@ jobs:
       - name: Run dead code check
         run: bun run deadcode
 
+      # `bun test` defaults to a 5s per-test timeout. Daemon-control tests
+      # spin up a real PostgresManager (initdb + postgres + WAL warmup),
+      # which on a cold CI runner with no cached embedded-postgres binaries
+      # can occasionally exceed 5s for the first daemon test. Bump to 30s
+      # to absorb the variance — passing tests keep their fast wall-clock.
       - name: Run tests
-        run: bun test
+        run: bun test --timeout 30000
 
   # Optional: Run on multiple platforms
   test-matrix:
@@ -58,7 +63,7 @@ jobs:
         run: bun install
 
       - name: Run tests
-        run: bun test
+        run: bun test --timeout 30000
 
   # Validate build works
   build-check:

@@ -12,6 +12,7 @@ import path from 'path';
 import os from 'os';
 import { startMultiTenantServer } from '../src/index.js';
 import { startClusterServer } from '../src/cluster.js';
+import { loadEffectiveConfig as loadAutopgConfig } from '../src/settings-loader.cjs';
 import {
   PgserveDaemon,
   stopDaemon,
@@ -388,7 +389,59 @@ FEATURES:
 }
 
 /**
+ * Pull daemon options from ~/.autopg/settings.json (with env overlay).
+ * Returns a partial options patch — only keys that are present in the
+ * settings file or env override the hardcoded defaults. CLI flags layer
+ * on top of this in parseArgs().
+ *
+ * Failures (missing file, bad JSON) fall through to defaults silently —
+ * the daemon must remain runnable on a brand-new install before
+ * `autopg config init` has been called.
+ */
+function loadSettingsOverlay() {
+  try {
+    const cpuCount = os.cpus().length;
+    const isWindows = os.platform() === 'win32';
+    const { settings } = loadAutopgConfig();
+    const s = settings.server || {};
+    const r = settings.runtime || {};
+    const sy = settings.sync || {};
+    const pg = settings.postgres || {};
+    const overlay = {};
+    if (typeof s.port === 'number') overlay.port = s.port;
+    if (typeof s.host === 'string' && s.host) overlay.host = s.host;
+    if (typeof r.dataDir === 'string' && r.dataDir) overlay.dataDir = r.dataDir;
+    if (typeof r.ramMode === 'boolean') overlay.useRam = r.ramMode;
+    if (typeof r.logLevel === 'string' && r.logLevel) overlay.logLevel = r.logLevel;
+    if (typeof r.autoProvision === 'boolean') overlay.autoProvision = r.autoProvision;
+    if (typeof r.cluster === 'string') {
+      overlay.cluster = r.cluster === 'auto'
+        ? (cpuCount > 1 && !isWindows)
+        : r.cluster === 'on';
+    }
+    if (typeof r.workers === 'number' && r.workers > 0) overlay.workers = r.workers;
+    if (typeof r.statsDashboard === 'boolean') overlay.showStats = r.statsDashboard;
+    if (typeof r.enablePgvector === 'boolean') overlay.enablePgvector = r.enablePgvector;
+    if (sy.enabled && typeof sy.url === 'string' && sy.url) overlay.syncTo = sy.url;
+    if (sy.enabled && typeof sy.databases === 'string' && sy.databases) overlay.syncDatabases = sy.databases;
+    // pgserve-side connection cap mirrors the postgres GUC unless the user
+    // has explicitly diverged via CLI flag (handled in parseArgs).
+    if (typeof pg.max_connections === 'number') overlay.maxConnections = pg.max_connections;
+    return overlay;
+  } catch {
+    // First run, no settings.json yet, or file parse error. Hardcoded
+    // defaults still produce a working daemon — nothing to do here.
+    return {};
+  }
+}
+
+/**
  * Parse command line arguments
+ *
+ * Precedence (lowest → highest):
+ *   1. hardcoded defaults
+ *   2. ~/.autopg/settings.json (with env overlay via loadEffectiveConfig)
+ *   3. CLI flags  ← explicit user intent always wins
  */
 function parseArgs() {
   // Auto-enable cluster mode on multi-core systems for best performance
@@ -411,6 +464,9 @@ function parseArgs() {
     maxConnections: 1000, // Max concurrent connections (high default for multi-tenant)
     enablePgvector: false // Auto-enable pgvector extension on new databases
   };
+
+  // Layer settings.json + env on top of defaults. CLI flags below win.
+  Object.assign(options, loadSettingsOverlay());
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];

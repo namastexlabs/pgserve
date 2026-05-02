@@ -1,0 +1,227 @@
+/* pgserve design system — tokens
+ * :root              → MDR (dark, default)
+ * [data-theme=lumon] → Lumon (light)
+ * Components reference semantic vars (--surface-*, --text-*, --accent).
+ * Never reference --c-* scale tokens directly.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter+Tight:wght@400;500;600&display=swap');
+
+/* ============================================================
+ * MDR — dark, CRT phosphor (default)
+ * ============================================================ */
+:root {
+  /* surface ladder */
+  --c-bg-0: #080B0A;
+  --c-bg-1: #0E1311;
+  --c-bg-2: #161C1A;
+  --c-bg-3: #1F2725;
+  --c-line: #2A3331;
+  --c-line-strong: #3A4542;
+
+  /* text ladder */
+  --c-fg-0: #DCE8E2;
+  --c-fg-1: #99A8A2;
+  --c-fg-2: #5E6E68;
+  --c-fg-3: #3A4542;
+
+  /* accent — CRT phosphor */
+  --c-accent: #7DD3A4;
+  --c-accent-hover: #97DFB6;
+  --c-accent-press: #5FB988;
+
+  /* semantic — matches CLI thresholds */
+  --c-ok: #7DD3A4;
+  --c-warn: #E0B062;
+  --c-error: #E07B7B;
+  --c-info: #6FB8D6;
+
+  /* domain accents */
+  --c-vector: #B69BE0;
+  --c-audit: #D6A574;
+
+  /* semantic aliases */
+  --surface-canvas: var(--c-bg-0);
+  --surface-panel: var(--c-bg-1);
+  --surface-raised: var(--c-bg-2);
+  --surface-hover: var(--c-bg-3);
+  --surface-tint: color-mix(in oklab, var(--c-accent) 10%, transparent);
+
+  --line: var(--c-line);
+  --line-strong: var(--c-line-strong);
+
+  --text-primary: var(--c-fg-0);
+  --text-secondary: var(--c-fg-1);
+  --text-dim: var(--c-fg-2);
+  --text-disabled: var(--c-fg-3);
+
+  --accent: var(--c-accent);
+  --accent-hover: var(--c-accent-hover);
+  --accent-press: var(--c-accent-press);
+  --accent-tint: color-mix(in oklab, var(--c-accent) 14%, transparent);
+  --accent-line: color-mix(in oklab, var(--c-accent) 38%, transparent);
+
+  --status-ok: var(--c-ok);
+  --status-warn: var(--c-warn);
+  --status-error: var(--c-error);
+  --status-info: var(--c-info);
+  --status-vector: var(--c-vector);
+  --status-audit: var(--c-audit);
+
+  --select-bg: color-mix(in oklab, var(--c-accent) 22%, transparent);
+  --scanline-opacity: 0.04;
+
+  /* type families */
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace;
+  --font-sans: 'Inter Tight', -apple-system, system-ui, sans-serif;
+
+  /* type scale */
+  --t-xs: 11px;          /* eyebrows / labels */
+  --t-sm: 12px;          /* metadata, table headers */
+  --t-md: 13px;          /* body */
+  --t-lg: 15px;          /* emphasised body */
+  --t-xl: 18px;          /* sub-headings */
+  --t-2xl: 22px;         /* section titles */
+  --t-3xl: 28px;         /* page titles */
+  --t-4xl: 40px;         /* hero metrics */
+  --t-5xl: 64px;         /* display */
+
+  /* line-heights */
+  --lh-tight: 1.05;
+  --lh-snug: 1.25;
+  --lh-base: 1.45;
+  --lh-prose: 1.6;
+
+  /* spacing — 4px grid */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* radius — minimal */
+  --radius-0: 0;
+  --radius-1: 2px;
+  --radius-2: 4px;
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-micro: 90ms;
+  --dur-std: 180ms;
+  --dur-panel: 320ms;
+
+  /* sizing */
+  --row-control: 28px;
+  --row-table: 32px;
+  --topbar-h: 44px;
+  --sidebar-w: 240px;
+}
+
+/* ============================================================
+ * Lumon — light, institutional fluorescent
+ * ============================================================ */
+:root[data-theme="lumon"] {
+  --c-bg-0: #F2EEE6;
+  --c-bg-1: #FFFFFF;
+  --c-bg-2: #EBE5D8;
+  --c-bg-3: #DCD4C0;
+  --c-line: #C8BFA8;
+  --c-line-strong: #9B9075;
+
+  --c-fg-0: #0A0E14;
+  --c-fg-1: #3B4250;
+  --c-fg-2: #6B6F78;
+  --c-fg-3: #A0A199;
+
+  --c-accent: #1B5E8C;
+  --c-accent-hover: #2A75A8;
+  --c-accent-press: #154C73;
+
+  --c-ok: #2C7A4D;
+  --c-warn: #B8842C;
+  --c-error: #9B2C2C;
+  --c-info: #1B5E8C;
+
+  --c-vector: #6B4FA0;
+  --c-audit: #8C5A1A;
+
+  --select-bg: color-mix(in oklab, var(--c-accent) 16%, transparent);
+  --scanline-opacity: 0;
+}
+
+/* ============================================================
+ * Base
+ * ============================================================ */
+html, body {
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--t-md);
+  line-height: var(--lh-base);
+  font-variant-numeric: tabular-nums slashed-zero;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+::selection { background: var(--select-bg); color: var(--text-primary); }
+
+/* utility classes */
+.mono { font-family: var(--font-mono); }
+.sans { font-family: var(--font-sans); }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+.bracket-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--status-info);
+}
+.bracket-eyebrow::before { content: '['; color: var(--status-info); }
+.bracket-eyebrow::after  { content: ']'; color: var(--status-info); }
+
+.dim { color: var(--text-dim); }
+.fg-2 { color: var(--text-secondary); }
+.fg-1 { color: var(--text-primary); }
+
+.cursor-blink::after {
+  content: '▌';
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--accent);
+  animation: pgsv-blink 1s steps(2) infinite;
+}
+@keyframes pgsv-blink { 50% { opacity: 0; } }
+
+/* scanline overlay (MDR only) */
+.scanlines {
+  position: relative;
+  isolation: isolate;
+}
+.scanlines::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 2px,
+    rgba(125, 211, 164, 0.5) 2px,
+    rgba(125, 211, 164, 0.5) 3px
+  );
+  opacity: var(--scanline-opacity);
+  mix-blend-mode: screen;
+  z-index: 1;
+}

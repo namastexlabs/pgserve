@@ -19,6 +19,8 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { loadEffectiveConfig } from './settings-loader.cjs';
+import { buildPostgresArgs } from './settings-pg-args.cjs';
 
 /**
  * Get platform key for binary lookup (e.g., 'windows-x64', 'linux-x64', 'darwin-arm64')
@@ -38,12 +40,107 @@ function getPlatformKey() {
 }
 
 /**
- * Get the directory where extracted binaries are cached
+ * Pinned PostgreSQL major.minor.patch we expect in the cache. Bump alongside
+ * `package.json` `optionalDependencies.@embedded-postgres/*`. Used both as
+ * the download target AND as the cache-validity check — see `isCachedValid`.
+ */
+const PINNED_PG_VERSION = '18.3.0-beta.17';
+
+const VERSION_MARKER_FILENAME = '.version';
+
+/**
+ * Resolve the binary cache root, honouring the same env-var precedence
+ * as `getConfigDir()` in `src/cli-install.cjs`. Defaults to `~/.autopg/`
+ * (post-rename) so config and binary cache live in the same tree.
+ *
+ * Legacy `~/.pgserve/bin/<platform>` is migrated by `migrateLegacyBinaryCache`
+ * on first call; users with a 2.1.x cache still get a one-time move.
+ */
+function getAutopgRoot() {
+  return process.env.AUTOPG_CONFIG_DIR
+    || process.env.PGSERVE_CONFIG_DIR
+    || path.join(os.homedir(), '.autopg');
+}
+
+/**
+ * Get the directory where extracted binaries are cached.
  * @returns {string} Cache directory path
  */
 function getBinaryCacheDir() {
   const platformKey = getPlatformKey();
-  return path.join(os.homedir(), '.pgserve', 'bin', platformKey);
+  return path.join(getAutopgRoot(), 'bin', platformKey);
+}
+
+/**
+ * Read the cached version marker (the `.version` file) written next to
+ * the bin/lib trees on a successful extract. Returns the trimmed string
+ * or null when missing/unreadable.
+ */
+function readCachedVersion(cacheDir) {
+  try {
+    return fs.readFileSync(path.join(cacheDir, VERSION_MARKER_FILENAME), 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write the version marker after a successful extract so future cache
+ * checks can compare against `PINNED_PG_VERSION` and re-download when
+ * the package.json has bumped to a new release.
+ */
+function writeCachedVersion(cacheDir, version) {
+  try {
+    fs.writeFileSync(
+      path.join(cacheDir, VERSION_MARKER_FILENAME),
+      `${version}\n`,
+      { mode: 0o644 },
+    );
+  } catch {
+    // best-effort — failure here just means next boot re-downloads
+  }
+}
+
+/**
+ * Cache hit when BOTH:
+ *   - initdb + postgres exist in the bin/ subtree
+ *   - the `.version` marker matches `PINNED_PG_VERSION`
+ *
+ * The legacy presence-only check (no version marker) deliberately FAILS
+ * here so users carrying a pre-rename cache get a fresh, version-correct
+ * tree on the next daemon boot.
+ */
+function isCachedValid(cacheBinDir, expectedVersion) {
+  const platform = os.platform();
+  const initdbName = platform === 'win32' ? 'initdb.exe' : 'initdb';
+  const postgresName = platform === 'win32' ? 'postgres.exe' : 'postgres';
+  if (!fs.existsSync(path.join(cacheBinDir, initdbName))) return false;
+  if (!fs.existsSync(path.join(cacheBinDir, postgresName))) return false;
+  const cached = readCachedVersion(path.dirname(cacheBinDir));
+  return cached === expectedVersion;
+}
+
+/**
+ * One-time best-effort migration of `~/.pgserve/bin/<platform>` into the
+ * new `~/.autopg/bin/<platform>` location. We RENAME (atomic on the same
+ * fs) rather than copy to keep the operation cheap. On failure we fall
+ * back silently — the download path will recreate the cache.
+ */
+function migrateLegacyBinaryCache() {
+  const platformKey = getPlatformKey();
+  const newDir = getBinaryCacheDir();
+  if (fs.existsSync(newDir)) return;
+  const oldDir = path.join(os.homedir(), '.pgserve', 'bin', platformKey);
+  if (!fs.existsSync(oldDir)) return;
+  try {
+    fs.mkdirSync(path.dirname(newDir), { recursive: true });
+    fs.renameSync(oldDir, newDir);
+    console.log(`[pgserve] Migrated binary cache: ${oldDir} → ${newDir}`);
+  } catch (err) {
+    // EXDEV (cross-device) or permission errors fall through; the
+    // downloader will repopulate the new location.
+    console.log(`[pgserve] Could not migrate legacy binary cache (${err.code || err.message}); will re-download`);
+  }
 }
 
 /**
@@ -54,20 +151,32 @@ function getBinaryCacheDir() {
  */
 async function downloadPostgresBinaries() {
   const platform = os.platform();
+
+  // Carry over a legacy ~/.pgserve/bin cache the first time we run under
+  // the autopg path. After this, the new path is canonical.
+  migrateLegacyBinaryCache();
+
   const cacheDir = getBinaryCacheDir();
   const cacheBinDir = path.join(cacheDir, 'bin');
-  const initdbName = platform === 'win32' ? 'initdb.exe' : 'initdb';
-  const postgresName = platform === 'win32' ? 'postgres.exe' : 'postgres';
 
-  // Check if already downloaded
-  if (fs.existsSync(path.join(cacheBinDir, initdbName)) &&
-      fs.existsSync(path.join(cacheBinDir, postgresName))) {
+  // Cache hit: bin/initdb + bin/postgres present AND .version matches
+  // PINNED_PG_VERSION. Mismatch (e.g. user upgraded the npm package) or
+  // absence triggers a fresh download.
+  if (isCachedValid(cacheBinDir, PINNED_PG_VERSION)) {
     return cacheDir;
+  }
+
+  const cachedVersion = readCachedVersion(cacheDir);
+  if (cachedVersion && cachedVersion !== PINNED_PG_VERSION) {
+    console.log(`[pgserve] Cached binaries are version ${cachedVersion}; pinned is ${PINNED_PG_VERSION} — re-downloading`);
+    // Wipe the stale tree before re-extracting to avoid mixing files
+    // from two different PG majors.
+    try { fs.rmSync(cacheDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 
   const platformKey = getPlatformKey();
   const pkgName = `@embedded-postgres/${platformKey}`;
-  const pkgVersion = '18.3.0-beta.17';
+  const pkgVersion = PINNED_PG_VERSION;
 
   console.log(`[pgserve] PostgreSQL binaries not found.`);
   console.log(`[pgserve] Downloading ${pkgName}@${pkgVersion}...`);
@@ -144,6 +253,10 @@ async function downloadPostgresBinaries() {
   } catch {
     // Ignore cleanup errors
   }
+
+  // Persist the version marker so the next boot can detect package-version
+  // bumps and re-download instead of silently running the old major.
+  writeCachedVersion(cacheDir, pkgVersion);
 
   console.log(`[pgserve] PostgreSQL binaries installed to ${cacheDir}`);
   return cacheDir;
@@ -763,12 +876,22 @@ export class PostgresManager extends EventEmitter {
   async _startPostgres() {
     await this._ensureNoStalePostmasterLock();
     return new Promise((resolve, reject) => {
+      // Resolve effective postgres settings (defaults < ~/.autopg/settings.json
+      // < env). Curated GUCs land first; `postgres._extra` is layered in
+      // beneath them so curated values win on conflict. Invalid entries are
+      // dropped with a logger.warn — postgres still starts.
+      const { settings } = loadEffectiveConfig({ logger: this.logger });
+      const { args: gucArgs, applied: appliedGucs } = buildPostgresArgs(
+        settings.postgres,
+        { logger: this.logger },
+      );
+
       // Build PostgreSQL arguments
       const pgArgs = [
         this.binaries.postgres,
         '-D', this.databaseDir,
         '-p', this.port.toString(),
-        '-c', 'max_connections=1000',  // Support high connection counts for stress testing
+        ...gucArgs,
       ];
 
       // Enable Unix socket for faster local connections (Linux/macOS)
@@ -779,17 +902,16 @@ export class PostgresManager extends EventEmitter {
         pgArgs.push('-k', ''); // Disable Unix socket on Windows
       }
 
-      // Add logical replication settings when sync is enabled
-      // These settings enable PostgreSQL's native WAL-based replication
-      // with ZERO hot path impact (handled by PostgreSQL's WAL writer process)
-      if (this.syncEnabled) {
-        pgArgs.push(
-          '-c', 'wal_level=logical',           // Enable logical decoding
-          '-c', 'max_replication_slots=10',    // Support multiple subscriptions
-          '-c', 'max_wal_senders=10',          // Parallel replication streams
-          '-c', 'wal_keep_size=512MB',         // Retain WAL for catchup
+      // Surface the WAL block as an info log when sync is enabled, the same
+      // signal the previous hardcoded path emitted. The actual GUCs are now
+      // schema defaults (wal_level=logical, max_replication_slots=10,
+      // max_wal_senders=10, wal_keep_size=512MB) so they ship in `gucArgs`
+      // already — this log just preserves the operator-visible breadcrumb.
+      if (this.syncEnabled || settings.sync?.enabled) {
+        this.logger.info(
+          { walLevel: appliedGucs.wal_level },
+          'Logical replication enabled for sync',
         );
-        this.logger.info('Logical replication enabled for sync');
       }
 
       this.process = Bun.spawn(buildCommand(pgArgs, this.binaries.libDir), {
