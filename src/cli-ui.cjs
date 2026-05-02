@@ -31,6 +31,11 @@ const { spawn, execFileSync } = require('node:child_process');
 const { loadEffectiveConfig, getSettingsPath } = require('./settings-loader.cjs');
 const { writeSettings } = require('./settings-writer.cjs');
 const cliRestart = require('./cli-restart.cjs');
+
+// `pg` is a devDependency today — graceful degradation if not installed.
+// /api/stats returns { ok: false, reason: 'pg-not-installed' } in that case.
+let PgClient = null;
+try { PgClient = require('pg').Client; } catch { /* optional */ }
 const {
   ValidationError,
   EtagMismatchError,
@@ -314,6 +319,87 @@ function handleGetStatus(req, res, ctx) {
   }
 }
 
+// Cached package.json — read once at module load so we never block on disk.
+const PKG_VERSION = (() => {
+  try { return require('../package.json').version; } catch { return 'unknown'; }
+})();
+
+async function handleGetStats(req, res) {
+  if (!PgClient) {
+    sendJson(res, 200, {
+      ok: false,
+      reason: 'pg-not-installed',
+      autopg: { version: PKG_VERSION },
+    });
+    return;
+  }
+  let client;
+  try {
+    const { settings } = loadEffectiveConfig();
+    const server = settings.server || {};
+    client = new PgClient({
+      host: server.host || '127.0.0.1',
+      port: server.port || 8432,
+      database: 'postgres',
+      user: server.pgUser || 'postgres',
+      password: server.pgPassword || 'postgres',
+      connectionTimeoutMillis: 1500,
+      query_timeout: 1500,
+    });
+    client.on('error', () => {}); // never crash the helper on PG hiccup
+    await client.connect();
+    // Single round-trip query covering everything the footer needs.
+    // pg_stat_activity gives client connections; pg_database the user-db
+    // count + total size; pg_stat_database the cache + xact aggregates;
+    // pg_settings for the short server_version (no parsing); and
+    // pg_postmaster_start_time for uptime.
+    const { rows: [row] } = await client.query(`
+      SELECT
+        (SELECT count(*)::int FROM pg_stat_activity
+          WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()) AS connections,
+        (SELECT count(*)::int FROM pg_database
+          WHERE NOT datistemplate AND datname <> 'postgres') AS databases,
+        (SELECT setting FROM pg_settings WHERE name = 'server_version') AS pg_version,
+        EXTRACT(epoch FROM (now() - pg_postmaster_start_time()))::int AS uptime_sec,
+        (SELECT round(
+          100.0 * sum(blks_hit)::numeric
+            / nullif(sum(blks_hit) + sum(blks_read), 0),
+          2
+        )::float FROM pg_stat_database) AS cache_hit_pct,
+        (SELECT sum(xact_commit + xact_rollback)::bigint
+          FROM pg_stat_database) AS tx_total,
+        (SELECT sum(pg_database_size(datname))::bigint
+          FROM pg_database WHERE NOT datistemplate) AS size_bytes
+    `);
+    sendJson(res, 200, {
+      ok: true,
+      connections: row.connections,
+      databases: row.databases,
+      port: server.port || 8432,
+      pg: {
+        version: row.pg_version,
+        uptimeSec: row.uptime_sec,
+        cacheHitPct: row.cache_hit_pct,
+        txTotal: Number(row.tx_total ?? 0),
+        sizeBytes: Number(row.size_bytes ?? 0),
+      },
+      autopg: { version: PKG_VERSION },
+      ts: Date.now(),
+    });
+  } catch (err) {
+    sendJson(res, 200, {
+      ok: false,
+      reason: err.code || 'disconnected',
+      message: err.message,
+      autopg: { version: PKG_VERSION },
+    });
+  } finally {
+    if (client) {
+      try { await client.end(); } catch { /* already closed */ }
+    }
+  }
+}
+
 function handleStatic(req, res, root) {
   let url = req.url.split('?')[0];
   if (url === '/' || url === '') url = '/index.html';
@@ -370,6 +456,7 @@ function createHandler(ctx = {}) {
       if (url === '/api/settings' && method === 'PUT') return handlePutSettings(req, res);
       if (url === '/api/restart' && method === 'POST') return handlePostRestart(req, res, ctx);
       if (url === '/api/status' && method === 'GET') return handleGetStatus(req, res, ctx);
+      if (url === '/api/stats' && method === 'GET') return handleGetStats(req, res);
       sendError(res, 404, 'NOT_FOUND', `${method} ${url}`);
       return;
     }

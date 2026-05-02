@@ -136,6 +136,22 @@
     return body;
   }
 
+  // Live pgserve stats — connections + databases. Always returns a body
+  // (status 200) even when the daemon is unreachable; check `body.ok`.
+  // Safe to poll from the topbar without try/catch error handling.
+  async function getStats() {
+    try {
+      const res = await fetch('/api/stats', {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+        cache: 'no-store',
+      });
+      return await parseJson(res);
+    } catch (err) {
+      return { ok: false, reason: 'fetch-failed', message: err.message };
+    }
+  }
+
   function getCachedEtag() {
     return STATE.etag;
   }
@@ -149,6 +165,7 @@
     putSettings,
     restart,
     getStatus,
+    getStats,
     getCachedEtag,
     setCachedEtag,
     ApiError,
