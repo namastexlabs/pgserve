@@ -163,7 +163,6 @@ function pm2IsAvailable() {
  */
 function getEffectiveSupervision() {
   try {
-    // eslint-disable-next-line global-require
     const { loadEffectiveConfig } = require('./settings-loader.cjs');
     const { settings } = loadEffectiveConfig();
     const sup = settings?.supervision || {};

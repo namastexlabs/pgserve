@@ -12,6 +12,7 @@ import path from 'path';
 import os from 'os';
 import { startMultiTenantServer } from '../src/index.js';
 import { startClusterServer } from '../src/cluster.js';
+import { loadEffectiveConfig as loadAutopgConfig } from '../src/settings-loader.cjs';
 import {
   PgserveDaemon,
   stopDaemon,
@@ -399,14 +400,9 @@ FEATURES:
  */
 function loadSettingsOverlay() {
   try {
-    // settings-loader is CJS in src/. Resolved at runtime so a missing
-    // build state never blocks the daemon (worker spawns may not have
-    // src/ available the same way the entry point does — load lazily).
-    // eslint-disable-next-line global-require
-    const { loadEffectiveConfig } = require('../src/settings-loader.cjs');
     const cpuCount = os.cpus().length;
     const isWindows = os.platform() === 'win32';
-    const { settings } = loadEffectiveConfig();
+    const { settings } = loadAutopgConfig();
     const s = settings.server || {};
     const r = settings.runtime || {};
     const sy = settings.sync || {};
@@ -432,7 +428,7 @@ function loadSettingsOverlay() {
     // has explicitly diverged via CLI flag (handled in parseArgs).
     if (typeof pg.max_connections === 'number') overlay.maxConnections = pg.max_connections;
     return overlay;
-  } catch (err) {
+  } catch {
     // First run, no settings.json yet, or file parse error. Hardcoded
     // defaults still produce a working daemon — nothing to do here.
     return {};
