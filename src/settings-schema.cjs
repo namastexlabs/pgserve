@@ -99,7 +99,7 @@ const SCHEMA = {
     },
     autoProvision: {
       type: 'bool',
-      default: false,
+      default: true,
       env: ['AUTOPG_AUTO_PROVISION', 'PGSERVE_AUTO_PROVISION'],
       description: 'Auto-create missing databases on first connect',
     },
@@ -116,6 +116,32 @@ const SCHEMA = {
       description: 'PG cluster data directory (empty = <configDir>/data)',
       nullable: true,
     },
+    cluster: {
+      type: 'enum',
+      default: 'auto',
+      enum: ['auto', 'on', 'off'],
+      env: ['AUTOPG_CLUSTER', 'PGSERVE_CLUSTER'],
+      description: 'Cluster mode (auto = on for multi-core hosts)',
+    },
+    workers: {
+      type: 'int',
+      default: 0,
+      range: [0, 256],
+      env: ['AUTOPG_WORKERS', 'PGSERVE_WORKERS'],
+      description: 'Worker processes (0 = CPU cores)',
+    },
+    ramMode: {
+      type: 'bool',
+      default: false,
+      env: ['AUTOPG_RAM', 'PGSERVE_RAM'],
+      description: 'Use /dev/shm storage (Linux only, ~2x faster)',
+    },
+    statsDashboard: {
+      type: 'bool',
+      default: true,
+      env: ['AUTOPG_STATS', 'PGSERVE_STATS'],
+      description: 'Show TTY stats dashboard when running in foreground',
+    },
   },
 
   sync: {
@@ -124,6 +150,20 @@ const SCHEMA = {
       default: false,
       env: ['AUTOPG_SYNC_ENABLED', 'PGSERVE_SYNC_ENABLED'],
       description: 'Enable WAL-based logical replication',
+    },
+    url: {
+      type: 'string',
+      default: '',
+      env: ['AUTOPG_SYNC_TO', 'PGSERVE_SYNC_TO'],
+      description: 'Upstream PostgreSQL URL for replication (--sync-to)',
+      secret: true,
+      nullable: true,
+    },
+    databases: {
+      type: 'string',
+      default: '*',
+      env: ['AUTOPG_SYNC_DATABASES', 'PGSERVE_SYNC_DATABASES'],
+      description: 'Database glob patterns to sync, comma-separated (--sync-databases)',
     },
   },
 
@@ -148,12 +188,59 @@ const SCHEMA = {
       range: [0, 600000],
       description: 'pm2 min uptime to count as a healthy start',
     },
+    restartDelayMs: {
+      type: 'int',
+      default: 4000,
+      range: [0, 600000],
+      env: ['AUTOPG_RESTART_DELAY_MS', 'PGSERVE_RESTART_DELAY_MS'],
+      description: 'pm2 fixed delay before each restart',
+    },
+    expBackoffRestartDelayMs: {
+      type: 'int',
+      default: 100,
+      range: [0, 600000],
+      env: ['AUTOPG_EXP_BACKOFF_DELAY_MS', 'PGSERVE_EXP_BACKOFF_DELAY_MS'],
+      description: 'pm2 initial exponential-backoff delay',
+    },
+    expBackoffMaxMs: {
+      type: 'int',
+      default: 60000,
+      range: [1000, 600000],
+      env: ['AUTOPG_EXP_BACKOFF_MAX_MS', 'PGSERVE_EXP_BACKOFF_MAX_MS'],
+      description: 'pm2 exponential-backoff ceiling (ramp cap ~60s)',
+    },
     killTimeoutMs: {
       type: 'int',
       default: 60000,
       env: ['AUTOPG_KILL_TIMEOUT_MS', 'PGSERVE_KILL_TIMEOUT_MS'],
       range: [1000, 600000],
       description: 'Graceful shutdown window before SIGKILL',
+    },
+    logDateFormat: {
+      type: 'string',
+      default: 'YYYY-MM-DD HH:mm:ss.SSS',
+      env: ['AUTOPG_LOG_DATE_FORMAT', 'PGSERVE_LOG_DATE_FORMAT'],
+      description: 'pm2 log timestamp format string',
+    },
+  },
+
+  security: {
+    handshakeDeadlineMs: {
+      type: 'int',
+      default: 5000,
+      range: [100, 60000],
+      env: ['AUTOPG_HANDSHAKE_DEADLINE_MS', 'PGSERVE_HANDSHAKE_DEADLINE_MS'],
+      description: 'Control-socket peer handshake deadline before forced close',
+    },
+  },
+
+  audit: {
+    target: {
+      type: 'string',
+      default: '',
+      env: ['AUTOPG_AUDIT_TARGET', 'PGSERVE_AUDIT_TARGET'],
+      description: 'Audit event destination (JSONL file path or HTTP endpoint)',
+      nullable: true,
     },
   },
 

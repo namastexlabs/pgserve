@@ -35,29 +35,53 @@ const SETTINGS_SCHEMA_VIEW = {
   },
   runtime: {
     label: 'runtime',
-    hint: 'observability · auto-provisioning',
+    hint: 'observability · cluster · auto-provisioning',
     fields: [
       { key: 'logLevel',       type: 'enum',   label: 'log level',         options: ['debug', 'info', 'warn', 'error'] },
       { key: 'autoProvision',  type: 'bool',   label: 'auto-provision',    hint: 'auto-create missing databases on first connect' },
       { key: 'enablePgvector', type: 'bool',   label: 'enable pgvector',   hint: 'load pgvector on database create' },
       { key: 'dataDir',        type: 'string', label: 'data dir',          hint: 'PG cluster dir (blank = <configDir>/data)', allowEmpty: true },
+      { key: 'cluster',        type: 'enum',   label: 'cluster mode',      options: ['auto', 'on', 'off'], hint: 'auto = on for multi-core hosts (--cluster / --no-cluster)' },
+      { key: 'workers',        type: 'int',    label: 'workers',           hint: '0 = CPU cores; explicit count overrides (--workers)' },
+      { key: 'ramMode',        type: 'bool',   label: 'ram mode',          hint: 'Linux only · /dev/shm storage, ~2x faster (--ram)' },
+      { key: 'statsDashboard', type: 'bool',   label: 'TTY stats dashboard', hint: 'show live stats when running in foreground (--stats / --no-stats)' },
     ],
   },
   sync: {
     label: 'sync',
     hint: 'logical replication',
     fields: [
-      { key: 'enabled', type: 'bool', label: 'enable sync', hint: 'WAL-based logical replication; pairs with WAL GUCs below' },
+      { key: 'enabled',   type: 'bool',     label: 'enable sync',     hint: 'WAL-based logical replication; pairs with WAL GUCs below' },
+      { key: 'url',       type: 'password', label: 'upstream URL',    hint: 'postgresql://user:pass@host:port/db (--sync-to)', allowEmpty: true },
+      { key: 'databases', type: 'string',   label: 'databases',       hint: 'glob patterns, comma-separated (--sync-databases)' },
     ],
   },
   supervision: {
     label: 'supervision',
     hint: 'pm2 lifecycle',
     fields: [
-      { key: 'maxMemory',     type: 'string', label: 'max memory',     hint: 'pm2 memory ceiling (e.g. 4G)' },
-      { key: 'maxRestarts',   type: 'int',    label: 'max restarts',   hint: 'pm2 rapid-restart cap' },
-      { key: 'minUptimeMs',   type: 'int',    label: 'min uptime (ms)', hint: 'window for healthy-start tracking' },
-      { key: 'killTimeoutMs', type: 'int',    label: 'kill timeout (ms)', hint: 'graceful shutdown window before SIGKILL' },
+      { key: 'maxMemory',                type: 'string', label: 'max memory',         hint: 'pm2 memory ceiling (e.g. 4G)' },
+      { key: 'maxRestarts',              type: 'int',    label: 'max restarts',       hint: 'pm2 rapid-restart cap' },
+      { key: 'minUptimeMs',              type: 'int',    label: 'min uptime (ms)',    hint: 'window for healthy-start tracking' },
+      { key: 'restartDelayMs',           type: 'int',    label: 'restart delay (ms)', hint: 'pm2 fixed delay between restarts' },
+      { key: 'expBackoffRestartDelayMs', type: 'int',    label: 'backoff start (ms)', hint: 'initial exponential-backoff delay' },
+      { key: 'expBackoffMaxMs',          type: 'int',    label: 'backoff cap (ms)',   hint: 'maximum exponential-backoff value' },
+      { key: 'killTimeoutMs',            type: 'int',    label: 'kill timeout (ms)',  hint: 'graceful shutdown window before SIGKILL' },
+      { key: 'logDateFormat',            type: 'string', label: 'log date format',    hint: 'pm2 log timestamp pattern' },
+    ],
+  },
+  security: {
+    label: 'security',
+    hint: 'control-socket peer auth',
+    fields: [
+      { key: 'handshakeDeadlineMs', type: 'int', label: 'handshake deadline (ms)', hint: 'force-close peers stuck in pre-handshake state' },
+    ],
+  },
+  audit: {
+    label: 'audit',
+    hint: 'event sink',
+    fields: [
+      { key: 'target', type: 'string', label: 'audit target', hint: 'JSONL file path or HTTP endpoint (blank = disabled)', allowEmpty: true },
     ],
   },
   postgres: {

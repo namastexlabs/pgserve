@@ -16,9 +16,9 @@ const {
 } = require('../../src/settings-schema.cjs');
 
 describe('settings-schema', () => {
-  test('top-level sections are exactly server / runtime / sync / supervision / postgres / ui', () => {
+  test('top-level sections are exactly server / runtime / sync / supervision / security / audit / postgres / ui', () => {
     expect(Object.keys(SCHEMA).sort()).toEqual(
-      ['postgres', 'runtime', 'server', 'supervision', 'sync', 'ui'].sort(),
+      ['audit', 'postgres', 'runtime', 'security', 'server', 'supervision', 'sync', 'ui'].sort(),
     );
   });
 

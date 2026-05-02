@@ -153,11 +153,41 @@ function pm2IsAvailable() {
   }
 }
 
+/**
+ * Resolve the effective supervision config — start from HARDENED_DEFAULTS,
+ * overlay any values found in `~/.autopg/settings.json` `supervision`
+ * section. Failures fall through to defaults silently so `pgserve install`
+ * still works on a fresh machine before `autopg config init` has run.
+ *
+ * Precedence: defaults < settings.json < env (env wins via loadEffectiveConfig).
+ */
+function getEffectiveSupervision() {
+  try {
+    // eslint-disable-next-line global-require
+    const { loadEffectiveConfig } = require('./settings-loader.cjs');
+    const { settings } = loadEffectiveConfig();
+    const sup = settings?.supervision || {};
+    return {
+      maxRestarts: sup.maxRestarts ?? HARDENED_DEFAULTS.maxRestarts,
+      minUptimeMs: sup.minUptimeMs ?? HARDENED_DEFAULTS.minUptimeMs,
+      restartDelayMs: sup.restartDelayMs ?? HARDENED_DEFAULTS.restartDelayMs,
+      expBackoffRestartDelayMs: sup.expBackoffRestartDelayMs ?? HARDENED_DEFAULTS.expBackoffRestartDelayMs,
+      expBackoffMaxMs: sup.expBackoffMaxMs ?? HARDENED_DEFAULTS.expBackoffMaxMs,
+      maxMemory: sup.maxMemory ?? HARDENED_DEFAULTS.maxMemory,
+      killTimeoutMs: sup.killTimeoutMs ?? HARDENED_DEFAULTS.killTimeoutMs,
+      logDateFormat: sup.logDateFormat ?? HARDENED_DEFAULTS.logDateFormat,
+    };
+  } catch {
+    return { ...HARDENED_DEFAULTS };
+  }
+}
+
 function buildPm2StartArgs({ scriptPath, port, dataDir }) {
   const logs = {
     out: path.join(getLogsDir(), `${PM2_PROCESS_NAME}-out.log`),
     error: path.join(getLogsDir(), `${PM2_PROCESS_NAME}-error.log`),
   };
+  const supervision = getEffectiveSupervision();
   return [
     'start',
     scriptPath,
@@ -166,7 +196,7 @@ function buildPm2StartArgs({ scriptPath, port, dataDir }) {
     '--interpreter',
     'none',
     '--max-restarts',
-    String(HARDENED_DEFAULTS.maxRestarts),
+    String(supervision.maxRestarts),
     // NOTE: pm2 ≥ 6.0 dropped `--min-uptime` from the CLI surface — passing
     // it produces `error: unknown option --min-uptime` and aborts the
     // install. The flag still works inside an ecosystem file, but per the
@@ -176,18 +206,18 @@ function buildPm2StartArgs({ scriptPath, port, dataDir }) {
     // than only sub-`min_uptime` ones; the budget of 50 above is sized
     // accordingly.
     '--restart-delay',
-    String(HARDENED_DEFAULTS.restartDelayMs),
+    String(supervision.restartDelayMs),
     // Exponential backoff between successive failures: starts at 100ms,
     // doubles each crash, ramps to ~60s. Avoids hammering pm2 + the host
     // when the underlying issue is persistent.
     '--exp-backoff-restart-delay',
-    String(HARDENED_DEFAULTS.expBackoffRestartDelayMs),
+    String(supervision.expBackoffRestartDelayMs),
     '--max-memory-restart',
-    HARDENED_DEFAULTS.maxMemory,
+    supervision.maxMemory,
     '--kill-timeout',
-    String(HARDENED_DEFAULTS.killTimeoutMs),
+    String(supervision.killTimeoutMs),
     '--log-date-format',
-    HARDENED_DEFAULTS.logDateFormat,
+    supervision.logDateFormat,
     '--output',
     logs.out,
     '--error',
@@ -487,6 +517,7 @@ module.exports = {
     readConfig,
     writeConfig,
     buildPm2StartArgs,
+    getEffectiveSupervision,
     parsePort,
     parseDataDir,
   },
