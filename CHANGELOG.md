@@ -21,35 +21,54 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`autopg install` now auto-supervises the console UI under pm2** as a
   separate process named `autopg-ui`. The bundled SPA from v2.2.2 is now
   always available at `http://127.0.0.1:8433` after a fresh install — no
-  more "operator runs install, doesn't know the UI exists" gap. The UI
-  process binds 127.0.0.1 only, no auth, no TLS — same trust posture as
-  `autopg ui` on demand.
+  more "operator runs install, doesn't know the UI exists" gap.
+- **The console now requires a password** (Basic Auth). On first install
+  `autopg install` generates a 24-char admin password, prints it ONCE to
+  stdout, and stores the scrypt hash in `~/.autopg/admin.json` (mode
+  0600). Browsers prompt natively for the password on first visit and
+  cache it for the session.
 - **`autopg uninstall` removes both processes** (`autopg-ui` + `pgserve`)
-  cleanly. Symmetric tear-down avoids stranded UI pointing at a defunct
-  daemon.
+  cleanly.
 
 ### Added
 
+- **`autopg auth rotate-admin-password`** — generates a new admin
+  password, prints once, updates `admin.json`. Existing browser sessions
+  re-prompt on their next request.
+- **`autopg auth show-admin-path`** — prints the path to `admin.json`.
+- **`--with-ui` flag on `autopg install`** — UI-only path. Refreshes
+  (or registers) just the `autopg-ui` pm2 process without touching the
+  daemon. Useful for changing UI host/port post-install or for
+  retrofitting the UI onto a v2.2.2 host without restarting postgres.
+- **`--redeploy` flag on `autopg install`** — full redeploy: tears down
+  both pm2 processes and reinstalls fresh. Equivalent to
+  `autopg uninstall && autopg install` in one command.
 - **`--no-ui` flag on `autopg install`** — opt out of the UI process for
   CI / headless / server hosts that don't need a permanent localhost web
-  server. The bundled SPA is still on disk; operators can run `autopg ui`
-  on demand.
+  server.
 - **`--ui-port N` flag on `autopg install`** — override the default UI
-  port (8433). Useful when 8433 is taken or when running multiple autopg
-  instances per host.
+  port (8433).
+- **`--ui-host H` flag on `autopg install`** — override the default UI
+  bind host (127.0.0.1). Non-loopback values trigger a loud warning at
+  the UI server because the console has no TLS.
+- **`AUTOPG_DISABLE_AUTH=1` env var** — escape hatch for CI / smoke tests.
+  Only honored when the request comes from `127.0.0.1` / `::1`; cannot
+  accidentally expose an unauthenticated UI on a LAN.
 
 ### Notes
 
-- **Re-run `autopg install` on existing v2.2.2 hosts** to pick up the
-  UI auto-supervise. Idempotent — the daemon is left untouched, only
-  `autopg-ui` gets registered. `autopg uninstall && autopg install` is
-  not required.
-- **UI process memory cap is 256MB** (vs daemon's heavier cap). Restart
-  budget + exp-backoff are shared with the daemon's hardened defaults.
-- **Single-user dev tool boundary still applies.** If you want the UI on
-  a multi-user host, you accept that any local UID can curl
-  `http://127.0.0.1:8433` and read your settings file. Use `--no-ui`
-  for those hosts.
+- **Re-run `autopg install` on existing v2.2.2 hosts** to pick up the UI
+  auto-supervise + admin password. Idempotent — the daemon is left
+  untouched. The first re-run prints the new admin password.
+- **UI process memory cap is 256MB**. Restart budget + exp-backoff are
+  shared with the daemon's hardened defaults.
+- **Single-user dev tool boundary, with auth at the door.** Loopback
+  binding + Basic Auth + scrypt-hashed password covers the
+  "random-local-process-curl'ing-settings" case. Multi-user hosts where
+  intra-UID isolation matters should use `--no-ui`.
+- **Hash scheme**: scrypt (RFC 7914, Node built-in since v10.5),
+  N=16384, r=8, p=1, 32-byte derived key, 32-byte salt. No npm dep
+  added.
 
 ## [2.2.2] - 2026-05-03
 

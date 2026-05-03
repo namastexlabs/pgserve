@@ -80,11 +80,15 @@ function parseArgs(args) {
     } else if (a === '--no-open') {
       out.noOpen = true;
     } else if (a === '--host') {
-      // Defense: still bind 127.0.0.1 unless explicitly opted out via env.
-      // We accept --host for parity but ignore non-loopback values.
       const v = args[++i];
-      if (v === '127.0.0.1' || v === 'localhost') {
-        out.host = v;
+      out.host = v;
+      // Loud warning on non-loopback. The console has no auth, no TLS —
+      // exposing it on the LAN means any host on the network reads your
+      // settings file. Accepted (operator opted in) but flagged.
+      if (v !== '127.0.0.1' && v !== 'localhost') {
+        process.stderr.write(
+          `autopg ui: WARNING binding to ${v} (not loopback) — console has no auth, anyone reaching this address can read settings\n`,
+        );
       }
     }
   }
@@ -462,11 +466,65 @@ function serveFile(res, filePath) {
  * `bin/pgserve-wrapper.cjs` (used for shell-outs). `ctx.consoleRoot`
  * defaults to the repo's `console/` directory.
  */
+// Lazy-load the auth verifier to avoid a require cycle with cli-install.
+function getAuthVerifier() {
+  try {
+    return require('./cli-install.cjs').verifyAdminPassword;
+  } catch {
+    return () => false;
+  }
+}
+
+/**
+ * Basic Auth gate. Returns true if the request is authorized (or auth is
+ * disabled via env), false if the response has been sent (401). The handler
+ * MUST stop processing when this returns false.
+ */
+function requireAuth(req, res) {
+  // Escape hatch: AUTOPG_DISABLE_AUTH=1 only honored when bound loopback.
+  // The startServer loop binds to opts.host (default 127.0.0.1); this check
+  // refuses the bypass when the request's interface isn't loopback to keep
+  // it useful for CI/tests but useless for accidentally-exposed UIs.
+  if (process.env.AUTOPG_DISABLE_AUTH === '1') {
+    const remote = req.socket?.remoteAddress || '';
+    if (remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1') {
+      return true;
+    }
+  }
+
+  const verify = getAuthVerifier();
+  const header = req.headers['authorization'] || '';
+  const m = /^Basic\s+([A-Za-z0-9+/=]+)\s*$/.exec(header);
+  if (m) {
+    const decoded = Buffer.from(m[1], 'base64').toString('utf8');
+    const colonIdx = decoded.indexOf(':');
+    if (colonIdx >= 0) {
+      // Username is ignored — single-tenant tool. Only the password matters.
+      const pw = decoded.slice(colonIdx + 1);
+      if (verify(pw)) return true;
+    }
+  }
+
+  res.writeHead(401, {
+    'www-authenticate': 'Basic realm="autopg console"',
+    'content-type': 'text/plain; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  res.end(
+    'autopg console requires authentication.\n' +
+      'Username: any (e.g. "admin")\n' +
+      'Password: see the value printed by `autopg install` or run `autopg auth rotate-admin-password`.\n',
+  );
+  return false;
+}
+
 function createHandler(ctx = {}) {
   const consoleRoot = ctx.consoleRoot || resolveConsoleRoot();
   return function handler(req, res) {
     const url = req.url || '/';
     const method = req.method || 'GET';
+
+    if (!requireAuth(req, res)) return;
 
     if (url.startsWith('/api/')) {
       if (url === '/api/settings' && method === 'GET') return handleGetSettings(req, res);
