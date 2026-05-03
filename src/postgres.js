@@ -22,6 +22,7 @@ import crypto from 'crypto';
 import { loadEffectiveConfig } from './settings-loader.cjs';
 import { buildPostgresArgs } from './settings-pg-args.cjs';
 import { bootstrapAdmin, ADMIN_ROLE, readAdminSecret, getAdminSecretPath } from './auth/admin-bootstrap.js';
+import { migratePgHba } from './auth/pg-hba-template.js';
 
 /**
  * Get platform key for binary lookup (e.g., 'windows-x64', 'linux-x64', 'darwin-arm64')
@@ -693,6 +694,17 @@ export class PostgresManager extends EventEmitter {
       await this._bootstrapAdmin();
     }
 
+    // pg_hba.conf B1-fixed rewrite (Group 2). Replaces the initdb-default
+    // `local all all trust` + `local replication all trust` with a layout
+    // that has zero `trust` predicates: peer-auth admin (kernel-enforced
+    // UID match via pg_ident.conf) + scram-sha-256 catch-all. Idempotent
+    // on already-migrated hosts; the post-bootstrap admin pool keeps
+    // working because autopg_admin's password is stored as SCRAM and the
+    // pool re-authenticates on its next connection.
+    if (!skipBootstrap) {
+      await this._rewritePgHba();
+    }
+
     // For persistent mode, load existing databases into createdDatabases
     // This prevents "database already exists" errors when reusing data directories
     if (this.persistent) {
@@ -884,6 +896,36 @@ export class PostgresManager extends EventEmitter {
       { role: ADMIN_ROLE, secretPath: result.secretPath, status: result.status },
       'admin pool pivoted to autopg_admin'
     );
+    return result;
+  }
+
+  /**
+   * Run the pg_hba.conf B1-fixed rewrite (Group 2). Writes the canonical
+   * template + pg_ident.conf, then signals the postmaster to reload via
+   * SIGHUP so the new auth rules take effect immediately. Idempotent: a
+   * pre-migrated data dir short-circuits without touching disk.
+   *
+   * Caller invariant: `this.process` is the live postmaster from
+   * `_startPostgres()` and `this.adminPool` is already pivoted to
+   * `autopg_admin` (post-`_bootstrapAdmin`). Existing connections survive
+   * the SIGHUP; new connections honor the rewritten pg_hba.
+   */
+  async _rewritePgHba() {
+    const result = await migratePgHba(this.databaseDir, {
+      logger: this.logger,
+      signalReload: () => {
+        if (this.process && !this.process.killed) {
+          try {
+            this.process.kill('SIGHUP');
+          } catch (err) {
+            this.logger.warn(
+              { err: err.message },
+              'pg-hba: SIGHUP to postmaster failed (config still on disk)'
+            );
+          }
+        }
+      },
+    });
     return result;
   }
 

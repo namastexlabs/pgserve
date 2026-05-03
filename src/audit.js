@@ -40,6 +40,8 @@ export const AUDIT_EVENTS = Object.freeze({
   TCP_TOKEN_DENIED: 'tcp_token_denied',
   ADMIN_BOOTSTRAP_CREATED: 'admin_bootstrap_created',
   ADMIN_BOOTSTRAP_IDEMPOTENT_SKIP: 'admin_bootstrap_idempotent_skip',
+  PG_HBA_REWRITTEN: 'pg_hba_rewritten',
+  PG_HBA_IDEMPOTENT_SKIP: 'pg_hba_idempotent_skip',
 });
 
 const VALID_EVENTS = new Set(Object.values(AUDIT_EVENTS));

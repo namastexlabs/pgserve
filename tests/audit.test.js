@@ -73,6 +73,8 @@ test('all v2.0 event names are exported (incl. Group 6 tcp_*)', () => {
     'db_reaped_liveness',
     'db_reaped_ttl',
     'enforcement_kill_switch_used',
+    'pg_hba_idempotent_skip',
+    'pg_hba_rewritten',
     'tcp_token_denied',
     'tcp_token_issued',
     'tcp_token_used',
