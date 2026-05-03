@@ -44,3 +44,5 @@ test-data-*/
 
 # Vector benchmark fixtures (large generated files)
 tests/benchmarks/fixtures/
+
+console/dist/
