@@ -14,6 +14,43 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.3] - 2026-05-03
+
+### Changed
+
+- **`autopg install` now auto-supervises the console UI under pm2** as a
+  separate process named `autopg-ui`. The bundled SPA from v2.2.2 is now
+  always available at `http://127.0.0.1:8433` after a fresh install — no
+  more "operator runs install, doesn't know the UI exists" gap. The UI
+  process binds 127.0.0.1 only, no auth, no TLS — same trust posture as
+  `autopg ui` on demand.
+- **`autopg uninstall` removes both processes** (`autopg-ui` + `pgserve`)
+  cleanly. Symmetric tear-down avoids stranded UI pointing at a defunct
+  daemon.
+
+### Added
+
+- **`--no-ui` flag on `autopg install`** — opt out of the UI process for
+  CI / headless / server hosts that don't need a permanent localhost web
+  server. The bundled SPA is still on disk; operators can run `autopg ui`
+  on demand.
+- **`--ui-port N` flag on `autopg install`** — override the default UI
+  port (8433). Useful when 8433 is taken or when running multiple autopg
+  instances per host.
+
+### Notes
+
+- **Re-run `autopg install` on existing v2.2.2 hosts** to pick up the
+  UI auto-supervise. Idempotent — the daemon is left untouched, only
+  `autopg-ui` gets registered. `autopg uninstall && autopg install` is
+  not required.
+- **UI process memory cap is 256MB** (vs daemon's heavier cap). Restart
+  budget + exp-backoff are shared with the daemon's hardened defaults.
+- **Single-user dev tool boundary still applies.** If you want the UI on
+  a multi-user host, you accept that any local UID can curl
+  `http://127.0.0.1:8433` and read your settings file. Use `--no-ui`
+  for those hosts.
+
 ## [2.2.2] - 2026-05-03
 
 ### Changed

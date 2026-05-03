@@ -156,18 +156,73 @@ describe('pgserve install', () => {
   });
 
   test('second install is idempotent (no second pm2 start)', () => {
-    runCli(['install']);
+    // Since v2.2.3 `autopg install` registers TWO pm2 processes (pgserve +
+    // autopg-ui), so plain start-count comparisons are off. Use --no-ui to
+    // keep this test focused on daemon-side idempotency.
+    runCli(['install', '--no-ui']);
     const calls1 = readCallLog(stubBin.calls);
     const startCount1 = calls1.filter((c) => c[0] === 'start').length;
     expect(startCount1).toBe(1);
 
-    const result2 = runCli(['install']);
+    const result2 = runCli(['install', '--no-ui']);
     expect(result2.status).toBe(0);
     expect(result2.stdout).toContain('already installed');
 
     const calls2 = readCallLog(stubBin.calls);
     const startCount2 = calls2.filter((c) => c[0] === 'start').length;
     expect(startCount2).toBe(1); // no second start
+  });
+
+  test('autopg install registers BOTH pgserve and autopg-ui by default', () => {
+    runCli(['install']);
+    const calls = readCallLog(stubBin.calls);
+    const starts = calls.filter((c) => c[0] === 'start');
+    // One start each for pgserve + autopg-ui
+    expect(starts.length).toBe(2);
+    const names = starts.map((c) => {
+      const idx = c.indexOf('--name');
+      return idx >= 0 ? c[idx + 1] : null;
+    });
+    expect(names).toContain('pgserve');
+    expect(names).toContain('autopg-ui');
+  });
+
+  test('autopg install --no-ui skips the autopg-ui pm2 process', () => {
+    const result = runCli(['install', '--no-ui']);
+    expect(result.status).toBe(0);
+    const calls = readCallLog(stubBin.calls);
+    const starts = calls.filter((c) => c[0] === 'start');
+    expect(starts.length).toBe(1);
+    const idx = starts[0].indexOf('--name');
+    expect(starts[0][idx + 1]).toBe('pgserve');
+    // The CLI should advertise the opt-out path on stderr or stdout.
+    expect(result.stdout + result.stderr).toContain('skipping console install');
+  });
+
+  test('autopg install --ui-port overrides the UI bind port', () => {
+    runCli(['install', '--ui-port', '8500']);
+    const calls = readCallLog(stubBin.calls);
+    const uiStart = calls.find((c) => {
+      const i = c.indexOf('--name');
+      return i >= 0 && c[i + 1] === 'autopg-ui';
+    });
+    expect(uiStart).toBeDefined();
+    // Script-arg portion (after `--`) should include `--port 8500`.
+    const dashIdx = uiStart.indexOf('--');
+    const scriptArgs = uiStart.slice(dashIdx + 1);
+    expect(scriptArgs).toContain('--port');
+    const portIdx = scriptArgs.indexOf('--port');
+    expect(scriptArgs[portIdx + 1]).toBe('8500');
+  });
+
+  test('autopg uninstall tears down both pgserve and autopg-ui', () => {
+    runCli(['install']);
+    runCli(['uninstall']);
+    const calls = readCallLog(stubBin.calls);
+    const deletes = calls.filter((c) => c[0] === 'delete');
+    const deletedNames = deletes.map((c) => c[1]);
+    expect(deletedNames).toContain('pgserve');
+    expect(deletedNames).toContain('autopg-ui');
   });
 
   test('--port overrides default', () => {
