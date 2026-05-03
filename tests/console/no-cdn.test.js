@@ -40,6 +40,9 @@ beforeAll(async () => {
   serverProc = spawn('node', [AUTOPG_BIN, 'ui', '--no-open', '--port', String(port)], {
     cwd: REPO_ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Auth bypass — these tests don't exercise the auth path; a sibling
+    // test in cli-install (auth.test.js) covers the 401/Basic Auth gate.
+    env: { ...process.env, AUTOPG_DISABLE_AUTH: '1' },
   });
 
   // Wait for the listening line on stdout.

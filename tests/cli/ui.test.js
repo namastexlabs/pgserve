@@ -18,11 +18,16 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 let tmpHome;
 let originalAutopgDir;
+let originalDisableAuth;
 
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'autopg-ui-'));
   originalAutopgDir = process.env.AUTOPG_CONFIG_DIR;
+  originalDisableAuth = process.env.AUTOPG_DISABLE_AUTH;
   process.env.AUTOPG_CONFIG_DIR = tmpHome;
+  // Bypass Basic Auth — these tests exercise the API/static surface, not
+  // the auth gate. Auth-specific behavior is covered in tests/console/auth.test.js.
+  process.env.AUTOPG_DISABLE_AUTH = '1';
   // Strip env overrides so tests get default-source rows.
   delete process.env.AUTOPG_PORT;
   delete process.env.PGSERVE_PORT;
@@ -32,6 +37,8 @@ afterEach(() => {
   fs.rmSync(tmpHome, { recursive: true, force: true });
   if (originalAutopgDir === undefined) delete process.env.AUTOPG_CONFIG_DIR;
   else process.env.AUTOPG_CONFIG_DIR = originalAutopgDir;
+  if (originalDisableAuth === undefined) delete process.env.AUTOPG_DISABLE_AUTH;
+  else process.env.AUTOPG_DISABLE_AUTH = originalDisableAuth;
 });
 
 function freshUi() {

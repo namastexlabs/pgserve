@@ -22,12 +22,31 @@
 'use strict';
 
 const { spawnSync, execFileSync } = require('node:child_process');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
 const PM2_PROCESS_NAME = 'pgserve';
 const DEFAULT_PORT = 8432;
+
+// Console UI is auto-supervised under pm2 alongside the daemon since v2.2.3.
+// The bundled SPA (console/dist/) is served on this port; operator-facing
+// only, 127.0.0.1, no auth, no TLS — matches autopg's "single-user dev tool"
+// posture. Opt-out with `autopg install --no-ui` for headless/CI hosts.
+const UI_PM2_PROCESS_NAME = 'autopg-ui';
+const DEFAULT_UI_PORT = 8433;
+const DEFAULT_UI_HOST = '127.0.0.1';
+const UI_MAX_MEMORY = '256M';
+
+// Admin password file shape (~/.autopg/admin.json, mode 0600):
+//   { scheme: 'scrypt', salt: <b64>, hash: <b64>, createdAt, rotatedAt }
+// Generated on first `autopg install`; rotated via `autopg auth
+// rotate-admin-password`. cli-ui.cjs reads this via getAdminFilePath()
+// and gates Basic Auth against it.
+const ADMIN_FILE_NAME = 'admin.json';
+const SCRYPT_PARAMS = { N: 16384, r: 8, p: 1, dkLen: 32 };
+const ADMIN_PASSWORD_BYTES = 12; // 96 bits → ~24 hex chars; plenty for a localhost dev tool
 
 /**
  * Hardening defaults — tuned for production-grade elasticity, NOT
@@ -268,12 +287,247 @@ function ok(message) {
 }
 
 /**
- * `pgserve install [--port N] [--data PATH]`
+ * Resolve the autopg wrapper used to launch the UI under pm2. The wrapper
+ * lives next to `postgres-server.js` (same `bin/` dir).
+ */
+function getUiBinPath(scriptPath) {
+  return path.join(path.dirname(scriptPath), 'autopg-wrapper.cjs');
+}
+
+/**
+ * pm2 start args for the UI process. Smaller memory cap than the daemon
+ * (idle node http server, no postgres backend), shares the same restart
+ * budget + exp-backoff as pgserve.
+ */
+function buildUiPm2StartArgs({ uiBinPath, uiPort, uiHost }) {
+  const logs = {
+    out: path.join(getLogsDir(), `${UI_PM2_PROCESS_NAME}-out.log`),
+    error: path.join(getLogsDir(), `${UI_PM2_PROCESS_NAME}-error.log`),
+  };
+  const supervision = getEffectiveSupervision();
+  return [
+    'start',
+    uiBinPath,
+    '--name',
+    UI_PM2_PROCESS_NAME,
+    '--interpreter',
+    'none',
+    '--max-restarts',
+    String(supervision.maxRestarts),
+    '--restart-delay',
+    String(supervision.restartDelayMs),
+    '--exp-backoff-restart-delay',
+    String(supervision.expBackoffRestartDelayMs),
+    '--max-memory-restart',
+    UI_MAX_MEMORY,
+    '--kill-timeout',
+    String(supervision.killTimeoutMs),
+    '--log-date-format',
+    supervision.logDateFormat,
+    '--output',
+    logs.out,
+    '--error',
+    logs.error,
+    '--',
+    'ui',
+    '--no-open',
+    '--port',
+    String(uiPort),
+    '--host',
+    uiHost,
+  ];
+}
+
+/**
+ * Register `autopg-ui` under pm2. Soft-fails: if pm2 is missing, the bin
+ * is missing, or the spawn fails — log a note and return 0 anyway. The
+ * daemon is the load-bearing process; the UI is convenience.
+ */
+function cmdInstallUi(ctx, options = {}) {
+  if (!pm2IsAvailable()) {
+    note('pm2 not found; skipping UI install (run `autopg ui` on demand)');
+    return 0;
+  }
+
+  const uiBinPath = getUiBinPath(ctx.scriptPath);
+  if (!fs.existsSync(uiBinPath)) {
+    note(`UI bin not found at ${uiBinPath}; skipping UI install`);
+    return 0;
+  }
+
+  const uiPort = options.uiPort ?? DEFAULT_UI_PORT;
+  const uiHost = options.uiHost ?? DEFAULT_UI_HOST;
+  const refresh = options.refresh === true;
+
+  // If a UI process already exists: refresh-mode replaces it (pick up new
+  // host/port/etc); idempotent-mode keeps it. Default behavior is
+  // idempotent — operators who want to apply new flags pass --with-ui
+  // (which sets refresh=true) so the change takes effect without a
+  // separate uninstall step.
+  const existing = pm2GetProcess(UI_PM2_PROCESS_NAME);
+  if (existing && !refresh) {
+    ok(`UI already installed (pm2 process "${UI_PM2_PROCESS_NAME}", status=${existing.pm2_env?.status ?? 'unknown'})`);
+    return 0;
+  }
+  if (existing && refresh) {
+    spawnSync('pm2', ['delete', UI_PM2_PROCESS_NAME], { stdio: ['ignore', 'pipe', 'pipe'] });
+  }
+
+  ensureLogsDir();
+  const pm2Args = buildUiPm2StartArgs({ uiBinPath, uiPort, uiHost });
+  const result = spawnSync('pm2', pm2Args, { stdio: 'inherit' });
+  if (result.status !== 0) {
+    note(`UI install failed (exit ${result.status}); daemon is unaffected. Run \`autopg ui\` manually.`);
+    return 0;
+  }
+  ok(`UI ${refresh && existing ? 'refreshed' : 'installed'}: pm2 process "${UI_PM2_PROCESS_NAME}" on http://${uiHost}:${uiPort}`);
+  return 0;
+}
+
+function cmdUninstallUi() {
+  if (!pm2IsAvailable()) return 0;
+  // Always attempt the delete — `pm2 delete <name>` is idempotent and
+  // exits non-zero on a missing process, which is fine to swallow. This
+  // is more robust than a pre-existence check against `pm2 jlist`, which
+  // can lag the actual process state (or, in test stubs, return a
+  // partial registry).
+  const result = spawnSync('pm2', ['delete', UI_PM2_PROCESS_NAME], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.status === 0) {
+    ok(`UI uninstalled (pm2 process "${UI_PM2_PROCESS_NAME}" removed)`);
+  }
+  return 0;
+}
+
+// ─── Admin password (Basic Auth for `autopg ui`) ─────────────────────────
+
+function getAdminFilePath() {
+  return path.join(getConfigDir(), ADMIN_FILE_NAME);
+}
+
+function generateAdminPassword() {
+  // 12 bytes → 24 hex chars, grouped in 4-char chunks for human transcription:
+  // "7f3a-92c1-8ed4-1b6c-..." (no ambiguous chars beyond hex; matches the
+  // "really simple, don't reinvent" bar — operators copy-paste from a single
+  // stdout line into a browser dialog).
+  const raw = crypto.randomBytes(ADMIN_PASSWORD_BYTES).toString('hex');
+  return raw.match(/.{1,4}/g).join('-');
+}
+
+function hashAdminPassword(password, salt) {
+  // scrypt is RFC 7914 + built into Node since 10.5. No npm dep.
+  return crypto.scryptSync(password, salt, SCRYPT_PARAMS.dkLen, {
+    N: SCRYPT_PARAMS.N,
+    r: SCRYPT_PARAMS.r,
+    p: SCRYPT_PARAMS.p,
+  });
+}
+
+function writeAdminFile({ password, rotated = false }) {
+  const salt = crypto.randomBytes(32);
+  const hash = hashAdminPassword(password, salt);
+  const file = getAdminFilePath();
+  const now = new Date().toISOString();
+  const payload = {
+    scheme: 'scrypt',
+    params: SCRYPT_PARAMS,
+    salt: salt.toString('base64'),
+    hash: hash.toString('base64'),
+    createdAt: rotated ? readAdminFile()?.createdAt ?? now : now,
+    rotatedAt: rotated ? now : null,
+  };
+  ensureConfigDir();
+  // Atomic write: tmp + rename. mode 0600 enforced via fchmod after write.
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+  fs.chmodSync(file, 0o600);
+  return payload;
+}
+
+function readAdminFile() {
+  try {
+    const raw = fs.readFileSync(getAdminFilePath(), 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function ensureConfigDir() {
+  const dir = getConfigDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+}
+
+/**
+ * Verify a candidate password against the stored hash. Returns true on match.
+ * Used by cli-ui.cjs at every Basic Auth check. Constant-time comparison
+ * via crypto.timingSafeEqual.
+ */
+function verifyAdminPassword(candidate) {
+  const stored = readAdminFile();
+  if (!stored || stored.scheme !== 'scrypt') return false;
+  const salt = Buffer.from(stored.salt, 'base64');
+  const expected = Buffer.from(stored.hash, 'base64');
+  const params = stored.params || SCRYPT_PARAMS;
+  let actual;
+  try {
+    actual = crypto.scryptSync(candidate, salt, params.dkLen, {
+      N: params.N,
+      r: params.r,
+      p: params.p,
+    });
+  } catch {
+    return false;
+  }
+  if (actual.length !== expected.length) return false;
+  return crypto.timingSafeEqual(actual, expected);
+}
+
+function ensureAdminPassword({ rotate = false } = {}) {
+  const existing = readAdminFile();
+  if (existing && !rotate) return null;
+  const password = generateAdminPassword();
+  writeAdminFile({ password, rotated: !!existing });
+  return password;
+}
+
+function cmdAuthRotate() {
+  const password = ensureAdminPassword({ rotate: true });
+  if (!password) {
+    fail('admin password rotation produced no new password (unexpected)');
+  }
+  process.stdout.write(`pgserve: admin password rotated. New password (printed ONCE):\n\n  ${password}\n\n`);
+  process.stdout.write(`Saved hash to ${getAdminFilePath()} (mode 0600).\n`);
+  process.stdout.write(`Existing browser sessions will be re-prompted on their next request.\n`);
+  return 0;
+}
+
+function cmdAuthDispatch(args) {
+  const sub = args[0];
+  switch (sub) {
+    case 'rotate-admin-password':
+      return cmdAuthRotate();
+    case 'show-admin-path':
+      process.stdout.write(`${getAdminFilePath()}\n`);
+      return 0;
+    default:
+      fail(`pgserve auth: unknown subcommand "${sub ?? ''}". Try: rotate-admin-password | show-admin-path`);
+  }
+}
+
+/**
+ * `pgserve install [--port N] [--data PATH] [--no-ui] [--ui-port N]`
  *
  * Idempotent. When the process is already registered, prints a reuse line
  * and exits 0 without touching anything. Otherwise: writes `~/.pgserve/
  * config.json` (creating the dir if needed), then registers the process
  * under pm2 with the hardened defaults.
+ *
+ * Since v2.2.3: also auto-supervises the autopg console UI under pm2 as
+ * `autopg-ui` (default port 8433). Opt out via `--no-ui`. The UI is a thin
+ * http server bound to 127.0.0.1 — single-user dev tool, no auth, no TLS.
  *
  * `scriptPath` is the path to `bin/postgres-server.js` resolved by the
  * wrapper before this module is required (avoids re-resolving here).
@@ -286,14 +540,48 @@ function cmdInstall(args, ctx) {
   const port = parsePort(args) ?? readConfig()?.port ?? DEFAULT_PORT;
   const dataDir = parseDataDir(args) ?? readConfig()?.dataDir ?? getDataDir();
 
-  // Idempotent: already-registered = no-op success.
-  const existing = pm2GetProcess(PM2_PROCESS_NAME);
+  const noUi = args.includes('--no-ui');
+  const withUi = args.includes('--with-ui');
+  const redeploy = args.includes('--redeploy');
+  const uiPort = parseUiPort(args) ?? DEFAULT_UI_PORT;
+  const uiHost = parseUiHost(args) ?? DEFAULT_UI_HOST;
+
+  if (noUi && withUi) {
+    fail('--no-ui and --with-ui are mutually exclusive');
+  }
+
+  // --with-ui: UI-only path. Don't touch the daemon — register or refresh
+  // autopg-ui only. Useful for v2.2.2 → v2.2.3 upgrades where the daemon
+  // is fine and only the UI is missing, AND for changing UI host/port
+  // post-install without restarting postgres.
+  if (withUi) {
+    cmdInstallUi(ctx, { uiPort, uiHost, refresh: true });
+    return 0;
+  }
+
+  // --redeploy: full reset. Tear down both processes, then proceed with
+  // a fresh install. Equivalent to `autopg uninstall && autopg install`
+  // but in one verb.
+  if (redeploy) {
+    const had = pm2GetProcess(PM2_PROCESS_NAME);
+    if (had) {
+      spawnSync('pm2', ['delete', PM2_PROCESS_NAME], { stdio: ['ignore', 'pipe', 'pipe'] });
+    }
+    spawnSync('pm2', ['delete', UI_PM2_PROCESS_NAME], { stdio: ['ignore', 'pipe', 'pipe'] });
+    note('--redeploy: removed any existing pm2 processes; reinstalling fresh');
+  }
+
+  // Idempotent: already-registered = no-op success. Still reconcile the UI
+  // process so re-running `autopg install` after an upgrade picks up the UI
+  // even on hosts where the daemon was registered pre-v2.2.3.
+  const existing = redeploy ? null : pm2GetProcess(PM2_PROCESS_NAME);
   if (existing) {
     ok(`already installed (pm2 process "${PM2_PROCESS_NAME}", status=${existing.pm2_env?.status ?? 'unknown'})`);
     // Refresh config in case install was re-run with new flags — but
     // don't tear down the live process. Operators wanting a port change
-    // should `uninstall` then `install`.
+    // should `uninstall` then `install` (or pass --redeploy).
     writeConfig({ port, dataDir, registeredAt: readConfig()?.registeredAt ?? new Date().toISOString() });
+    if (!noUi) cmdInstallUi(ctx, { uiPort, uiHost });
     return 0;
   }
 
@@ -309,6 +597,25 @@ function cmdInstall(args, ctx) {
   writeConfig({ port, dataDir, registeredAt: new Date().toISOString() });
   ok(`installed: pm2 process "${PM2_PROCESS_NAME}" on port ${port} (data: ${dataDir})`);
   ok(`url: postgres://localhost:${port}/postgres`);
+
+  if (noUi) {
+    note('--no-ui set; skipping console install. Run `autopg ui` on demand.');
+  } else {
+    // Generate admin password BEFORE starting the UI process, so the UI
+    // server reads admin.json on first request without a race. Print
+    // ONCE — operator must copy now or run `autopg auth rotate-admin-
+    // password` to get a new one.
+    const newPassword = ensureAdminPassword();
+    if (newPassword) {
+      process.stdout.write('\n');
+      process.stdout.write(`  🔑 ADMIN PASSWORD (printed ONCE — saved hash at ${getAdminFilePath()}):\n`);
+      process.stdout.write(`     ${newPassword}\n`);
+      process.stdout.write('\n');
+      process.stdout.write('  Browser will prompt on first access. Rotate via:\n');
+      process.stdout.write('     autopg auth rotate-admin-password\n\n');
+    }
+    cmdInstallUi(ctx, { uiPort, uiHost, refresh: redeploy });
+  }
   return 0;
 }
 
@@ -320,9 +627,13 @@ function cmdInstall(args, ctx) {
  * downstream service still depends on the data.
  */
 function cmdUninstall() {
+  // Delete the daemon first — it's the load-bearing process and the order
+  // of "what existed at uninstall start" is determined by the daemon's
+  // pm2 registry, not the UI's. UI cleanup follows; soft-fails if absent.
   const existing = pm2GetProcess(PM2_PROCESS_NAME);
   if (!existing) {
     ok(`not registered under pm2 (nothing to uninstall)`);
+    cmdUninstallUi();
     return 0;
   }
   const result = spawnSync('pm2', ['delete', PM2_PROCESS_NAME], { stdio: 'inherit' });
@@ -330,6 +641,7 @@ function cmdUninstall() {
     fail(`pm2 delete failed (exit ${result.status})`);
   }
   ok(`uninstalled (pm2 process removed; data dir preserved at ${getDataDir()})`);
+  cmdUninstallUi();
   return 0;
 }
 
@@ -435,6 +747,25 @@ function parseDataDir(args) {
   return path.resolve(v);
 }
 
+function parseUiPort(args) {
+  const i = args.indexOf('--ui-port');
+  if (i < 0) return null;
+  const v = args[i + 1];
+  if (!v) fail('--ui-port requires a value');
+  const n = Number.parseInt(v, 10);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) fail(`invalid --ui-port "${v}"`);
+  return n;
+}
+
+function parseUiHost(args) {
+  const i = args.indexOf('--ui-host');
+  if (i < 0) return null;
+  const v = args[i + 1];
+  if (!v) fail('--ui-host requires a value');
+  // Pass through verbatim. cli-ui.cjs warns on non-loopback at bind time.
+  return v;
+}
+
 /**
  * One-shot migration check from `~/.pgserve/` → `~/.autopg/`. Runs once
  * per process at the top of dispatch() so every CLI entry point gets
@@ -510,6 +841,8 @@ function dispatch(subcommand, args, ctx) {
       const ui = require('./cli-ui.cjs');
       return ui.dispatch(args, { scriptPath: ctx.wrapperPath });
     }
+    case 'auth':
+      return cmdAuthDispatch(args);
     default:
       throw new Error(`pgserve: dispatch called with unknown subcommand "${subcommand}"`);
   }
@@ -518,6 +851,10 @@ function dispatch(subcommand, args, ctx) {
 module.exports = {
   // Public API for the wrapper.
   dispatch,
+  // Auth surface used by cli-ui.cjs.
+  verifyAdminPassword,
+  getAdminFilePath,
+  readAdminFile,
   // Test surface.
   _internals: {
     HARDENED_DEFAULTS,
@@ -533,5 +870,9 @@ module.exports = {
     getEffectiveSupervision,
     parsePort,
     parseDataDir,
+    generateAdminPassword,
+    hashAdminPassword,
+    writeAdminFile,
+    ensureAdminPassword,
   },
 };

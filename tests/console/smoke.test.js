@@ -243,10 +243,15 @@ describe('autopg ui server hands every console asset back', () => {
   let tmpHome;
   let originalAutopgDir;
 
+  let originalDisableAuth;
   beforeEach(() => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'autopg-console-smoke-'));
     originalAutopgDir = process.env.AUTOPG_CONFIG_DIR;
+    originalDisableAuth = process.env.AUTOPG_DISABLE_AUTH;
     process.env.AUTOPG_CONFIG_DIR = tmpHome;
+    // Bypass Basic Auth for this asset-shape test. Auth-specific behavior
+    // is covered separately.
+    process.env.AUTOPG_DISABLE_AUTH = '1';
     delete process.env.AUTOPG_PORT;
     delete process.env.PGSERVE_PORT;
   });
@@ -255,6 +260,8 @@ describe('autopg ui server hands every console asset back', () => {
     fs.rmSync(tmpHome, { recursive: true, force: true });
     if (originalAutopgDir === undefined) delete process.env.AUTOPG_CONFIG_DIR;
     else process.env.AUTOPG_CONFIG_DIR = originalAutopgDir;
+    if (originalDisableAuth === undefined) delete process.env.AUTOPG_DISABLE_AUTH;
+    else process.env.AUTOPG_DISABLE_AUTH = originalDisableAuth;
   });
 
   test('serves the index plus the bundled app.js + CSS files', async () => {
