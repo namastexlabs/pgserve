@@ -142,8 +142,25 @@ function listenWithFallback(server, host, preferredPort) {
  * via npm the `files` allowlist preserves the layout.
  */
 function resolveConsoleRoot() {
-  // src/ → repo root → console/
-  return path.resolve(__dirname, '..', 'console');
+  // After autopg-console-dist (v2.2.2): the SPA ships pre-bundled in
+  // console/dist/ instead of as flat .jsx files at console/. Prefer dist/;
+  // fall back to console/src/ for repo-checkout dev mode (where dist/ is
+  // gitignored and only built on demand).
+  const consoleParent = path.resolve(__dirname, '..', 'console');
+  const distRoot = path.join(consoleParent, 'dist');
+  if (fs.existsSync(distRoot)) return distRoot;
+
+  const srcRoot = path.join(consoleParent, 'src');
+  if (fs.existsSync(srcRoot)) {
+    process.stderr.write(
+      'autopg ui: running unbuilt sources from console/src/ — run `bun run console:build` for production behavior\n',
+    );
+    return srcRoot;
+  }
+
+  throw new Error(
+    'console assets not found: expected console/dist/ (run `bun run console:build`) or console/src/ (repo checkout)',
+  );
 }
 
 /**
