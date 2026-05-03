@@ -1,3 +1,13 @@
+## v2.2.x — Transparent Upgrade
+
+**Added:** `autopg upgrade` CLI verb — idempotent migration runner that reconciles port back to canonical 8432, flushes the binary cache against the pinned PG version, re-resolves the plpgsql `.so` path per database, refreshes `~/.autopg/<app>.env` files, signals consumers, and validates final health.
+
+**Added:** npm `postinstall` hook (`scripts/postinstall.cjs`) auto-runs `autopg upgrade --quiet` when an existing `~/.autopg/data/` is detected on `bun install`. Soft-fails so package install never breaks; manual `autopg upgrade` remains the explicit escape hatch.
+
+**Contract:** Users upgrading from pgserve@2.1.3 to autopg@2.2.x get transparent migration via the postinstall hook. Manual `autopg upgrade` remains as the explicit escape hatch for forced re-runs. Patches the upgrade-path hole left by autopg-v22 partial roll-out (binary moved to `~/.autopg/`, default port silently shifted to 9432, plpgsql extensions referenced stale `$libdir`).
+
+**Override:** Set `AUTOPG_SKIP_POSTINSTALL=1` to bypass the hook (CI / containers / install-only flows).
+
 # Changelog
 
 All notable changes to `pgserve` are documented here. The format follows

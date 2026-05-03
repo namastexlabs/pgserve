@@ -15,7 +15,8 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "SECURITY.md"
+    "SECURITY.md",
+    "scripts/"
   ],
   "scripts": {
     "bench": "bun tests/benchmarks/runner.js",
@@ -31,7 +32,8 @@
     "test:npx": "scripts/test-npx.sh",
     "test:bun-self-heal": "scripts/test-bun-self-heal.sh",
     "prepublishOnly": "npm run lint && npm run deadcode && npm run test:npx && npm run test:bun-self-heal",
-    "prepare": "husky"
+    "prepare": "husky",
+    "postinstall": "node scripts/postinstall.cjs"
   },
   "keywords": [
     "postgresql",

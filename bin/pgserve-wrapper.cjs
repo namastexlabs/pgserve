@@ -40,6 +40,7 @@ const __installSubcommands = new Set([
   // pm2 for restart). They don't need bun, so route them BEFORE the bun
   // probe — same rationale as the wave-1 install commands.
   'config',
+  'upgrade',
   'restart',
   'ui',
 ]);
