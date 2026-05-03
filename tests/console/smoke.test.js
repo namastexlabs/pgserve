@@ -27,7 +27,10 @@ import path from 'node:path';
 import vm from 'node:vm';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const CONSOLE_ROOT = path.join(REPO_ROOT, 'console');
+// Sources live under console/src/ since v2.2.2 (autopg-console-dist).
+// console/dist/ holds the bundled artifact and is gitignored; smoke tests
+// inspect the editable source tree.
+const CONSOLE_ROOT = path.join(REPO_ROOT, 'console', 'src');
 
 const REQUIRED_TOPLEVEL = [
   'index.html',
@@ -113,27 +116,34 @@ describe('console/ static layout', () => {
   });
 });
 
-describe('console/index.html wiring', () => {
+describe('console/src/index.html wiring (post-bundle, v2.2.2)', () => {
   const html = fs.readFileSync(path.join(CONSOLE_ROOT, 'index.html'), 'utf8');
 
-  test('loads api.js + app.jsx in order', () => {
-    const apiIdx = html.indexOf('api.js');
-    const appIdx = html.indexOf('app.jsx');
-    expect(apiIdx).toBeGreaterThan(-1);
-    expect(appIdx).toBeGreaterThan(apiIdx);
+  test('loads the bundled app.js as a single ES module entry', () => {
+    // After autopg-console-dist: console/src/index.html drops the flat-script
+    // layout and loads exactly one bundled module. main.jsx is the source
+    // entry; bun build emits app.js; index.html points at app.js (relative).
+    expect(html).toMatch(/<script[^>]+type=["']module["'][^>]+src=["'](\.\/)?app\.js["'][^>]*>/);
   });
 
-  test('loads every screen in <script> order', () => {
+  test('contains zero CDN script references', () => {
+    // The whole point of v2.2.2: no unpkg, no jsdelivr, no babel-standalone.
+    expect(html).not.toMatch(/unpkg\.com/);
+    expect(html).not.toMatch(/jsdelivr/);
+    expect(html).not.toMatch(/cdn\.babel/);
+    expect(html).not.toMatch(/babel\/standalone/);
+    expect(html).not.toMatch(/type=["']text\/babel["']/);
+  });
+
+  test('has no individual <script src="screens/...">  / <script src="*.jsx"> tags', () => {
+    // Every screen + flat-script source is now bundled into app.js.
+    // Lingering individual <script src=…> tags would mean the rewrite missed
+    // a row.
     for (const f of SCREEN_FILES) {
-      expect(html).toContain(`screens/${f}`);
+      expect(html).not.toContain(`screens/${f}`);
     }
-  });
-
-  test('uses pinned React + Babel CDN tags with integrity', () => {
-    expect(html).toContain('react@18.3.1');
-    expect(html).toContain('react-dom@18.3.1');
-    expect(html).toContain('@babel/standalone@7.29.0');
-    expect(html).toContain('integrity="sha384-');
+    expect(html).not.toMatch(/<script[^>]+src=["']api\.js["']/);
+    expect(html).not.toMatch(/<script[^>]+src=["']app\.jsx["']/);
   });
 });
 
@@ -247,7 +257,11 @@ describe('autopg ui server hands every console asset back', () => {
     else process.env.AUTOPG_CONFIG_DIR = originalAutopgDir;
   });
 
-  test('serves the index plus every JSX/asset', async () => {
+  test('serves the index plus the bundled app.js + CSS files', async () => {
+    // After v2.2.2 (autopg-console-dist): cli-ui.cjs prefers console/dist/
+    // over console/src/. The bundled artifacts are app.js + the two CSS files.
+    // Individual .jsx files are no longer served as static assets — they are
+    // bundled into app.js. This test asserts the bundled shape.
     const uiPath = path.join(REPO_ROOT, 'src', 'cli-ui.cjs');
     delete require.cache[uiPath];
     const ui = require(uiPath);
@@ -264,18 +278,17 @@ describe('autopg ui server hands every console asset back', () => {
       const indexHtml = await indexRes.text();
       expect(indexHtml).toContain('autopg · console');
 
-      // All top-level + screen assets resolve.
-      const assets = [
-        ...REQUIRED_TOPLEVEL,
-        ...SCREEN_FILES.map((f) => `screens/${f}`),
+      // The bundled assets that MUST resolve:
+      const expectAssets = [
+        { path: 'app.js', expectMime: /javascript/ },
+        { path: 'console.css', expectMime: /text\/css/ },
+        { path: 'colors_and_type.css', expectMime: /text\/css/ },
       ];
-      for (const a of assets) {
-        const r = await fetch(`${base}/${a}`);
+      for (const { path: p, expectMime } of expectAssets) {
+        const r = await fetch(`${base}/${p}`);
         expect(r.status).toBe(200);
         const ct = r.headers.get('content-type') || '';
-        if (a.endsWith('.css')) expect(ct).toMatch(/text\/css/);
-        if (a.endsWith('.html')) expect(ct).toMatch(/text\/html/);
-        if (a.endsWith('.jsx') || a.endsWith('.js')) expect(ct).toMatch(/javascript/);
+        expect(ct).toMatch(expectMime);
       }
     } finally {
       await close();
