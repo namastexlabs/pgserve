@@ -36,10 +36,10 @@ test('postinstall: fresh install (no data dir) exits 0 silently', () => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-test('upgrade orchestrator: dry-run lists 6 steps without executing', async () => {
+test('upgrade orchestrator: dry-run lists 9 steps without executing', async () => {
   const { upgrade, STEPS } = await import(path.join(__dirname, '..', '..', 'src', 'upgrade', 'index.js'));
-  expect(STEPS.length).toBe(6);
+  expect(STEPS.length).toBe(9);
   const r = await upgrade({ dryRun: true, quiet: true });
-  expect(r.results.length).toBe(6);
+  expect(r.results.length).toBe(9);
   expect(r.results.every((x) => x.status === 'DRY-RUN')).toBe(true);
 });
