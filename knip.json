@@ -4,12 +4,14 @@
     "src/index.js",
     "bin/postgres-server.js",
     "bin/pgserve-wrapper.cjs",
-    "src/upgrade/index.js"
+    "src/upgrade/index.js",
+    "console/src/main.jsx"
   ],
   "project": [
     "src/**/*.js",
     "bin/**/*.js",
-    "bin/**/*.cjs"
+    "bin/**/*.cjs",
+    "console/src/**/*.{js,jsx}"
   ],
   "ignore": [
     "tests/**",
@@ -22,7 +24,9 @@
     "make"
   ],
   "ignoreDependencies": [
-    "bun"
+    "bun",
+    "react",
+    "react-dom"
   ],
   "ignoreExportsUsedInFile": true
 }
