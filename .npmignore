@@ -1,0 +1,5 @@
+# Explicit exclusions on top of package.json#files allowlist.
+# console/src/ is editable source; only console/dist/ ships.
+# (npm auto-includes README files at any path level, so files allowlist alone
+#  isn't sufficient to exclude console/src/README.md.)
+console/src/
