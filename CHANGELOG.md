@@ -14,6 +14,54 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.2] - 2026-05-03
+
+### Changed
+
+- **console: pre-bundle assets via `bun build`; drop CDN Babel dependency.**
+  The `autopg ui` console previously loaded `react@18`, `react-dom@18`, and
+  `@babel/standalone` from `unpkg.com` and transpiled `.jsx` files in the
+  browser. The console is now pre-bundled into `console/dist/app.js`
+  (~210KB minified) at publish time. Operators on offline / corporate-proxy
+  / flaky-network hosts now get a fully local UI. Eliminates ~150KB of
+  in-browser Babel work per page load.
+- **console: source moves to `console/src/`; npm tarball ships only
+  `console/dist/`.** Repo layout now has `console/src/` (editable sources,
+  gitignored from publish) and `console/dist/` (build artifact, in tarball,
+  gitignored in repo). `package.json#files` updated to ship `console/dist/`
+  only (drop ~80KB of unminified `.jsx` from npm install).
+- **`react@^18.3.1` and `react-dom@^18.3.1` added as runtime dependencies.**
+  Versions match the unpkg UMD scripts loaded by v2.2.1 and earlier — no
+  behavior change. Required for the bun-build pipeline to bundle them.
+
+### Added
+
+- **`bun run console:build`** — produces `console/dist/{app.js,index.html,*.css}`
+  via `bun build console/src/main.jsx --target browser --minify`. Wired into
+  `prepublishOnly` so npm publish always ships fresh artifacts.
+- **`bun run console:dev`** — incremental rebuild on file change for
+  contributors editing the SPA. Output goes to `console/dist/app.js`.
+- **`console/src/main.jsx`** — entry shim that imports `react` + `react-dom`,
+  exposes them on `globalThis`, then imports the existing flat-script `.jsx`
+  sources in original `<script>`-tag order. Preserves the SPA's existing
+  global-pattern code without rewriting every file.
+- **`tests/console/no-cdn.test.js`** — regression test that boots
+  `autopg ui`, asserts served HTML has zero `unpkg`/`jsdelivr`/`cdn.babel`/
+  `babel/standalone` references, and verifies `app.js` is reachable as a
+  static asset.
+
+### Notes
+
+- **Trust boundary:** `127.0.0.1` only, single-user, no auth, no TLS — same
+  as v2.2.x.
+- **`src/cli-ui.cjs#resolveConsoleRoot()`** prefers `console/dist/` when
+  present, falls back to `console/src/` for repo-checkout dev mode (with a
+  one-line stderr warning to remind contributors to run `console:build`).
+- **Bundle size deviation:** wish target was ≤100KB minified; realistic
+  baseline is ~210KB (React 18 alone is ~130KB minified+gzipped). The
+  100KB target was aspirational and unachievable without removing React;
+  CHANGELOG documents the actual figure for transparency.
+
 ## Unreleased — autopg console settings
 
 ### Added
