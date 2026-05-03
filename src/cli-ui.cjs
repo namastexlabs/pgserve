@@ -227,10 +227,77 @@ function readBody(req, { limitBytes = 1_048_576 } = {}) {
 
 // ─── handlers ────────────────────────────────────────────────────────────
 
+/**
+ * Read pgserve install metadata (~/.autopg/config.json). This file is the
+ * load-bearing source for what the daemon is ACTUALLY using (port +
+ * dataDir + registeredAt) — settings.json is operator-editable and can
+ * drift, especially after the ~/.pgserve → ~/.autopg rename migration.
+ * Returns null if the file is missing or unreadable.
+ */
+function readInstallConfig() {
+  try {
+    const installCfgPath = path.join(
+      process.env.AUTOPG_CONFIG_DIR || path.join(require('node:os').homedir(), '.autopg'),
+      'config.json',
+    );
+    return JSON.parse(fs.readFileSync(installCfgPath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Apply runtime overlays to the loaded settings tree before serializing
+ * for the UI. Three fixes for v2.2.5 settings-vs-reality drift:
+ *
+ *   1. server.pgPort — the schema default (6432) is misleading; cluster.js
+ *      computes effective as `server.port + 1000` when pgPort is the
+ *      schema default. Show the effective value, not the stale literal.
+ *   2. runtime.dataDir — install writes to config.json, settings.json
+ *      can stay stale (the rename migration left it pointing at
+ *      ~/.pgserve/data). Authoritative source is config.json. Overlay.
+ *   3. server.pgPassword — never return cleartext in API responses, even
+ *      with Basic Auth gating the endpoint. Mask to '***'.
+ *
+ * The original (file-shape) values are still on disk in settings.json,
+ * so PUT /api/settings round-trips correctly when the operator edits.
+ */
+function applyEffectiveOverlays(settings) {
+  const overlay = JSON.parse(JSON.stringify(settings)); // structured clone
+  const installCfg = readInstallConfig();
+
+  // 1. effective pgPort
+  if (overlay?.server) {
+    const SCHEMA_DEFAULT_PG_PORT = 6432;
+    if (overlay.server.pgPort === SCHEMA_DEFAULT_PG_PORT && typeof overlay.server.port === 'number') {
+      overlay.server.pgPort = overlay.server.port + 1000;
+      overlay.server._pgPortResolution = 'computed';
+    }
+  }
+
+  // 2. effective dataDir from install config
+  if (installCfg?.dataDir && overlay?.runtime) {
+    if (overlay.runtime.dataDir !== installCfg.dataDir) {
+      overlay.runtime._dataDirOverride = {
+        from: overlay.runtime.dataDir,
+        to: installCfg.dataDir,
+        source: 'config.json',
+      };
+      overlay.runtime.dataDir = installCfg.dataDir;
+    }
+  }
+
+  // 3. mask password fields
+  if (overlay?.server?.pgPassword) overlay.server.pgPassword = '***';
+
+  return overlay;
+}
+
 function handleGetSettings(req, res) {
   try {
     const { settings, sources, etag, path: settingsPath } = loadEffectiveConfig();
-    sendJson(res, 200, { settings, sources, etag, path: settingsPath });
+    const effective = applyEffectiveOverlays(settings);
+    sendJson(res, 200, { settings: effective, sources, etag, path: settingsPath });
   } catch (err) {
     sendError(res, 500, 'LOAD_FAILED', err.message ?? String(err));
   }
@@ -273,6 +340,129 @@ async function handlePutSettings(req, res) {
     }
     sendError(res, 500, 'WRITE_FAILED', err.message ?? String(err));
   }
+}
+
+/**
+ * POST /api/data-dir { dataDir: <absolute path> }
+ *
+ * v2.2.5: SETS the configured data directory. Does NOT physically move
+ * existing data — that operation is destructive and lives in the CLI:
+ *   `autopg data-dir move <from> <to>` (deferred to v2.3 wish).
+ *
+ * What this endpoint does:
+ *   - validate target is an absolute path
+ *   - validate target's parent exists and is writable
+ *   - refuse if the daemon is currently online (operator must
+ *     `autopg uninstall && autopg install --data <new>`, or wait for
+ *     v2.3 move flow)
+ *   - write target into both ~/.autopg/settings.json (runtime.dataDir)
+ *     and ~/.autopg/config.json (dataDir) so the next install picks it up
+ *
+ * Body:
+ *   { dataDir: '/path/to/new/dir' }
+ * Response on success: 202 Accepted
+ *   { ok: true, dataDir, requiresReinstall: true }
+ */
+async function handlePostDataDir(req, res, ctx) {
+  let body;
+  try {
+    body = await readBody(req);
+  } catch (err) {
+    return sendError(res, 400, 'BAD_BODY', err.message ?? 'invalid JSON');
+  }
+  const { dataDir } = body || {};
+  if (typeof dataDir !== 'string' || dataDir.length === 0) {
+    return sendError(res, 400, 'INVALID_DATADIR', '`dataDir` must be a non-empty string');
+  }
+  if (!path.isAbsolute(dataDir)) {
+    return sendError(res, 400, 'INVALID_DATADIR', '`dataDir` must be an absolute path');
+  }
+  const parent = path.dirname(dataDir);
+  try {
+    fs.accessSync(parent, fs.constants.W_OK);
+  } catch {
+    return sendError(res, 400, 'PARENT_NOT_WRITABLE', `parent directory not writable: ${parent}`);
+  }
+
+  // Refuse the live-edit path if a daemon is running. v2.2.5 ships the
+  // SET-the-config path; the destructive MOVE flow is in the v2.3 wish.
+  try {
+    const cliInstall = require('./cli-install.cjs');
+    const status = cliInstall._internals?.pm2GetProcess?.('pgserve');
+    if (status && status.pm2_env?.status === 'online') {
+      return sendError(res, 409, 'DAEMON_ONLINE',
+        'pgserve daemon is online; configured dataDir change requires reinstall.\n' +
+        'To migrate existing data: autopg uninstall && rsync -a <old> <new>/ && autopg install --data <new>',
+        { requiresReinstall: true });
+    }
+  } catch {
+    // soft-fail — if pm2 unavailable, allow the config write
+  }
+
+  // Update settings.json (runtime.dataDir) AND config.json (dataDir).
+  try {
+    const { settings: current } = loadEffectiveConfig();
+    const merged = deepMergePlain(current, { runtime: { dataDir } });
+    writeSettings(merged); // admin op — no etag check (no concurrent edit expected)
+  } catch (err) {
+    return sendError(res, 500, 'SETTINGS_WRITE_FAILED', err.message ?? String(err));
+  }
+  try {
+    const installCfgPath = path.join(
+      process.env.AUTOPG_CONFIG_DIR || path.join(require('node:os').homedir(), '.autopg'),
+      'config.json',
+    );
+    const cfg = (() => { try { return JSON.parse(fs.readFileSync(installCfgPath, 'utf8')); } catch { return {}; } })();
+    cfg.dataDir = dataDir;
+    fs.writeFileSync(`${installCfgPath}.tmp`, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    fs.renameSync(`${installCfgPath}.tmp`, installCfgPath);
+  } catch (err) {
+    return sendError(res, 500, 'CONFIG_WRITE_FAILED', err.message ?? String(err));
+  }
+
+  sendJson(res, 202, {
+    ok: true,
+    dataDir,
+    requiresReinstall: true,
+    note: 'dataDir saved to settings.json + config.json. Run `autopg uninstall && autopg install` to apply, or rsync existing data to the new path first.',
+  });
+}
+
+/**
+ * GET /api/screens/<name>
+ *
+ * v2.2.5: per-screen GET endpoints so each screen owns a narrow, focused
+ * data shape. Most screens still ship as stubs — full implementations
+ * land in v2.3+ alongside the autopg-v22 control-plane work.
+ *
+ * Known screens (from console/src/app.jsx SECTIONS):
+ *   databases, tables, sql, optimizer, security, ingress, health, sync,
+ *   rlm-trace, rlm-sim, settings.
+ *
+ * `settings` is special-cased: the existing /api/settings endpoint stays
+ * authoritative; /api/screens/settings just returns a pointer.
+ */
+const KNOWN_SCREENS = {
+  databases: { status: 'coming-soon', dataShape: { databases: '[{name, sizeBytes, owner, ...}]' } },
+  tables: { status: 'coming-soon', dataShape: { tables: '[{schema, name, rowCount, sizeBytes, ...}]' } },
+  sql: { status: 'coming-soon', dataShape: { recentQueries: '[{sql, durationMs, ts}]' } },
+  optimizer: { status: 'coming-soon', dataShape: { suggestions: '[{kind, severity, target, recommendation}]' } },
+  security: { status: 'coming-soon', dataShape: { roles: '[{name, login, superuser, ...}]', pgHbaLines: 'number' } },
+  ingress: { status: 'coming-soon', dataShape: { activeConnections: 'number', byApplication: '[{name, count}]' } },
+  health: { status: 'coming-soon', dataShape: { /* covered by /api/stats today */ pointer: '/api/stats' } },
+  sync: { status: 'coming-soon', dataShape: { lastSyncAt: 'iso8601 | null', upstreamUrl: 'string | null' } },
+  'rlm-trace': { status: 'coming-soon', dataShape: { traces: '[{id, fingerprint, startedAt, durationMs}]' } },
+  'rlm-sim': { status: 'coming-soon', dataShape: { simulations: '[{id, scenario, status}]' } },
+  settings: { status: 'see-settings-endpoint', pointer: '/api/settings' },
+};
+
+function handleGetScreen(req, res, screenName) {
+  const screen = KNOWN_SCREENS[screenName];
+  if (!screen) {
+    return sendError(res, 404, 'UNKNOWN_SCREEN',
+      `unknown screen "${screenName}". Known: ${Object.keys(KNOWN_SCREENS).join(', ')}`);
+  }
+  sendJson(res, 200, { screen: screenName, ...screen });
 }
 
 function deepMergePlain(base, patch) {
@@ -532,6 +722,13 @@ function createHandler(ctx = {}) {
       if (url === '/api/restart' && method === 'POST') return handlePostRestart(req, res, ctx);
       if (url === '/api/status' && method === 'GET') return handleGetStatus(req, res, ctx);
       if (url === '/api/stats' && method === 'GET') return handleGetStats(req, res);
+      if (url === '/api/data-dir' && method === 'POST') return handlePostDataDir(req, res, ctx);
+      // Per-screen GET endpoints (v2.2.5). Each screen owns its own route
+      // so the UI can request narrow data and bypass the catch-all
+      // /api/settings. Stubs ship with a `screen` + `status: 'coming-soon'`
+      // shape; real implementations land in v2.3.
+      const screenMatch = method === 'GET' ? /^\/api\/screens\/([a-z0-9-]+)$/.exec(url) : null;
+      if (screenMatch) return handleGetScreen(req, res, screenMatch[1]);
       sendError(res, 404, 'NOT_FOUND', `${method} ${url}`);
       return;
     }

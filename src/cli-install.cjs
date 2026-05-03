@@ -874,5 +874,7 @@ module.exports = {
     hashAdminPassword,
     writeAdminFile,
     ensureAdminPassword,
+    pm2GetProcess,
+    pm2IsAvailable,
   },
 };

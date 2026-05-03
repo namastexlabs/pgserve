@@ -14,6 +14,84 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.5] - 2026-05-03
+
+### Fixed (settings-vs-reality drift surfaced via UI validation)
+
+- **`server.pgPort` no longer shows the schema's stale literal default.**
+  The schema in `src/settings-schema.cjs:65` still has `default: 6432`,
+  but cluster.js computes the upstream postgres port at runtime as
+  `server.port + 1000` (= 9432 when port=8432). `/api/settings` now
+  applies an `applyEffectiveOverlays` post-process step that returns the
+  computed effective port, with `_pgPortResolution: 'computed'` flagging
+  the override.
+- **`runtime.dataDir` no longer shows the stale `~/.pgserve/data` path
+  on installs migrated from v2.2.0/2.2.1.** Authoritative source for
+  daemon-launch dataDir is `~/.autopg/config.json` (written by
+  `autopg install`), not `~/.autopg/settings.json` (operator-editable,
+  drifts after migrations). `/api/settings` overlays the install
+  config's dataDir over settings.json's value, with `_dataDirOverride`
+  flagging the source for transparency.
+- **`server.pgPassword` no longer leaks in `/api/settings` responses.**
+  Even though the endpoint is gated by Basic Auth, returning cleartext
+  passwords in JSON is unnecessary surface. Masked to `'***'` in the
+  response. Storage on disk is unchanged; PUT round-trips still work.
+
+### Added
+
+- **`POST /api/data-dir`** — set the configured postgres data directory
+  from the UI. Validates absolute path + writable parent. Refuses with
+  409 `DAEMON_ONLINE` if pgserve is currently online (operator must
+  uninstall/install to change live dataDir; the destructive MOVE flow
+  with rsync is deferred to v2.3). On success: writes both
+  `settings.json` and `config.json` and returns
+  `{ ok: true, dataDir, requiresReinstall: true, note: '...' }`.
+- **`GET /api/screens/<name>`** — per-screen GET endpoints. 11 screens
+  registered (`databases`, `tables`, `sql`, `optimizer`, `security`,
+  `ingress`, `health`, `sync`, `rlm-trace`, `rlm-sim`, `settings`).
+  Most ship as stubs with `status: 'coming-soon'` + a `dataShape`
+  preview of the eventual JSON contract; the UI can wire each screen
+  against its own narrow endpoint instead of the catch-all
+  `/api/settings`. `settings` is special-cased to return a pointer
+  back to `/api/settings` (which stays authoritative for the full
+  schema tree).
+- **`pm2GetProcess` and `pm2IsAvailable` exported from `cli-install.cjs`**
+  via `_internals` so `cli-ui.cjs` can probe daemon state for the
+  data-dir endpoint's online-check.
+
+## [2.2.4] - 2026-05-03
+
+### Fixed
+
+- **Console SPA crashed at boot with `ReferenceError: React is not defined`**
+  in `pgserve@2.2.2` and `2.2.3`. The bundle-entry `main.jsx` did
+  `import React from 'react'; globalThis.React = React;` then `import
+  './app.jsx'` etc. — but ESM imports HOIST, so the assignment ran AFTER
+  every imported `.jsx` file had evaluated. The first `React.createElement`
+  call referenced an undefined global, the bundle threw, and `autopg ui`
+  served a blank page.
+- **Same issue surfaced for `ReactDOM is not defined`** (only `app.jsx`
+  uses `ReactDOM.createRoot`) and `useState is not defined` (4 files
+  using naked hooks: `useState`, `useEffect`, `useRef`, `useCallback`,
+  `useMemo`).
+
+Fix: drop the `globalThis` hack entirely. Each `.jsx` file now imports
+React directly via the standard ESM pattern:
+
+```js
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+```
+
+`app.jsx` additionally imports `import * as ReactDOM from 'react-dom/client'`.
+The legacy `const { useState, useEffect, useRef, useMemo } = React`
+destructure in `components.jsx` was removed (now redundant with the named
+imports). 16 source files touched; bundle behavior unchanged at runtime
+(same React + ReactDOM, just module-scoped instead of global).
+
+`console/src/main.jsx` is now a pure side-effect import list — no body
+code, no `globalThis` assignments. Avoids the ESM hoist pitfall by
+construction.
+
 ## [2.2.3] - 2026-05-03
 
 ### Changed
