@@ -484,7 +484,6 @@ function dispatch(subcommand, args, ctx) {
     case 'port':
       return cmdPort();
     case 'upgrade': {
-      const upgrade = require(require('node:path').join(__dirname, 'upgrade'));
       const opts = {
         quiet: args.includes('--quiet'),
         dryRun: args.includes('--dry-run'),
@@ -494,7 +493,9 @@ function dispatch(subcommand, args, ctx) {
           return (args[idx + 1] || '').split(',').filter(Boolean);
         })(),
       };
-      return upgrade.upgrade(opts).then((r) => process.exit(r.ok ? 0 : 1));
+      return import(require('node:path').join(__dirname, 'upgrade', 'index.js'))
+        .then((mod) => mod.upgrade(opts))
+        .then((r) => process.exit(r.ok ? 0 : 1));
     }
     case 'config': {
       const cfg = require('./cli-config.cjs');

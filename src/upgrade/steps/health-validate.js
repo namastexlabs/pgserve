@@ -1,25 +1,16 @@
 /**
- * Step 6 — Health validation.
- *
- * Final check: pg_isready on canonical port + per-DB plpgsql smoke test
- * (DO block runs without "could not access file" error).
- *
- * Returns FAIL if any check breaks. Caller (orchestrator) surfaces this
- * to operator.
+ * Step 6 — Health validation. pg_isready + per-DB plpgsql smoke test.
  */
 
-const { execSync } = require('node:child_process');
+import { execSync } from 'node:child_process';
 
+export const name = 'health-validate';
 const CANONICAL_PORT = 8432;
 const SYSTEM_DBS = new Set(['template0', 'template1']);
 
 function pgIsReady() {
-  try {
-    execSync(`pg_isready -h 127.0.0.1 -p ${CANONICAL_PORT}`, { stdio: 'pipe' });
-    return true;
-  } catch {
-    return false;
-  }
+  try { execSync(`pg_isready -h 127.0.0.1 -p ${CANONICAL_PORT}`, { stdio: 'pipe' }); return true; }
+  catch { return false; }
 }
 
 function listAllDbs() {
@@ -39,19 +30,15 @@ function plpgsqlSmoke(db) {
       { env, stdio: 'pipe' },
     );
     return true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
-async function plan() {
+export async function plan() {
   return `would check pg_isready on :${CANONICAL_PORT} + plpgsql smoke test in each user DB`;
 }
 
-async function execute({ warn }) {
-  if (!pgIsReady()) {
-    return { status: 'FAIL', detail: `pg_isready failed on port ${CANONICAL_PORT}` };
-  }
+export async function execute({ warn }) {
+  if (!pgIsReady()) return { status: 'FAIL', detail: `pg_isready failed on port ${CANONICAL_PORT}` };
   let dbs;
   try { dbs = listAllDbs(); } catch (err) { return { status: 'FAIL', detail: `cannot list DBs: ${err.message}` }; }
 
@@ -61,8 +48,6 @@ async function execute({ warn }) {
     if (plpgsqlSmoke(db)) pass++;
     else { fail++; warn(`[health-validate] plpgsql smoke FAIL in ${db}`); }
   }
-  if (fail > 0) return { status: 'FAIL', detail: `${pass}/${pass + fail} DBs healthy; ${fail} plpgsql smoke failure(s)` };
+  if (fail > 0) return { status: 'FAIL', detail: `${pass}/${pass + fail} DBs healthy; ${fail} failure(s)` };
   return { status: 'OK', detail: `pg_isready OK, plpgsql healthy in ${pass}/${pass} DBs` };
 }
-
-module.exports = { name: 'health-validate', plan, execute };

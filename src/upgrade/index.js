@@ -9,30 +9,28 @@
  *   5. consumer-signal   — touch ~/.autopg/state/upgrade.signal
  *   6. health-validate   — pg_isready + per-DB plpgsql smoke test
  *
- * Patches the upgrade-path hole left by autopg-v22 partial roll-out:
- * users running pgserve@2.1.x → autopg@2.2.x get transparent migration.
- *
+ * Patches the upgrade-path hole left by autopg-v22 partial roll-out.
  * See: .genie/wishes/autopg-upgrade-command/WISH.md
  */
 
-const { runStep } = require('./runner');
+import { runStep } from './runner.js';
+import * as portReconcile from './steps/port-reconcile.js';
+import * as binaryCacheFlush from './steps/binary-cache-flush.js';
+import * as plpgsqlResolve from './steps/plpgsql-resolve.js';
+import * as envRefresh from './steps/env-refresh.js';
+import * as consumerSignal from './steps/consumer-signal.js';
+import * as healthValidate from './steps/health-validate.js';
 
-const STEPS = [
-  { name: 'port-reconcile', module: './steps/port-reconcile' },
-  { name: 'binary-cache-flush', module: './steps/binary-cache-flush' },
-  { name: 'plpgsql-resolve', module: './steps/plpgsql-resolve' },
-  { name: 'env-refresh', module: './steps/env-refresh' },
-  { name: 'consumer-signal', module: './steps/consumer-signal' },
-  { name: 'health-validate', module: './steps/health-validate' },
+export const STEPS = [
+  { name: 'port-reconcile', impl: portReconcile },
+  { name: 'binary-cache-flush', impl: binaryCacheFlush },
+  { name: 'plpgsql-resolve', impl: plpgsqlResolve },
+  { name: 'env-refresh', impl: envRefresh },
+  { name: 'consumer-signal', impl: consumerSignal },
+  { name: 'health-validate', impl: healthValidate },
 ];
 
-/**
- * Run upgrade. Options:
- *   - quiet   (bool): suppress per-step OK lines; only print summary + warnings
- *   - dryRun  (bool): print planned actions without executing
- *   - skipSteps (string[]): step names to skip (testing / partial recovery)
- */
-async function upgrade(options = {}) {
+export async function upgrade(options = {}) {
   const { quiet = false, dryRun = false, skipSteps = [] } = options;
   const log = (msg) => { if (!quiet) process.stderr.write(`${msg}\n`); };
   const warn = (msg) => process.stderr.write(`${msg}\n`);
@@ -47,13 +45,11 @@ async function upgrade(options = {}) {
       continue;
     }
     try {
-      const stepImpl = require(step.module);
-      const result = await runStep(step.name, stepImpl, { dryRun, log, warn });
+      const result = await runStep(step.name, step.impl, { dryRun, log, warn });
       results.push(result);
     } catch (err) {
       warn(`[${step.name}] FAIL: ${err.message}`);
       results.push({ name: step.name, status: 'FAIL', detail: err.message });
-      // Continue — upgrade is best-effort across steps; user runs `autopg upgrade` again if needed
     }
   }
 
@@ -67,5 +63,3 @@ async function upgrade(options = {}) {
   }
   return { ok: true, results, summary };
 }
-
-module.exports = { upgrade, STEPS };

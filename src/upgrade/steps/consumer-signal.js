@@ -1,20 +1,14 @@
 /**
- * Step 5 — Consumer reconnect signal.
- *
- * Touches ~/.autopg/state/upgrade.signal with epoch timestamp + autopg
- * version. Consumers (omni-api, genie-serve) opt-in by watching this
- * file via fs.watch and respond with `pm2 restart self` (or equivalent
- * reconnect logic).
- *
- * Decoupled by design: autopg doesn't need to know which consumers
- * exist. Consumers add fs.watch in a follow-up — until then this step
- * is harmless.
- *
- * Idempotent: just rewrites the signal file with current timestamp.
+ * Step 5 — Consumer reconnect signal. Touches ~/.autopg/state/upgrade.signal
+ * with epoch + autopg version. Consumers (omni-api, genie-serve) opt-in via fs.watch.
  */
 
-const fs = require('node:fs');
-const path = require('node:path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export const name = 'consumer-signal';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function getAutopgRoot() {
   return process.env.AUTOPG_CONFIG_DIR || process.env.PGSERVE_CONFIG_DIR || `${process.env.HOME}/.autopg`;
@@ -24,17 +18,14 @@ function getAutopgVersion() {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf8'));
     return pkg.version || 'unknown';
-  } catch {
-    return 'unknown';
-  }
+  } catch { return 'unknown'; }
 }
 
-async function plan() {
-  const signalDir = path.join(getAutopgRoot(), 'state');
-  return `would write upgrade signal at ${path.join(signalDir, 'upgrade.signal')}`;
+export async function plan() {
+  return `would write upgrade signal at ${path.join(getAutopgRoot(), 'state', 'upgrade.signal')}`;
 }
 
-async function execute({ log }) {
+export async function execute() {
   const signalDir = path.join(getAutopgRoot(), 'state');
   fs.mkdirSync(signalDir, { recursive: true });
   const payload = {
@@ -47,5 +38,3 @@ async function execute({ log }) {
   fs.writeFileSync(signalPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o644 });
   return { status: 'OK', detail: `signal written at ${signalPath}` };
 }
-
-module.exports = { name: 'consumer-signal', plan, execute };

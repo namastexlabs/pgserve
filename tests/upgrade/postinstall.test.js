@@ -1,15 +1,16 @@
 /**
- * Smoke test: postinstall hook short-circuits on fresh install + skip flag.
- * Full integration tests (synthetic 2.1.3 → 2.2.x migration, no-op idempotence)
- * require pg fixtures and live in tests/integration/upgrade-*.test.js (TBD).
+ * Smoke tests: postinstall hook short-circuits on fresh install + skip flag.
+ * Full integration tests (synthetic 2.1.3 → 2.2.x) live in tests/integration/upgrade-*.test.js (TBD).
  */
 
-const { test, expect } = require('bun:test');
-const { spawnSync } = require('node:child_process');
-const path = require('node:path');
-const fs = require('node:fs');
-const os = require('node:os');
+import { test, expect } from 'bun:test';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const POSTINSTALL = path.join(__dirname, '..', '..', 'scripts', 'postinstall.cjs');
 
 test('postinstall: AUTOPG_SKIP_POSTINSTALL=1 short-circuits silently', () => {
@@ -24,8 +25,10 @@ test('postinstall: AUTOPG_SKIP_POSTINSTALL=1 short-circuits silently', () => {
 
 test('postinstall: fresh install (no data dir) exits 0 silently', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autopg-test-'));
+  const env = { ...process.env, AUTOPG_CONFIG_DIR: tmp };
+  delete env.AUTOPG_SKIP_POSTINSTALL;
   const r = spawnSync(process.execPath, [POSTINSTALL], {
-    env: { ...process.env, AUTOPG_CONFIG_DIR: tmp, AUTOPG_SKIP_POSTINSTALL: undefined },
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 5000,
   });
@@ -34,9 +37,8 @@ test('postinstall: fresh install (no data dir) exits 0 silently', () => {
 });
 
 test('upgrade orchestrator: dry-run lists 6 steps without executing', async () => {
-  const { upgrade, STEPS } = require(path.join(__dirname, '..', '..', 'src', 'upgrade'));
+  const { upgrade, STEPS } = await import(path.join(__dirname, '..', '..', 'src', 'upgrade', 'index.js'));
   expect(STEPS.length).toBe(6);
-  // dry-run should not throw and should report all steps
   const r = await upgrade({ dryRun: true, quiet: true });
   expect(r.results.length).toBe(6);
   expect(r.results.every((x) => x.status === 'DRY-RUN')).toBe(true);
