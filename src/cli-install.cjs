@@ -483,6 +483,19 @@ function dispatch(subcommand, args, ctx) {
       return cmdUrl();
     case 'port':
       return cmdPort();
+    case 'upgrade': {
+      const upgrade = require(require('node:path').join(__dirname, 'upgrade'));
+      const opts = {
+        quiet: args.includes('--quiet'),
+        dryRun: args.includes('--dry-run'),
+        skipSteps: (() => {
+          const idx = args.indexOf('--skip-steps');
+          if (idx === -1) return [];
+          return (args[idx + 1] || '').split(',').filter(Boolean);
+        })(),
+      };
+      return upgrade.upgrade(opts).then((r) => process.exit(r.ok ? 0 : 1));
+    }
     case 'config': {
       const cfg = require('./cli-config.cjs');
       const [sub, ...rest] = args;
