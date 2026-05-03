@@ -21,6 +21,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { loadEffectiveConfig } from './settings-loader.cjs';
 import { buildPostgresArgs } from './settings-pg-args.cjs';
+import { bootstrapAdmin, ADMIN_ROLE, readAdminSecret, getAdminSecretPath } from './auth/admin-bootstrap.js';
 
 /**
  * Get platform key for binary lookup (e.g., 'windows-x64', 'linux-x64', 'darwin-arm64')
@@ -658,8 +659,39 @@ export class PostgresManager extends EventEmitter {
     // Start PostgreSQL server
     await this._startPostgres();
 
+    // Pre-bootstrap pivot: on a host that already ran `autopg start` once,
+    // `postgres` is NOLOGIN and `autopg_admin` owns the secret on disk.
+    // Switch the connection identity BEFORE `_initAdminPool` so its
+    // postgres-as-fallback retry loop never has to negotiate the dead
+    // path. Skip via AUTOPG_SKIP_ADMIN_BOOTSTRAP=1.
+    const skipBootstrap = process.env.AUTOPG_SKIP_ADMIN_BOOTSTRAP === '1';
+    const adminSecretPath = getAdminSecretPath();
+    const hasExistingSecret = !skipBootstrap && fs.existsSync(adminSecretPath);
+    if (hasExistingSecret) {
+      try {
+        this.user = ADMIN_ROLE;
+        this.password = readAdminSecret(adminSecretPath);
+        this.adminSecretPath = adminSecretPath;
+      } catch (err) {
+        this.logger.warn(
+          { err: err.message, secretPath: adminSecretPath },
+          'admin.secret unreadable — falling back to postgres bootstrap path'
+        );
+      }
+    }
+
     // Initialize admin connection pool (for database creation operations)
     await this._initAdminPool();
+
+    // Admin SCRAM bootstrap — replaces postgres:postgres with autopg_admin +
+    // SCRAM secret at ~/.autopg/admin.secret (mode 0600). Idempotent. Runs
+    // after initdb (so the data dir + postgres role exist) and before any
+    // pg_hba rewrite (Group 2). On hosts that already ran bootstrap (secret
+    // file present), the pre-pivot above means we already authenticated as
+    // autopg_admin and the call below short-circuits to idempotent-skip.
+    if (!skipBootstrap) {
+      await this._bootstrapAdmin();
+    }
 
     // For persistent mode, load existing databases into createdDatabases
     // This prevents "database already exists" errors when reusing data directories
@@ -795,6 +827,64 @@ export class PostgresManager extends EventEmitter {
         await new Promise(resolve => setTimeout(resolve, baseDelay * attempt));
       }
     }
+  }
+
+  /**
+   * Run admin SCRAM bootstrap (Group 1, autopg-distribution-cutover wish)
+   * and pivot the admin pool from `postgres` to `autopg_admin`. Idempotent:
+   * the bootstrap module short-circuits if the secret file + role both
+   * already exist; the pivot is then a fresh pool against the same role.
+   *
+   * After this returns, all subsequent admin work runs as `autopg_admin`.
+   * The legacy `postgres` role is downgraded to a vanilla LOGIN role with
+   * no special attributes (NOSUPERUSER NOCREATEDB NOCREATEROLE …).
+   */
+  async _bootstrapAdmin() {
+    const result = await bootstrapAdmin(this.adminPool, { logger: this.logger });
+
+    const adminPassword = readAdminSecret(result.secretPath);
+
+    // Pivot the admin pool to authenticate as autopg_admin so the rest of
+    // start() (and subsequent CREATE DATABASE / extension work) runs under
+    // the new role. Old pool's connections survive until idle-timeout but
+    // are no longer the in-use handle.
+    const { SQL } = await import('bun');
+    const isWindows = process.platform === 'win32';
+    const previousPool = this.adminPool;
+    this.adminPool = new SQL({
+      hostname: '127.0.0.1',
+      port: this.port,
+      database: 'postgres',
+      username: ADMIN_ROLE,
+      password: adminPassword,
+      max: 5,
+      idleTimeout: 30,
+      connectionTimeout: isWindows ? 15 : 5,
+    });
+
+    // Verify pivot — if SCRAM auth or pg_hba isn't permissive enough we
+    // want to fail loudly here, not at first CREATE DATABASE.
+    try {
+      await this.adminPool`SELECT 1`;
+    } catch (err) {
+      // Roll back the pool reference so callers/teardown still see something
+      // usable; keep the original around.
+      this.adminPool = previousPool;
+      throw new Error(`admin-bootstrap pivot failed: ${err.message}`);
+    }
+
+    // Best-effort close of the previous (postgres-user) pool. Errors are
+    // not fatal — the new pool is already live.
+    try { await previousPool.close(); } catch { /* swallow */ }
+
+    this.user = ADMIN_ROLE;
+    this.password = adminPassword;
+    this.adminSecretPath = result.secretPath;
+    this.logger.info(
+      { role: ADMIN_ROLE, secretPath: result.secretPath, status: result.status },
+      'admin pool pivoted to autopg_admin'
+    );
+    return result;
   }
 
   /**

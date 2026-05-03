@@ -64,6 +64,8 @@ test('audit() creates the parent directory if missing', () => {
 
 test('all v2.0 event names are exported (incl. Group 6 tcp_*)', () => {
   expect(Object.values(AUDIT_EVENTS).sort()).toEqual([
+    'admin_bootstrap_created',
+    'admin_bootstrap_idempotent_skip',
     'connection_denied_fingerprint_mismatch',
     'connection_routed',
     'db_created',
