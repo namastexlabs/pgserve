@@ -109,13 +109,19 @@ async function putJson(url, etag, body) {
   return { status: res.status, body: json };
 }
 
+let originalDisableAuth;
+
 beforeEach(() => {
   tmpConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autopg-e2e-'));
   originalAutopgDir = process.env.AUTOPG_CONFIG_DIR;
   originalPgserveDir = process.env.PGSERVE_CONFIG_DIR;
   originalPort = process.env.AUTOPG_PORT;
   originalLegacyPort = process.env.PGSERVE_PORT;
+  originalDisableAuth = process.env.AUTOPG_DISABLE_AUTH;
   process.env.AUTOPG_CONFIG_DIR = tmpConfigDir;
+  // Bypass Basic Auth — this e2e test exercises the settings-flow shape,
+  // not the auth gate. Auth-specific behavior is in tests/console/auth.test.js.
+  process.env.AUTOPG_DISABLE_AUTH = '1';
   // Strip env overrides so the file is the source of truth.
   delete process.env.PGSERVE_CONFIG_DIR;
   delete process.env.AUTOPG_PORT;
@@ -140,6 +146,8 @@ afterEach(async () => {
   else process.env.AUTOPG_PORT = originalPort;
   if (originalLegacyPort === undefined) delete process.env.PGSERVE_PORT;
   else process.env.PGSERVE_PORT = originalLegacyPort;
+  if (originalDisableAuth === undefined) delete process.env.AUTOPG_DISABLE_AUTH;
+  else process.env.AUTOPG_DISABLE_AUTH = originalDisableAuth;
 });
 
 describe('e2e: settings flow (ui ↔ cli ↔ settings.json)', () => {
