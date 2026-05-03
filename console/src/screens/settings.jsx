@@ -1,3 +1,4 @@
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 /* screens/settings.jsx — autopg console Settings vertical.
  *
  * Renders the 6-section settings schema (server / runtime / sync / supervision

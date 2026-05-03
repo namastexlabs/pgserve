@@ -1,3 +1,5 @@
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import * as ReactDOM from 'react-dom/client';
 /* autopg · app shell · routing · theme.
  *
  * Adapted from the design system's pgserve-console kit. Differences vs the

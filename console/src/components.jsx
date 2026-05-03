@@ -1,5 +1,7 @@
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 /* pgserve · atoms */
-const { useState, useEffect, useRef, useMemo } = React;
+// Hooks imported directly at the top of this file (post v2.2.4 pre-bundle
+// migration). The legacy `const { ... } = React` destructure was here.
 
 const cx = (...c) => c.filter(Boolean).join(' ');
 

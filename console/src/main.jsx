@@ -1,8 +1,6 @@
-import React from 'react';
-import * as ReactDOM from 'react-dom/client';
-
-globalThis.React = React;
-globalThis.ReactDOM = ReactDOM;
+// Bundle entry. Imports the SPA files in their original <script>-tag order.
+// Each .jsx file imports React/ReactDOM directly via the standard ESM
+// pattern — bundler resolves them per-module. No globalThis hack needed.
 
 import './api.js';
 import './data.jsx';

@@ -1,3 +1,4 @@
+import React from 'react';
 /* pgserve · mocked daemon snapshot */
 
 const DBS = [
