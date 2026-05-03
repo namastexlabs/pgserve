@@ -29,6 +29,12 @@ jobs:
       - name: Run dead code check
         run: bun run deadcode
 
+      # Build the console SPA before tests. tests/console/no-cdn.test.js
+      # boots `autopg ui` and asserts the served bundle has zero CDN refs;
+      # console/dist/ is gitignored so CI must produce it on every run.
+      - name: Build console
+        run: bun run console:build
+
       # `bun test` defaults to a 5s per-test timeout. Daemon-control tests
       # spin up a real PostgresManager (initdb + postgres + WAL warmup),
       # which on a cold CI runner with no cached embedded-postgres binaries
@@ -61,6 +67,9 @@ jobs:
 
       - name: Install dependencies
         run: bun install
+
+      - name: Build console
+        run: bun run console:build
 
       - name: Run tests
         run: bun test --timeout 30000

@@ -27,7 +27,10 @@ import path from 'node:path';
 import vm from 'node:vm';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const CONSOLE_ROOT = path.join(REPO_ROOT, 'console');
+// Sources live under console/src/ since v2.2.2 (autopg-console-dist).
+// console/dist/ holds the bundled artifact and is gitignored; smoke tests
+// inspect the editable source tree.
+const CONSOLE_ROOT = path.join(REPO_ROOT, 'console', 'src');
 
 const REQUIRED_TOPLEVEL = [
   'index.html',
