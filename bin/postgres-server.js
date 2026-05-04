@@ -42,8 +42,27 @@ process.on('uncaughtException', (error) => {
 // with router flags.
 const args = process.argv.slice(2);
 
+// `serve` is the install.sh-side alias for the long-running daemon, and
+// the form pm2 invokes when Group 11 registers the binary as
+// `autopg serve`. Rewrite to `daemon` so the existing daemon dispatcher
+// owns the rest.
+if (args[0] === 'serve') args[0] = 'daemon';
+
 if (args[0] === 'daemon') {
   await runDaemonSubcommand(args.slice(1));
+}
+
+// `autopg install [--non-interactive]` — Group 11, autopg-distribution-cutover.
+// The bun-compiled binary is invoked by install.sh after tarball verification:
+//   exec "${dest}/autopg/autopg" install --non-interactive
+// Hand the rest of the CLI surface off to src/cli/install.js, which owns
+// pm2 register, ~/.local/bin symlink, rc-file PATH wiring, completions,
+// and first-run hooks. Stays before the classic `pgserve [options]` parser
+// so the install flags don't collide with the router.
+if (args[0] === 'install') {
+  const mod = await import('../src/cli/install.js');
+  const code = await mod.install(args.slice(1), {});
+  process.exit(typeof code === 'number' ? code : 0);
 }
 
 async function runDaemonSubcommand(daemonArgs) {
