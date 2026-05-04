@@ -1,0 +1,285 @@
+name: Sign + Attest Tarballs (autopg)
+
+# Group 8 of autopg-distribution-cutover — signs every tarball produced
+# by build-tarballs.yml with cosign + emits a SLSA L3 build-provenance
+# attestation per platform, then aggregates a top-level manifest.json
+# for Group 9 (CDN publish) to consume.
+#
+# Trigger: runs after build-tarballs.yml completes successfully on a tag
+# push (workflow_run), or on manual dispatch (workflow_dispatch) — also
+# usable as a callable workflow.
+#
+# Required GitHub Actions secrets:
+#   COSIGN_PRIVATE_KEY    full contents of cosign.key (paired with keys/cosign.pub)
+#   COSIGN_PASSWORD       password used during `cosign generate-key-pair`
+#
+# Outputs (uploaded as a single artifact `autopg-signed-bundle`):
+#   dist/autopg-<version>-<platform>.tar.gz
+#   dist/autopg-<version>-<platform>.tar.gz.sha256
+#   dist/autopg-<version>-<platform>.tar.gz.sig
+#   dist/autopg-<version>-<platform>.tar.gz.intoto.jsonl
+#   dist/manifest.json
+
+on:
+  workflow_run:
+    workflows: ["Build Tarballs (autopg)"]
+    types: [completed]
+    branches:
+      - main
+      - 'wish/**'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to sign (must match upstream build artifacts)'
+        required: true
+        type: string
+      run_id:
+        description: 'build-tarballs.yml run ID to download artifacts from'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to sign'
+        required: true
+        type: string
+      run_id:
+        description: 'upstream run id'
+        required: false
+        type: string
+    secrets:
+      COSIGN_PRIVATE_KEY:
+        required: true
+      COSIGN_PASSWORD:
+        required: true
+
+concurrency:
+  group: sign-attest-${{ github.ref }}-${{ inputs.version || github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write       # OIDC token for SLSA provenance
+  attestations: write   # actions/attest-build-provenance@v1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # sign — per-platform: cosign sign-blob + attest-build-provenance.
+  # ---------------------------------------------------------------------------
+  sign:
+    name: Sign ${{ matrix.platform }}
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux-x64-glibc
+          - linux-x64-musl
+          - linux-arm64
+          - darwin-x64
+          - darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${VERSION}"
+
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
+          path: dist
+          # Cross-workflow downloads need the run-id of the upstream
+          # build-tarballs job. workflow_run gives us this for free;
+          # workflow_dispatch / workflow_call accept it as input.
+          run-id: ${{ github.event.workflow_run.id || inputs.run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Verify outer SHA256 before signing
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          TARBALL="dist/autopg-${VERSION}-${PLATFORM}.tar.gz"
+          [[ -f "${TARBALL}" ]]        || { echo "::error::missing ${TARBALL}";        exit 1; }
+          [[ -f "${TARBALL}.sha256" ]] || { echo "::error::missing ${TARBALL}.sha256"; exit 1; }
+          RECORDED=$(awk '{print $1}' "${TARBALL}.sha256")
+          ACTUAL=$(sha256sum "${TARBALL}" | awk '{print $1}')
+          if [[ "${RECORDED}" != "${ACTUAL}" ]]; then
+            echo "::error::sha256 mismatch (recorded=${RECORDED} actual=${ACTUAL})"
+            exit 1
+          fi
+          echo "sha256 match: ${ACTUAL}  ${TARBALL}"
+
+      - name: cosign sign-blob
+        shell: bash
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD:    ${{ secrets.COSIGN_PASSWORD }}
+          VERSION:  ${{ steps.ver.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          TARBALL="dist/autopg-${VERSION}-${PLATFORM}.tar.gz"
+          SIG="${TARBALL}.sig"
+
+          cosign sign-blob \
+            --yes \
+            --key env://COSIGN_PRIVATE_KEY \
+            --output-signature "${SIG}" \
+            "${TARBALL}"
+
+          echo "::notice::signed ${TARBALL} -> ${SIG}"
+
+      - name: cosign verify-blob (self-check)
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          TARBALL="dist/autopg-${VERSION}-${PLATFORM}.tar.gz"
+          cosign verify-blob \
+            --key keys/cosign.pub \
+            --signature "${TARBALL}.sig" \
+            "${TARBALL}"
+
+      - name: Generate SLSA build provenance
+        id: attest
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz
+
+      - name: Stage provenance bundle next to tarball
+        shell: bash
+        env:
+          VERSION:  ${{ steps.ver.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+          BUNDLE:   ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          DEST="dist/autopg-${VERSION}-${PLATFORM}.tar.gz.intoto.jsonl"
+          if [[ -z "${BUNDLE}" || ! -f "${BUNDLE}" ]]; then
+            echo "::error::attest-build-provenance did not produce a bundle"
+            exit 1
+          fi
+          cp "${BUNDLE}" "${DEST}"
+          ls -la "${DEST}"
+          echo "::notice::provenance: ${DEST}"
+
+      - name: Upload signed bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: autopg-signed-${{ steps.ver.outputs.version }}-${{ matrix.platform }}
+          path: |
+            dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz
+            dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz.sha256
+            dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz.sig
+            dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz.intoto.jsonl
+          retention-days: 14
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # aggregate — merge per-platform metadata into manifest.json + verify all.
+  # ---------------------------------------------------------------------------
+  aggregate:
+    name: Aggregate manifest + verify all
+    runs-on: ubuntu-latest
+    needs: [sign]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all signed bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: autopg-signed-${{ steps.ver.outputs.version }}-*
+          merge-multiple: true
+          path: dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Install slsa-verifier
+        uses: slsa-framework/slsa-verifier/actions/installer@v2.6.0
+
+      - name: Aggregate manifest.json
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          bash scripts/aggregate-manifest.sh --version "${VERSION}"
+          cat dist/manifest.json
+
+      - name: Verify everything
+        shell: bash
+        env:
+          AUTOPG_SOURCE_URI: github.com/${{ github.repository }}
+        run: |
+          bash scripts/verify-published-artifacts.sh dist/
+
+      - name: Fail if any tarball lacks sig + provenance
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          MISSING=0
+          for f in dist/autopg-${VERSION}-*.tar.gz; do
+            for ext in sig intoto.jsonl sha256; do
+              if [[ ! -f "${f}.${ext}" ]]; then
+                echo "::error::missing ${f}.${ext}"
+                MISSING=$((MISSING + 1))
+              fi
+            done
+          done
+          if [[ "${MISSING}" -gt 0 ]]; then
+            echo "::error::${MISSING} required sibling files missing — block release"
+            exit 1
+          fi
+
+      - name: Upload aggregated bundle (handoff to Group 9)
+        uses: actions/upload-artifact@v4
+        with:
+          name: autopg-signed-bundle-${{ steps.ver.outputs.version }}
+          path: |
+            dist/autopg-${{ steps.ver.outputs.version }}-*.tar.gz
+            dist/autopg-${{ steps.ver.outputs.version }}-*.tar.gz.sha256
+            dist/autopg-${{ steps.ver.outputs.version }}-*.tar.gz.sig
+            dist/autopg-${{ steps.ver.outputs.version }}-*.tar.gz.intoto.jsonl
+            dist/manifest.json
+            keys/cosign.pub
+          retention-days: 30
+          if-no-files-found: error

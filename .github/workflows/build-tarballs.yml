@@ -80,10 +80,30 @@ jobs:
             scripts/build-binary.sh \
             scripts/fetch-postgres-bins.sh \
             scripts/assemble-tarball.sh \
-            tests/integration/tarball-smoke.sh
+            scripts/aggregate-manifest.sh \
+            scripts/verify-published-artifacts.sh \
+            tests/integration/tarball-smoke.sh \
+            tests/integration/sign-attest-smoke.sh
 
       - name: Run fixture smoke
         run: bash tests/integration/tarball-smoke.sh --fixture --platform ${{ matrix.platform }}
+
+  # ---------------------------------------------------------------------------
+  # Sign + Attest (fixture) — exercises Group 8's cosign + manifest +
+  # verify scripts using the test-only fixture keypair. Gates every PR.
+  # ---------------------------------------------------------------------------
+  sign-attest-smoke:
+    name: Sign + Attest (fixture)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+      - name: Run sign-attest fixture smoke
+        run: bash tests/integration/sign-attest-smoke.sh
 
   # ---------------------------------------------------------------------------
   # Build (real) — runs on tag pushes + dispatch. Builds + bundles real
