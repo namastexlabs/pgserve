@@ -1,29 +1,24 @@
 /**
- * pgserve daemon — singleton control-socket server (orchestrator).
+ * autopg/pgserve daemon — singleton PG lifecycle owner.
  *
- * One process per host. Listens on a well-known Unix socket
- * (`$XDG_RUNTIME_DIR/pgserve/control.sock`, fallback `/tmp/pgserve/control.sock`),
- * supervises a single PostgresManager instance, and proxies every accepted
- * client through to the underlying PG Unix socket.
+ * Post-cutover (autopg Group 4): the daemon no longer multiplexes wire
+ * traffic. PostgreSQL is reachable directly on its native Unix socket
+ * (per-app SCRAM credential delivered via ~/.autopg/<app>.env). The daemon
+ * exists to (a) own the PG process under a singleton PID lock, (b) provision
+ * the meta schema and admin client, and (c) install GC sweep triggers.
+ *
+ * What the daemon NO LONGER does (deleted with src/{router,protocol,
+ * pg-wire,daemon-control,daemon-tcp,sdk}.js):
+ *   - Bun.listen() control socket / TCP listener
+ *   - Per-connection state tracking + handshake watchdog
+ *   - StartupMessage parsing + database rewriting
+ *   - Token-authenticated TCP gateway
+ *   - libpq compat symlink (clients now point at PG's socket directly)
  *
  * Singleton enforcement uses a PID lock file (`pgserve.pid`) co-located with
- * the control socket. A second daemon invocation refuses with the live PID;
- * a stale lock (process gone) is cleaned up automatically on next boot.
- *
- * Module layout (split for AGENTS.md §8 1000-line discipline):
- *   - daemon.js (this file)   — class shell, lifecycle, lock, signal handlers,
- *     listener wiring, public exports.
- *   - daemon-control.js       — Unix accept hooks: handleSocketOpen/Data/Close/
- *     Error, processStartupMessage, resolveTenantDatabase (Group 2 + Group 4).
- *   - daemon-tcp.js           — Optional TCP accept hooks + token verify
- *     (Group 6).
- *   - daemon-shared.js        — flushPending helper shared by both paths.
- *
- * PR #24 invariants preserved:
- *   - `PostgresManager.start()` re-entry guard untouched.
- *   - `PostgresManager.stop()` nulls socketDir/databaseDir.
- *   - On abnormal daemon exit, the next boot's stale-pid cleanup unlinks
- *     the orphaned control socket *and* PID lock so we never leak either.
+ * the legacy control-socket dir. A second daemon invocation refuses with
+ * the live PID; a stale lock (process gone) is cleaned up automatically on
+ * next boot.
  */
 
 /* global Bun */
@@ -40,14 +35,11 @@ import {
   isFingerprintEnforcementDisabled,
   KILL_SWITCH_ENV,
 } from './tenancy.js';
-import { flushPending } from './daemon-shared.js';
-import { attachControlHandlers } from './daemon-control.js';
-import { attachTcpHandlers } from './daemon-tcp.js';
 import { installSweepTriggers } from './gc.js';
 
 /**
- * Resolve the directory that holds the daemon's control socket and pid lock.
- * `$XDG_RUNTIME_DIR/pgserve` when XDG is set (the systemd / freedesktop
+ * Resolve the directory that holds the daemon's PID lock and admin discovery
+ * file. `$XDG_RUNTIME_DIR/pgserve` when XDG is set (the systemd / freedesktop
  * convention), otherwise `/tmp/pgserve` as the documented fallback.
  */
 export function resolveControlSocketDir() {
@@ -64,15 +56,9 @@ export function resolvePidLockPath(dir = resolveControlSocketDir()) {
   return path.join(dir, 'pgserve.pid');
 }
 
-/**
- * libpq compat path. When users say `psql -h $XDG_RUNTIME_DIR/pgserve`,
- * libpq looks for `<host>/.s.PGSQL.<port>` with port defaulting to 5432.
- * The daemon binds `control.sock` (per wish §Group 2) and ALSO publishes
- * a `.s.PGSQL.<port>` symlink to it so off-the-shelf clients connect.
- */
-export function resolveLibpqCompatPath(dir = resolveControlSocketDir(), port = 5432) {
-  return path.join(dir, `.s.PGSQL.${port}`);
-}
+// `resolveLibpqCompatPath` was removed in the autopg cutover (the libpq
+// compat symlink it computed is no longer published — apps target PG's
+// native socket via `pgManager.getSocketPath()` directly).
 
 /**
  * Return true if a process with the given pid is alive (signal 0 trick).
@@ -94,14 +80,9 @@ export function isProcessAlive(pid) {
  * Returns `{ acquired: true }` on success. On an already-running peer,
  * returns `{ acquired: false, pid }` so the caller can render a clean
  * "already running, pid N" error and exit non-zero.
- *
- * Cleanup contract on failed acquisition is the caller's responsibility:
- * we never unlink the socket of a *live* peer.
  */
-export function acquirePidLock({ pidLockPath, socketPath, libpqCompatPath, logger }) {
+export function acquirePidLock({ pidLockPath, logger }) {
   ensureDir(path.dirname(pidLockPath));
-
-  const orphanPaths = [socketPath, libpqCompatPath].filter(Boolean);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -115,7 +96,6 @@ export function acquirePidLock({ pidLockPath, socketPath, libpqCompatPath, logge
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
 
-      // PID file exists. Read it and decide whether the owner is alive.
       let stalePid = null;
       try {
         const raw = fs.readFileSync(pidLockPath, 'utf8').trim();
@@ -128,9 +108,6 @@ export function acquirePidLock({ pidLockPath, socketPath, libpqCompatPath, logge
         return { acquired: false, pid: stalePid };
       }
 
-      // Stale lock — clean it up alongside any orphaned socket / symlink,
-      // then retry. The next attempt either succeeds or surfaces a real
-      // error.
       logger?.warn?.(
         { pidLockPath, stalePid },
         'Found stale daemon PID lock, cleaning up before retry',
@@ -140,17 +117,8 @@ export function acquirePidLock({ pidLockPath, socketPath, libpqCompatPath, logge
       } catch (e) {
         if (e.code !== 'ENOENT') throw e;
       }
-      for (const p of orphanPaths) {
-        try {
-          fs.unlinkSync(p);
-        } catch (e) {
-          if (e.code !== 'ENOENT') throw e;
-        }
-      }
-      // Loop and retry the open-exclusive.
     }
   }
-  // If we got here both attempts failed without throwing — should not happen.
   throw new Error('acquirePidLock: failed after stale-lock cleanup');
 }
 
@@ -183,8 +151,6 @@ export function stopDaemon({ controlSocketDir = resolveControlSocketDir(), timeo
 
   if (!isProcessAlive(pid)) {
     try { fs.unlinkSync(pidLockPath); } catch { /* swallow */ }
-    try { fs.unlinkSync(resolveControlSocketPath(controlSocketDir)); } catch { /* swallow */ }
-    try { fs.unlinkSync(resolveLibpqCompatPath(controlSocketDir)); } catch { /* swallow */ }
     return { stopped: false, reason: 'stale-pid', pid };
   }
 
@@ -194,7 +160,6 @@ export function stopDaemon({ controlSocketDir = resolveControlSocketDir(), timeo
     return { stopped: false, reason: 'signal-failed', pid, error: err.message };
   }
 
-  // Wait for the daemon to remove its pid file.
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!fs.existsSync(pidLockPath)) {
@@ -206,47 +171,34 @@ export function stopDaemon({ controlSocketDir = resolveControlSocketDir(), timeo
 }
 
 function sleepBlocking(ms) {
-  // Tiny blocking sleep used only by the CLI stop path. We avoid pulling in
-  // an async dep here; ten 50ms ticks across the 5s timeout is fine.
   const end = Date.now() + ms;
   while (Date.now() < end) { /* spin */ }
 }
 
 /**
- * The daemon. Owns one PostgresManager and one Bun.listen({unix}) server.
- * Accept-path methods (handleSocketOpen, handleTcpOpen, …) live in the
- * daemon-control.js / daemon-tcp.js modules and are mixed into the
- * prototype below.
+ * The daemon. Owns one PostgresManager and the singleton PID lock.
+ *
+ * After autopg cutover the daemon does NOT bind any client-facing socket.
+ * Apps connect to PG's native Unix socket (`pgManager.getSocketPath()`)
+ * with their per-app SCRAM credential.
  */
 export class PgserveDaemon extends EventEmitter {
   constructor(options = {}) {
     super();
     this.controlSocketDir = options.controlSocketDir || resolveControlSocketDir();
-    this.controlSocketPath = options.controlSocketPath || resolveControlSocketPath(this.controlSocketDir);
     this.pidLockPath = options.pidLockPath || resolvePidLockPath(this.controlSocketDir);
-    this.libpqPort = options.libpqPort || 5432;
-    this.libpqCompatPath = options.libpqCompatPath || resolveLibpqCompatPath(this.controlSocketDir, this.libpqPort);
     this.maxConnections = options.maxConnections || 1000;
     this.autoProvision = options.autoProvision !== false;
     this.baseDir = options.baseDir || null;
     this.useRam = options.useRam || false;
     this.auditLogFile = options.auditLogFile || null;
     this.auditTarget = options.auditTarget || null;
-    // Group 6: opt-in TCP binds. Each entry is `{host, port}`. Empty array
-    // (the default) means "Unix socket only" — no TCP port is bound.
-    this.tcpListens = normalizeTcpListens(options.tcpListens);
-    // Group 4: fingerprint enforcement is on by default; the kill-switch env
-    // var (`PGSERVE_DISABLE_FINGERPRINT_ENFORCEMENT=1`) flips it off and is
-    // surfaced as a deprecation warning at start(). Tests pass an explicit
-    // boolean override.
+    // Group 4 (autopg-v22): fingerprint enforcement is on by default; the
+    // kill-switch env var (`PGSERVE_DISABLE_FINGERPRINT_ENFORCEMENT=1`) flips
+    // it off and is surfaced as a deprecation warning at start().
     this.enforcementDisabled = options.enforcementDisabled !== undefined
       ? !!options.enforcementDisabled
       : isFingerprintEnforcementDisabled();
-    // Group 4 test seam: per-accept overrides for fingerprint derivation.
-    // Production omits this and the daemon walks `/proc/$pid/cwd` for real.
-    this._fingerprintAcceptOpts = typeof options._fingerprintAcceptOpts === 'function'
-      ? options._fingerprintAcceptOpts
-      : null;
     this.logger = options.logger || createLogger({ level: options.logLevel || 'info' });
 
     this.pgManager = options.pgManager || new PostgresManager({
@@ -269,14 +221,10 @@ export class PgserveDaemon extends EventEmitter {
       }
     });
 
-    this.server = null;
-    this.tcpServers = [];
-    this.connections = new Set();
-    this.socketState = new WeakMap();
     this._lockAcquired = false;
     this._signalHandlersInstalled = false;
     this._stopping = false;
-    // Lazy-initialised admin DB client (Group 6 token validation).
+    // Lazy-initialised admin DB client.
     this._adminClient = null;
     this.adminIdleTimeout = options.adminIdleTimeout ?? 300;
     this.adminQueryTimeoutMs = options.adminQueryTimeoutMs ?? 0;
@@ -284,78 +232,25 @@ export class PgserveDaemon extends EventEmitter {
     // Group 5: GC sweep handle ({stop, sweep}). Installed once the admin
     // client is up and torn down on stop().
     this._gcHandle = null;
-    // Group 5 test seam — opt out of the boot sweep / hourly timer when
-    // tests want to drive sweeps manually. Default: enabled.
     this.gcEnabled = options.gcEnabled !== false;
     this.gcOptions = options.gcOptions || {};
-
-    this.setMaxListeners(this.maxConnections + 10);
-
-    // Watchdog: forcibly close any control-socket peer that has been accepted
-    // but hasn't completed the postgres handshake within this deadline. The
-    // env override is for tests (or for operators who want a tighter bound).
-    // See pgserve#45: peers that connected and never sent a StartupMessage
-    // would pile up indefinitely in `state.handshakeComplete=false`,
-    // exhausting connection slots.
-    const envDeadline = Number.parseInt(process.env.PGSERVE_HANDSHAKE_DEADLINE_MS ?? '', 10);
-    this.handshakeDeadlineMs =
-      Number.isFinite(envDeadline) && envDeadline > 0
-        ? envDeadline
-        : (options.handshakeDeadlineMs ?? 30_000);
-    // Sweep cadence: small enough to bound the worst-case slop on top of the
-    // deadline (5s default → 30s deadline becomes "killed within 30-35s").
-    this.handshakeSweepIntervalMs = Math.max(
-      1000,
-      Math.min(this.handshakeDeadlineMs, options.handshakeSweepIntervalMs ?? 5_000),
-    );
-    this._handshakeWatchdogTimer = null;
   }
 
   /**
-   * Iterate accepted sockets and force-close any that have been waiting on
-   * the postgres handshake for longer than `handshakeDeadlineMs`. Exposed on
-   * the prototype so tests can drive it deterministically without waiting for
-   * the timer.
-   */
-  _sweepStuckHandshakes() {
-    const now = Date.now();
-    let closed = 0;
-    for (const socket of this.connections) {
-      const state = this.socketState.get(socket);
-      if (!state) continue;
-      if (state.handshakeComplete) continue;
-      const acceptedAt = state.acceptedAt ?? now;
-      if (now - acceptedAt < this.handshakeDeadlineMs) continue;
-      this.logger.warn?.(
-        { acceptedAt, ageMs: now - acceptedAt, deadlineMs: this.handshakeDeadlineMs, fingerprint: state.fingerprint },
-        'Closing peer stuck in pre-handshake state past deadline',
-      );
-      try { socket.end(); } catch { /* swallow */ }
-      this.connections.delete(socket);
-      this.socketState.delete(socket);
-      closed++;
-    }
-    return closed;
-  }
-
-  /**
-   * Start the daemon: acquire singleton lock, boot PG, bind control socket.
+   * Start the daemon: acquire singleton lock, boot PG, init admin schema.
    *
-   * Throws `DaemonAlreadyRunningError` (a tagged Error) when another live
-   * pgserve daemon already owns the lock, so the CLI can render the
+   * Throws an Error tagged `EALREADYRUNNING` when another live daemon
+   * already owns the lock, so the CLI can render the
    * "already running, pid N" message and `exit(1)` cleanly.
    */
   async start() {
-    if (this.server) {
+    if (this._lockAcquired) {
       this.logger.warn?.({ pid: process.pid }, 'PgserveDaemon.start called while already running');
       return this;
     }
 
     ensureDir(this.controlSocketDir);
 
-    // Group 4: surface the kill switch loudly at boot. The audit log records
-    // every bypassed connection later, but operators should see this in
-    // the daemon's own stderr the moment the process starts.
     if (this.enforcementDisabled) {
       const msg =
         `[pgserve] WARNING: ${KILL_SWITCH_ENV}=1 is set — fingerprint ` +
@@ -368,8 +263,6 @@ export class PgserveDaemon extends EventEmitter {
 
     const lock = acquirePidLock({
       pidLockPath: this.pidLockPath,
-      socketPath: this.controlSocketPath,
-      libpqCompatPath: this.libpqCompatPath,
       logger: this.logger,
     });
     if (!lock.acquired) {
@@ -380,12 +273,8 @@ export class PgserveDaemon extends EventEmitter {
     }
     this._lockAcquired = true;
 
-    // Best-effort: tighten directory perms in case the dir pre-existed
-    // from a previous user (e.g. /tmp/pgserve world-writable parent).
     try { fs.chmodSync(this.controlSocketDir, 0o700); } catch { /* swallow */ }
 
-    // Wire up audit-log destination + fingerprint FFI before any accept
-    // can fire, so handleSocketOpen always sees a primed environment.
     if (this.auditLogFile || this.auditTarget) {
       configureAudit({
         ...(this.auditLogFile ? { logFile: this.auditLogFile } : {}),
@@ -404,70 +293,10 @@ export class PgserveDaemon extends EventEmitter {
     try {
       await this.pgManager.start();
     } catch (err) {
-      // Release the lock before propagating — otherwise the operator has to
-      // manually unlink a pid file that points at a dead process.
       this.releaseLock();
       throw err;
     }
 
-    // Bind the control socket. Bun's listener writes to the path; we already
-    // unlinked any stale socket in acquirePidLock (or no socket existed).
-    const daemon = this;
-    try {
-      this.server = Bun.listen({
-        unix: this.controlSocketPath,
-        socket: {
-          data(socket, data) {
-            daemon.handleSocketData(socket, data);
-          },
-          open(socket) {
-            daemon.handleSocketOpen(socket);
-          },
-          close(socket) {
-            daemon.handleSocketClose(socket);
-          },
-          error(socket, error) {
-            daemon.handleSocketError(socket, error);
-          },
-          drain(socket) {
-            const state = daemon.socketState.get(socket);
-            if (!state) return;
-            if (state.pendingToClient) {
-              state.pendingToClient = flushPending(socket, state.pendingToClient);
-            }
-            if (!state.pendingToClient && state.pgSocket) {
-              state.pgSocket.resume();
-            }
-          },
-        },
-      });
-    } catch (err) {
-      try { await this.pgManager.stop(); } catch { /* swallow */ }
-      this.releaseLock();
-      throw err;
-    }
-
-    // Restrict the socket to the owning user (some kernels honour mode
-    // bits on AF_UNIX sockets, which makes our daemon refuse to even
-    // accept from other UIDs without further auth).
-    try { fs.chmodSync(this.controlSocketPath, 0o600); } catch { /* swallow */ }
-
-    // Publish a libpq-compatible symlink so off-the-shelf clients can use
-    // `psql -h <dir>` without knowing the `control.sock` name. Replace any
-    // stale symlink left by a previous abnormal exit.
-    try { fs.unlinkSync(this.libpqCompatPath); } catch (e) {
-      if (e.code !== 'ENOENT') {
-        this.logger.warn?.({ err: e.message }, 'Failed to unlink stale libpq compat symlink');
-      }
-    }
-    try {
-      fs.symlinkSync(path.basename(this.controlSocketPath), this.libpqCompatPath);
-    } catch (e) {
-      this.logger.warn?.({ err: e.message }, 'Failed to publish libpq compat symlink');
-    }
-
-    // Group 6: open the admin DB client + provision the meta schema before
-    // we accept any connection that might rely on it (TCP token verify).
     try {
       this._adminClient = await createAdminClient({
         socketDir: this.pgManager.socketDir,
@@ -484,21 +313,10 @@ export class PgserveDaemon extends EventEmitter {
     } catch (err) {
       this.logger.warn?.(
         { err: err?.message || String(err) },
-        'admin DB init failed — TCP listen will refuse connections',
+        'admin DB init failed — autopg admin operations will be unavailable',
       );
     }
 
-    // Group 6: bind any opt-in TCP listeners. Errors here are fatal — if the
-    // operator asked for TCP they want to know it failed (port collision,
-    // EACCES) rather than silently fall back to Unix-only.
-    for (const listen of this.tcpListens) {
-      const tcp = await this.bindTcpListener(listen);
-      this.tcpServers.push(tcp);
-    }
-
-    // Group 5: install GC sweep triggers (boot + hourly + on-connect sample)
-    // once the admin client is provisioned. Disabled when gcEnabled=false
-    // (tests that drive sweeps manually) or when no admin client exists.
     if (this.gcEnabled && this._adminClient) {
       try {
         this._gcHandle = installSweepTriggers(this, {
@@ -515,30 +333,17 @@ export class PgserveDaemon extends EventEmitter {
 
     this.logger.info?.({
       pid: process.pid,
-      controlSocketPath: this.controlSocketPath,
       pidLockPath: this.pidLockPath,
       pgPort: this.pgManager.port,
-      tcpListens: this.tcpListens,
-      handshakeDeadlineMs: this.handshakeDeadlineMs,
+      pgSocketDir: this.pgManager.socketDir,
     }, 'pgserve daemon listening');
-
-    // Arm the handshake watchdog. unref() so the timer doesn't keep the
-    // process alive on its own — the daemon already awaits the wrapper's
-    // forever-promise.
-    this._handshakeWatchdogTimer = setInterval(
-      () => this._sweepStuckHandshakes(),
-      this.handshakeSweepIntervalMs,
-    );
-    if (typeof this._handshakeWatchdogTimer.unref === 'function') {
-      this._handshakeWatchdogTimer.unref();
-    }
 
     this.emit('listening');
     return this;
   }
 
   /**
-   * Graceful shutdown: drain connections, stop PG, release lock + socket.
+   * Graceful shutdown: stop PG, release lock.
    */
   async stop() {
     if (this._stopping) return;
@@ -546,29 +351,6 @@ export class PgserveDaemon extends EventEmitter {
 
     this.logger.info?.('Stopping pgserve daemon');
 
-    if (this._handshakeWatchdogTimer) {
-      clearInterval(this._handshakeWatchdogTimer);
-      this._handshakeWatchdogTimer = null;
-    }
-
-    for (const socket of this.connections) {
-      try { socket.end(); } catch { /* swallow */ }
-    }
-    this.connections.clear();
-
-    if (this.server) {
-      try { this.server.stop(); } catch { /* swallow */ }
-      this.server = null;
-    }
-
-    // Group 6: tear down opt-in TCP listeners.
-    for (const tcp of this.tcpServers) {
-      try { tcp.stop(); } catch { /* swallow */ }
-    }
-    this.tcpServers = [];
-
-    // Group 5: detach GC triggers before the admin client closes so an
-    // in-flight sweep doesn't try to query a closed connection.
     if (this._gcHandle) {
       try { await this._gcHandle.stop(); } catch { /* swallow */ }
       this._gcHandle = null;
@@ -592,18 +374,6 @@ export class PgserveDaemon extends EventEmitter {
       this.logger.warn?.({ err: err.message }, 'PostgresManager.stop failed during daemon shutdown');
     }
 
-    try { fs.unlinkSync(this.libpqCompatPath); } catch (e) {
-      if (e.code !== 'ENOENT') {
-        this.logger.warn?.({ err: e.message }, 'Failed to unlink libpq compat symlink');
-      }
-    }
-
-    try { fs.unlinkSync(this.controlSocketPath); } catch (e) {
-      if (e.code !== 'ENOENT') {
-        this.logger.warn?.({ err: e.message }, 'Failed to unlink control socket');
-      }
-    }
-
     this.releaseLock();
     this._stopping = false;
     this.emit('stopped');
@@ -612,8 +382,6 @@ export class PgserveDaemon extends EventEmitter {
   releaseLock() {
     if (!this._lockAcquired) return;
     try {
-      // Only remove the lock if it still belongs to us. Defends against
-      // a fast restart loop where another daemon raced in.
       const raw = fs.readFileSync(this.pidLockPath, 'utf8').trim();
       const owner = parseInt(raw, 10);
       if (Number.isInteger(owner) && owner === process.pid) {
@@ -633,9 +401,6 @@ export class PgserveDaemon extends EventEmitter {
     const onSignal = async (sig) => {
       this.logger.info?.({ sig }, 'Received signal, draining daemon');
       try { await this.stop(); } catch { /* swallow */ }
-      // Re-raise so the OS reports the right exit status. Use the default
-      // disposition rather than process.exit(0): operators expect a
-      // SIGTERM-killed daemon to exit with the corresponding code.
       process.exit(0);
     };
     process.on('SIGTERM', onSignal);
@@ -645,58 +410,12 @@ export class PgserveDaemon extends EventEmitter {
 
   getStats() {
     return {
-      controlSocketPath: this.controlSocketPath,
       pidLockPath: this.pidLockPath,
-      activeConnections: this.connections.size,
       pgPort: this.pgManager.port,
+      pgSocketDir: this.pgManager.socketDir,
       postgres: this.pgManager.getStats(),
     };
   }
-}
-
-// Mix the accept-path handlers (Unix + TCP) into the prototype. Done at
-// module load so `new PgserveDaemon()` always has them — same observable
-// surface as the pre-split file.
-attachControlHandlers(PgserveDaemon);
-attachTcpHandlers(PgserveDaemon);
-
-/**
- * Normalise the `--listen` form. Accepts:
- *   - omitted / null / [] → no TCP listeners
- *   - "5432"              → bind 0.0.0.0:5432
- *   - ":5432"             → bind 0.0.0.0:5432
- *   - "127.0.0.1:5432"    → bind localhost only
- *   - array of any of the above
- *
- * Returns an array of `{host, port}` objects. Throws on garbage input.
- */
-export function normalizeTcpListens(listens) {
-  if (listens === undefined || listens === null) return [];
-  const arr = Array.isArray(listens) ? listens : [listens];
-  return arr.filter(Boolean).map(parseSingleListen);
-}
-
-function parseSingleListen(spec) {
-  if (typeof spec === 'object' && typeof spec.port === 'number') {
-    return { host: spec.host || '0.0.0.0', port: spec.port };
-  }
-  if (typeof spec !== 'string') {
-    throw new Error(`pgserve daemon --listen: bad spec ${JSON.stringify(spec)}`);
-  }
-  let s = spec.trim();
-  if (s.startsWith(':')) s = s.slice(1);
-  let host = '0.0.0.0';
-  let portText = s;
-  const lastColon = s.lastIndexOf(':');
-  if (lastColon !== -1) {
-    host = s.slice(0, lastColon);
-    portText = s.slice(lastColon + 1);
-  }
-  const port = parseInt(portText, 10);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`pgserve daemon --listen: invalid port "${spec}"`);
-  }
-  return { host: host || '0.0.0.0', port };
 }
 
 /**

@@ -33,7 +33,6 @@ import {
   PgserveDaemon,
   resolveControlSocketPath,
   resolvePidLockPath,
-  resolveLibpqCompatPath,
 } from '../src/daemon.js';
 import { _setPeerCredImpl, initFingerprintFfi } from '../src/fingerprint.js';
 import { configureAudit, AUDIT_EVENTS } from '../src/audit.js';
@@ -71,7 +70,6 @@ beforeAll(async () => {
     controlSocketDir,
     controlSocketPath: resolveControlSocketPath(controlSocketDir),
     pidLockPath: resolvePidLockPath(controlSocketDir),
-    libpqCompatPath: resolveLibpqCompatPath(controlSocketDir, 5432),
     auditLogFile: auditFile,
     auditTarget: 'file',
     pgPort: 16720,

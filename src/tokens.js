@@ -85,18 +85,7 @@ export function parseTcpAuth(applicationName) {
   return { fingerprint, token };
 }
 
-/**
- * Constant-time string compare. Bearer-token verification path uses this
- * after sha256 to avoid leaking length-mismatch via timing.
- *
- * @param {string} a
- * @param {string} b
- * @returns {boolean}
- */
-export function timingSafeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  if (a.length !== b.length) return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  return crypto.timingSafeEqual(bufA, bufB);
-}
+// `timingSafeEqual` was removed in the autopg cutover (Group 4). Its only
+// caller (`verifyToken` in src/control-db.js) was deleted with the TCP
+// bearer-token gateway. Reintroduce when Group 5 ships an authenticated
+// admin path that needs constant-time comparison.

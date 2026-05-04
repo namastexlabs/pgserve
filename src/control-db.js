@@ -26,8 +26,6 @@
  * (matches `pg.Client` / `pg.Pool` directly; trivial to wrap Bun.SQL).
  */
 
-import { timingSafeEqual } from './tokens.js';
-
 const REAPABLE_QUERY = `
   SELECT database_name, fingerprint, last_connection_at, liveness_pid, persist
   FROM pgserve_meta
@@ -76,48 +74,9 @@ export async function ensureMetaSchema(client) {
   `);
 }
 
-/**
- * Insert (or upsert) a row marking a freshly-created user DB.
- *
- * @param {{query: Function}} client
- * @param {object} row
- * @param {string} row.databaseName
- * @param {string} row.fingerprint
- * @param {number} row.peerUid
- * @param {string|null} [row.packageRealpath]
- * @param {number|null} [row.livenessPid]
- * @param {boolean} [row.persist]
- */
-export async function recordDbCreated(client, {
-  databaseName,
-  fingerprint,
-  peerUid,
-  packageRealpath = null,
-  livenessPid = null,
-  persist = false,
-}, opts = {}) {
-  if (!databaseName) throw new Error('recordDbCreated: databaseName required');
-  if (!fingerprint) throw new Error('recordDbCreated: fingerprint required');
-  if (typeof peerUid !== 'number') throw new Error('recordDbCreated: peerUid must be number');
-
-  await query(
-    client,
-    `
-    INSERT INTO pgserve_meta
-      (database_name, fingerprint, peer_uid, package_realpath, liveness_pid, persist)
-    VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT (database_name) DO UPDATE SET
-      fingerprint        = EXCLUDED.fingerprint,
-      peer_uid           = EXCLUDED.peer_uid,
-      package_realpath   = EXCLUDED.package_realpath,
-      liveness_pid       = EXCLUDED.liveness_pid,
-      persist            = EXCLUDED.persist,
-      last_connection_at = now()
-    `,
-    [databaseName, fingerprint, peerUid, packageRealpath, livenessPid, persist],
-    opts,
-  );
-}
+// `recordDbCreated` was removed in the autopg cutover (Group 4). Group 5's
+// `autopg create-app` will reintroduce a per-app analogue keyed off
+// autopg_apps.app_name rather than fingerprints.
 
 /**
  * Slide the connection window: bump last_connection_at and refresh
@@ -141,22 +100,9 @@ export async function touchLastConnection(client, { databaseName, livenessPid = 
   );
 }
 
-/**
- * Set the persist flag for a database (true = exempt from GC).
- *
- * @param {{query: Function}} client
- * @param {string} databaseName
- * @param {boolean} value
- */
-export async function markPersist(client, databaseName, value, opts = {}) {
-  if (!databaseName) throw new Error('markPersist: databaseName required');
-  await query(
-    client,
-    `UPDATE pgserve_meta SET persist = $2 WHERE database_name = $1`,
-    [databaseName, !!value],
-    opts,
-  );
-}
+// `markPersist` was removed in the autopg cutover (Group 4). Group 5's
+// `autopg persist <app>` will reintroduce the equivalent against
+// autopg_apps when the persist flag becomes part of the per-app contract.
 
 /**
  * Async iterator over candidate DBs for the GC sweep.
@@ -310,21 +256,7 @@ export async function revokeAllowedToken(client, tokenId) {
   return r.rowCount ?? r.rows?.length ?? 0;
 }
 
-/**
- * Verify a presented bearer-token hash against a fingerprint's allowed list.
- * Returns the matched token id (so audit events can attribute the connection)
- * plus the resolved database name on success, or null if the token is unknown.
- *
- * @param {{query: Function}} client
- * @param {{fingerprint: string, tokenHash: string}} args
- * @returns {Promise<{tokenId: string, databaseName: string} | null>}
- */
-export async function verifyToken(client, { fingerprint, tokenHash }, opts = {}) {
-  if (!fingerprint) throw new Error('verifyToken: fingerprint required');
-  if (!tokenHash) throw new Error('verifyToken: tokenHash required');
-  const row = await findRowByFingerprint(client, fingerprint, opts);
-  if (!row) return null;
-  const match = row.allowedTokens.find((t) => timingSafeEqual(t.hash, tokenHash));
-  if (!match) return null;
-  return { tokenId: match.id, databaseName: row.databaseName };
-}
+// `verifyToken` was removed in the autopg cutover (Group 4). The TCP
+// bearer-token gateway it served is gone (per-app SCRAM replaces it).
+// Group 5+ may reintroduce a token surface for HTTP/management APIs;
+// it will look different from the libpq-side hash check that lived here.

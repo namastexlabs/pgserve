@@ -41,7 +41,6 @@ describe('pgserve daemon — argv parser', () => {
     expect(help).toContain('--ram');
     expect(help).toContain('--log');
     expect(help).toContain('--no-provision');
-    expect(help).toContain('--listen');
     expect(help).toContain('--pgvector');
     expect(help).toContain('--max-connections');
     expect(help).toContain('--help');

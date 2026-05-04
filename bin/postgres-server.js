@@ -10,14 +10,11 @@
 import { fileURLToPath } from 'url';
 import path from 'path';
 import os from 'os';
-import { startMultiTenantServer } from '../src/index.js';
-import { startClusterServer } from '../src/cluster.js';
 import { loadEffectiveConfig as loadAutopgConfig } from '../src/settings-loader.cjs';
 import {
   PgserveDaemon,
   stopDaemon,
   resolveControlSocketDir,
-  resolveControlSocketPath,
 } from '../src/daemon.js';
 import { createAdminClient, readAdminDiscovery } from '../src/admin-client.js';
 import {
@@ -109,14 +106,14 @@ async function runDaemonSubcommand(daemonArgs) {
     process.exit(1);
   }
   const dir = resolveControlSocketDir();
+  const pgSocketPath = daemon.pgManager.getSocketPath() || '(TCP fallback)';
   console.log(`
-pgserve daemon — singleton mode
+pgserve daemon — singleton mode (post-cutover)
 
-  Control socket: ${resolveControlSocketPath(dir)}
   PID lock:       ${path.join(dir, 'pgserve.pid')}
-  PG socket:      ${daemon.pgManager.getSocketPath() || '(TCP fallback)'}
+  PG socket:      ${pgSocketPath}
 
-  Connect:        psql 'host=${dir} dbname=mydb'
+  Connect:        psql 'host=${daemon.pgManager.socketDir || dir} dbname=mydb'
 
   Press Ctrl+C or send SIGTERM to stop.
 `);
@@ -131,7 +128,6 @@ function parseDaemonArgs(daemonArgs) {
     useRam: false,
     logLevel: 'info',
     autoProvision: true,
-    tcpListens: [],
     enablePgvector: false,
     maxConnections: null,
   };
@@ -153,7 +149,10 @@ function parseDaemonArgs(daemonArgs) {
         opts.autoProvision = false;
         break;
       case '--listen':
-        opts.tcpListens.push(daemonArgs[++i]);
+        // Deprecated post-cutover — TCP gateway was deleted with the
+        // wrapper-proxy modules. Consume the argument to preserve flag
+        // shape but otherwise no-op so legacy callers don't crash.
+        i++;
         break;
       case '--pgvector':
         opts.enablePgvector = true;
@@ -175,7 +174,7 @@ function parseDaemonArgs(daemonArgs) {
       }
       case '--help':
         console.log(`
-pgserve daemon — singleton control-socket mode
+pgserve daemon — singleton mode (post-cutover)
 
 USAGE:
   pgserve daemon [options]
@@ -188,18 +187,15 @@ OPTIONS:
   --ram                  Use /dev/shm storage (Linux only)
   --log <level>          Log level: error|warn|info|debug (default: info)
   --no-provision         Disable auto-provisioning of databases
-  --listen [host:]port   Bind opt-in TCP listener (repeatable)
+  --listen [host:]port   (deprecated, ignored — TCP gateway removed in autopg cutover)
   --pgvector             Auto-enable pgvector extension on new databases
   --max-connections <n>  Override the postmaster's max_connections (default: 1000)
   --help                 Show this help
 
-The daemon binds $XDG_RUNTIME_DIR/pgserve/control.sock (fallback /tmp/pgserve/control.sock).
-A second invocation while the first is running exits with "already running".
-
-TCP peers (--listen) MUST authenticate via libpq application_name shaped
-"?fingerprint=<12hex>&token=<bearer>". Issue tokens with
-"pgserve daemon issue-token --fingerprint <hex>". Revoke with
-"pgserve daemon revoke-token <id>".
+The daemon owns the PostgreSQL backend under a singleton PID lock at
+$XDG_RUNTIME_DIR/pgserve/pgserve.pid (fallback /tmp/pgserve/pgserve.pid).
+Apps connect to PG's native Unix socket (printed at boot) using a per-app
+SCRAM credential delivered via ~/.autopg/<app>.env.
 `);
         process.exit(0);
         // falls through (unreachable)
@@ -572,137 +568,33 @@ pgserve - Embedded PostgreSQL Server
 `);
   }
 
-  try {
-    let server;
+  // autopg cutover (Group 4): the foreground multi-tenant + cluster
+  // routers were deleted along with the wrapper-proxy code path that
+  // caused issue #54. Use `pgserve daemon` (singleton mode) for the
+  // surviving entry point, or the `autopg` binary once the curl
+  // installer ships.
+  console.error(`
+pgserve foreground / cluster mode has been removed in the autopg
+distribution cutover. The wrapper-proxy code path that backed it
+(src/router.js, src/cluster.js, src/pg-wire.js, …) is gone — apps now
+connect directly to PostgreSQL using a per-app SCRAM credential
+delivered via ~/.autopg/<app>.env.
 
-    if (options.cluster) {
-      // Cluster mode - multi-core scaling
-      server = await startClusterServer({
-        port: options.port,
-        host: options.host,
-        baseDir: options.dataDir,
-        useRam: options.useRam,
-        logLevel: options.logLevel,
-        autoProvision: options.autoProvision,
-        workers: options.workers,
-        maxConnections: options.maxConnections,
-        enablePgvector: options.enablePgvector
-      });
+Migration path:
+  - For pm2-managed servers, run \`pgserve daemon\` (singleton mode).
+  - For new installs, use the curl-installed \`autopg\` binary:
+      curl -fsSL https://get.automagik.dev/autopg | bash
 
-      // Only primary process shows full startup message
-      if (server.workers) {
-        const stats = server.getStats();
-
-        console.log(`
-Cluster started successfully!
-
-  Endpoint:    postgresql://${options.host}:${options.port}/<database>
-  Mode:        ${memoryMode ? (options.useRam ? 'RAM (/dev/shm)' : 'Ephemeral (temp)') : 'Persistent'} (Cluster)
-  Workers:     ${stats.workers} processes
-  Data:        ${storageType}
-  Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
-  pgvector:    ${options.enablePgvector ? 'Enabled (auto-installed on new DBs)' : 'Disabled (use --pgvector to enable)'}
-
-Examples:
-  postgresql://${options.host}:${options.port}/myapp
-  postgresql://${options.host}:${options.port}/testdb
-
-Press Ctrl+C to stop
+(arguments parsed: ${JSON.stringify({
+    cluster: options.cluster,
+    port: options.port,
+    host: options.host,
+    dataDir: options.dataDir,
+    memoryMode,
+    storageType,
+  })})
 `);
-      }
-    } else {
-      // Single process mode
-      const router = await startMultiTenantServer({
-        port: options.port,
-        host: options.host,
-        baseDir: options.dataDir,
-        useRam: options.useRam,
-        logLevel: options.logLevel,
-        autoProvision: options.autoProvision,
-        syncTo: options.syncTo,
-        syncDatabases: options.syncDatabases,
-        maxConnections: options.maxConnections,
-        enablePgvector: options.enablePgvector
-      });
-
-      server = router;
-
-      // Build sync status string
-      const syncStatus = options.syncTo
-        ? `Enabled → ${options.syncTo.replace(/:[^:@]+@/, ':***@')}`
-        : 'Disabled';
-
-      console.log(`
-Server started successfully!
-
-  Endpoint:    postgresql://${options.host}:${options.port}/<database>
-  Mode:        ${memoryMode ? (options.useRam ? 'RAM (/dev/shm)' : 'Ephemeral (temp)') : 'Persistent'}
-  Data:        ${storageType}
-  PostgreSQL:  Port ${router.pgPort} (internal)
-  Auto-create: ${options.autoProvision ? 'Enabled' : 'Disabled'}
-  pgvector:    ${options.enablePgvector ? 'Enabled (auto-installed on new DBs)' : 'Disabled (use --pgvector to enable)'}
-  Sync:        ${syncStatus}${options.syncDatabases ? ` (${options.syncDatabases})` : ''}
-
-Examples:
-  postgresql://${options.host}:${options.port}/myapp
-  postgresql://${options.host}:${options.port}/testdb
-
-Press Ctrl+C to stop
-`);
-    }
-
-    // Start stats dashboard if requested (only for primary/single-process)
-    let dashboard = null;
-    if (options.showStats && !process.env.PGSERVE_WORKER) {
-      const { StatsDashboard } = await import('../src/stats-dashboard.js');
-      const { StatsCollector } = await import('../src/stats-collector.js');
-
-      // Create stats collector with appropriate sources
-      const collector = new StatsCollector({
-        router: options.cluster ? null : server,
-        pgManager: server.pgManager,
-        clusterStats: options.cluster ? () => server.getStats() : null,
-        logger: server.logger,
-        port: options.port,
-        host: options.host
-      });
-
-      dashboard = new StatsDashboard({
-        refreshInterval: 2000, // 2 second refresh for real-time feel
-        statsProvider: () => collector.collect()
-      });
-
-      dashboard.start();
-    }
-
-    // Graceful shutdown (only for primary/single-process, workers handle via IPC)
-    if (!process.env.PGSERVE_WORKER) {
-      const shutdown = async () => {
-        // Stop dashboard first to restore cursor
-        if (dashboard) {
-          dashboard.stop();
-        }
-        console.log('\nShutting down...');
-        try {
-          await server.stop();
-          console.log('Server stopped.');
-        } catch (err) {
-          console.error('Error during shutdown:', err.message);
-          // Still exit - best effort cleanup
-        }
-        process.exit(0);
-      };
-
-      process.on('SIGINT', shutdown);
-      process.on('SIGTERM', shutdown);
-    }
-
-    // Keep process alive
-    await new Promise(() => {});
-  } catch (error) {
-    console.error(`Failed to start server:`, error);
-    process.exit(1);
-  }
+  process.exit(2);
 }
 
 main();

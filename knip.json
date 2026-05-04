@@ -25,6 +25,7 @@
   ],
   "ignoreDependencies": [
     "bun",
+    "pg",
     "react",
     "react-dom"
   ],
