@@ -39,8 +39,15 @@ on:
       - 'scripts/build-binary.sh'
       - 'scripts/fetch-postgres-bins.sh'
       - 'scripts/assemble-tarball.sh'
+      - 'scripts/aggregate-manifest.sh'
+      - 'scripts/verify-published-artifacts.sh'
+      - 'scripts/cdn-publish.sh'
       - 'tests/integration/tarball-smoke.sh'
+      - 'tests/integration/sign-attest-smoke.sh'
+      - 'tests/integration/cdn-publish.sh'
       - '.github/workflows/build-tarballs.yml'
+      - '.github/workflows/sign-attest.yml'
+      - '.github/workflows/cdn-publish.yml'
 
 concurrency:
   group: build-tarballs-${{ github.ref }}
@@ -82,8 +89,10 @@ jobs:
             scripts/assemble-tarball.sh \
             scripts/aggregate-manifest.sh \
             scripts/verify-published-artifacts.sh \
+            scripts/cdn-publish.sh \
             tests/integration/tarball-smoke.sh \
-            tests/integration/sign-attest-smoke.sh
+            tests/integration/sign-attest-smoke.sh \
+            tests/integration/cdn-publish.sh
 
       - name: Run fixture smoke
         run: bash tests/integration/tarball-smoke.sh --fixture --platform ${{ matrix.platform }}
@@ -104,6 +113,20 @@ jobs:
           cosign-release: 'v2.4.1'
       - name: Run sign-attest fixture smoke
         run: bash tests/integration/sign-attest-smoke.sh
+
+  # ---------------------------------------------------------------------------
+  # CDN Publish (fixture) — exercises Group 9's cdn-publish.sh against a
+  # local-backend target dir simulating the cdn.automagik.dev layout.
+  # No AWS credentials needed; gates every PR that touches the publish path.
+  # ---------------------------------------------------------------------------
+  cdn-publish-smoke:
+    name: CDN Publish (fixture)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run cdn-publish fixture smoke
+        run: bash tests/integration/cdn-publish.sh --channel stable --version 2.260503.1
 
   # ---------------------------------------------------------------------------
   # Build (real) — runs on tag pushes + dispatch. Builds + bundles real
