@@ -29,6 +29,7 @@
     "console:dev": "bun build console/src/main.jsx --target browser --define 'process.env.NODE_ENV=\"development\"' --watch --outfile console/dist/app.js",
     "lint": "eslint src/ bin/",
     "lint:fix": "eslint src/ bin/ --fix",
+    "lint:audit": "bun run scripts/audit-redaction-lint.js",
     "deadcode": "knip",
     "test:npx": "scripts/test-npx.sh",
     "test:bun-self-heal": "scripts/test-bun-self-heal.sh",
