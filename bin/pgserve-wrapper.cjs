@@ -43,6 +43,13 @@ const __installSubcommands = new Set([
   'upgrade',
   'restart',
   'ui',
+  // autopg-distribution-cutover Group 5 — per-app provisioning verbs.
+  // These shell out to psql (no bun needed), so route them BEFORE the
+  // bun probe — same rationale as the wave-1 install commands.
+  'create-app',
+  'list',
+  'revoke',
+  'rotate',
 ]);
 if (__subcommand && __installSubcommands.has(__subcommand)) {
   const cli = require(path.join(__dirname, '..', 'src', 'cli-install.cjs'));

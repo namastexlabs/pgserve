@@ -42,6 +42,12 @@ export const AUDIT_EVENTS = Object.freeze({
   ADMIN_BOOTSTRAP_IDEMPOTENT_SKIP: 'admin_bootstrap_idempotent_skip',
   PG_HBA_REWRITTEN: 'pg_hba_rewritten',
   PG_HBA_IDEMPOTENT_SKIP: 'pg_hba_idempotent_skip',
+  AUTOPG_APP_CREATED: 'autopg_app_created',
+  AUTOPG_APP_IDEMPOTENT_SKIP: 'autopg_app_idempotent_skip',
+  AUTOPG_APP_REVOKED: 'autopg_app_revoked',
+  AUTOPG_APP_ROTATED: 'autopg_app_rotated',
+  AUTOPG_MANIFEST_VERIFIED: 'autopg_manifest_verified',
+  AUTOPG_MANIFEST_UNSAFE_BYPASS: 'autopg_manifest_unsafe_bypass',
 });
 
 const VALID_EVENTS = new Set(Object.values(AUDIT_EVENTS));

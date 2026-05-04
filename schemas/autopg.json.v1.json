@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cdn.automagik.dev/autopg/schemas/autopg.json.v1.json",
+  "title": "autopg manifest v1",
+  "description": "Light-touch v1 manifest declaring per-app provisioning needs. Per Group 5 (autopg-distribution-cutover wish): no `publisher_sig` field — signatures live in detached `autopg.json.sig` per cosign convention.",
+  "type": "object",
+  "required": ["app", "needs"],
+  "additionalProperties": false,
+  "properties": {
+    "app": {
+      "type": "string",
+      "description": "Per-app slug. Maps 1:1 to the SCRAM role + owned DB created by `autopg create-app`.",
+      "pattern": "^[a-z][a-z0-9_]{0,62}$"
+    },
+    "needs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database"],
+      "properties": {
+        "database": {
+          "type": "string",
+          "description": "Database name to create (or adopt via --adopt-existing-db).",
+          "pattern": "^[a-z][a-z0-9_]{0,62}$"
+        },
+        "extensions": {
+          "type": "array",
+          "description": "Extensions to CREATE EXTENSION inside the owned DB. Restricted to a known-safe allow-list at provisioning time.",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,62}$" },
+          "default": [],
+          "uniqueItems": true
+        },
+        "privileges": {
+          "type": "array",
+          "description": "Privilege predicates the per-app role gets on the owned DB. v1 accepts the symbolic strings 'crud' and 'ddl'; ownership of the DB is implicit.",
+          "items": { "type": "string", "enum": ["crud", "ddl"] },
+          "default": ["crud", "ddl"],
+          "uniqueItems": true
+        },
+        "quotas": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_connections": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Per-role connection cap (ALTER ROLE … CONNECTION LIMIT)."
+            }
+          }
+        }
+      }
+    }
+  }
+}

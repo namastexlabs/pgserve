@@ -62,10 +62,16 @@ test('audit() creates the parent directory if missing', () => {
   expect(fs.existsSync(nested)).toBe(true);
 });
 
-test('all v2.0 event names are exported (incl. Group 6 tcp_*)', () => {
+test('all v2.0 event names are exported (incl. Group 6 tcp_* + Group 5 autopg_*)', () => {
   expect(Object.values(AUDIT_EVENTS).sort()).toEqual([
     'admin_bootstrap_created',
     'admin_bootstrap_idempotent_skip',
+    'autopg_app_created',
+    'autopg_app_idempotent_skip',
+    'autopg_app_revoked',
+    'autopg_app_rotated',
+    'autopg_manifest_unsafe_bypass',
+    'autopg_manifest_verified',
     'connection_denied_fingerprint_mismatch',
     'connection_routed',
     'db_created',

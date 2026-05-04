@@ -510,6 +510,17 @@ function dispatch(subcommand, args, ctx) {
       const ui = require('./cli-ui.cjs');
       return ui.dispatch(args, { scriptPath: ctx.wrapperPath });
     }
+    case 'create-app':
+    case 'list':
+    case 'revoke':
+    case 'rotate': {
+      // autopg-distribution-cutover Group 5 — per-app provisioning verbs.
+      // The implementation lives in src/cli/autopg.js (ESM); load it via
+      // dynamic import so we don't drag ESM into this CJS file.
+      return import(require('node:path').join(__dirname, 'cli', 'autopg.js'))
+        .then((mod) => mod.dispatch(subcommand, args, {}))
+        .then((code) => process.exit(typeof code === 'number' ? code : 0));
+    }
     default:
       throw new Error(`pgserve: dispatch called with unknown subcommand "${subcommand}"`);
   }
