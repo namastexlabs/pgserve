@@ -396,6 +396,51 @@ class ClusterRouter extends EventEmitter {
 
 
 /**
+ * Build a `backendExited` handler for cluster mode supervision.
+ *
+ * On unexpected exit (`expected: false`) — postgres SIGKILL'd, OOM-killed,
+ * segfaulted, etc. — the handler:
+ *   1. logs the exit code,
+ *   2. flips `shuttingDown` so the cluster.on('exit') worker-respawn path
+ *      no longer forks new workers,
+ *   3. SIGTERMs every live worker (no point routing to a dead backend), and
+ *   4. calls `exitFn(1)` so the parent process supervisor restarts us.
+ *
+ * On clean exit (`expected: true`, initiated by `pgManager.stop()`) the
+ * handler is silent — the surrounding shutdown logic handles teardown.
+ *
+ * Exported so the supervision contract can be unit-tested without spawning
+ * a real cluster (the integration path is already covered for single-process
+ * mode by tests/wrapper-supervision.test.js).
+ *
+ * @param {object} args
+ * @param {Map<number, {kill: (sig: string) => void}>} args.workers - live worker registry
+ * @param {(v: boolean) => void} args.setShuttingDown - flips outer-scope `shuttingDown`
+ * @param {(code: number) => void} [args.exitFn=process.exit] - test seam
+ * @param {(...args: unknown[]) => void} [args.log=console.error] - test seam
+ * @returns {(info: {code: number, expected: boolean}) => void}
+ */
+export function buildClusterSupervisionHandler({
+  workers,
+  setShuttingDown,
+  exitFn = process.exit,
+  log = console.error,
+}) {
+  return ({ code, expected }) => {
+    if (expected) return;
+    log(
+      `[pgserve] postgres backend exited unexpectedly (code=${code}) in cluster mode; ` +
+      `the primary is exiting so a process supervisor can restart it.`
+    );
+    setShuttingDown(true);
+    for (const worker of workers.values()) {
+      try { worker.kill('SIGTERM'); } catch { /* worker may already be dead */ }
+    }
+    exitFn(1);
+  };
+}
+
+/**
  * Start pgserve in cluster mode
  */
 export async function startClusterServer(options = {}) {
@@ -425,8 +470,26 @@ export async function startClusterServer(options = {}) {
     console.log(`[pgserve] Embedded PostgreSQL started`);
     console.log(`[pgserve] Socket: ${pgSocketPath || `TCP port ${pgPort}`}`);
 
+    // Track shutdown state and worker registry early so the supervision
+    // handler below can tear workers down on unexpected backend death.
+    let shuttingDown = false;
     const workers = new Map();
     const workerStats = new Map(); // Track stats from each worker
+
+    // Supervision: when the embedded postgres backend dies unexpectedly
+    // (SIGKILL/OOM/segfault — anything other than a clean stop()), exit the
+    // primary so a process supervisor (`genie serve`, pm2, systemd) restarts
+    // the cluster cleanly with a fresh backend. Without this, the primary
+    // keeps running with a zombie pgManager (socketDir nulled) and every
+    // worker fails StartupMessages with "Connection closed" forever while
+    // pm2 reports the process as healthy. Mirrors the single-process fix
+    // in bin/postgres-server.js (PgserveDaemon.on('backendDiedUnexpectedly'))
+    // — pgserve#45 only protected the daemon path, not cluster mode (default
+    // on multi-core systems).
+    pgManager.on('backendExited', buildClusterSupervisionHandler({
+      workers,
+      setShuttingDown: (v) => { shuttingDown = v; },
+    }));
 
     // Fork workers with PostgreSQL connection info.
     //
@@ -456,8 +519,7 @@ export async function startClusterServer(options = {}) {
       workers.set(worker.id, worker);
     }
 
-    // Track shutdown state to prevent worker restart during shutdown
-    let shuttingDown = false;
+    // (shuttingDown declared above with the supervision handler.)
 
     // Restart dead workers (unless shutting down)
     cluster.on('exit', (worker, code, signal) => {
