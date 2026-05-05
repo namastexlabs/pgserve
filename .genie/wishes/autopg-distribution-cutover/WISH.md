@@ -39,12 +39,14 @@ Cut **autopg `2.260503.1`** as the rename + distribution-cutover ship line. Rena
 - cosign keyless OIDC sign + SLSA L3 attest per-platform tarball.
 - CDN publish to `cdn.automagik.dev/autopg/<channel>/<version>/<platform>/` (channels: `stable`, `beta`, `canary`).
 - `install.sh` ≤80 lines: `ensure_bun` + `ensure_pm2` + `ensure_curl` + download `manifest.json` + verify SHA256 + verify cosign sig + verify SLSA provenance + extract tarball + handoff to `autopg install --non-interactive`.
-- `autopg install` binary subcommand: pm2 register + `~/.local/bin/autopg` symlink + rc-file PATH edit + completions.
+- `autopg install` binary subcommand: pm2 register (process name `autopg-server`, paired with the existing `autopg-ui` for the two-process model) + `~/.local/bin/autopg` symlink + rc-file PATH edit + completions.
+- `autopg serve` dual-transport binding: the supervised process binds BOTH a Unix domain socket at the canonical path `$XDG_RUNTIME_DIR/autopg/.s.PGSQL.5432` AND TCP at the configured port (default 8432). Embedded Postgres handles this natively (`-k <socketDir> -h 0.0.0.0`); we just stabilize the canonical UDS path under `$XDG_RUNTIME_DIR/autopg/` (or `/tmp/autopg/` fallback) so consumers can probe a fixed location regardless of the postmaster's ephemeral pid-stamped working dir.
+- `autopg serve` discovery file: writes `<canonical-socket-dir>/admin.json` with `{ socketDir, port, pid }` matching pgserve@2.x daemon-mode `admin.json` shape so consumers' UDS-first probes resolve without globbing `/tmp/pgserve-sock-<pid>-<ts>/`.
 - `autopg update` 13-stage pipeline per SHARED-DESIGN.md §4.2 (`resolveChannel`, `checkLatestVersion`, `shortCircuitIfCurrent`, `confirmIfTTY`, `detectInstallers`, `installPrimary`, `installSecondary`, `syncArtifacts`, `restartServicesIfRunning`, `verifyOrFail`, `postUpdateMaintenance`, `captureDiagnostics`, `successBanner`).
 - Cleanup-registry entries for autopg's `cleanupLegacyArtifacts()`: legacy embedded pgserve dirs (`~/.pgserve/data/*` after rename), stale postmaster ports, orphan `postmaster.pid`, legacy `~/.pgserve` config dir (after symlink-compat window).
 - Diagnostics JSON `~/.autopg/logs/update-diagnostics-<iso>.json` `schemaVersion: 1` (autopg's first; asymmetric per SHARED-DESIGN.md §4.4).
 - Back-compat alias: `pgserve update` works for one milestone, prints stderr deprecation hint pointing to `autopg update`.
-- Genie consumer migration: ships `autopg.json` at root, signed by namastex publisher key in CI; `_buildConnection` reads `DATABASE_URL` from `~/.autopg/genie.env`.
+- Genie consumer migration: ships `autopg.json` at root, signed by namastex publisher key in CI; `_buildConnection` reads **credentials** (per-app role + SCRAM password) from `~/.autopg/genie.env`. **Transport** (UDS canonical path vs TCP fallback) is discovered independently via genie's `resolvePgserveTransport()` — the env file no longer carries `host:port`. UDS-first / TCP-fallback already shipped in `automagik-dev/genie #1667` and is forward-compatible with autopg-server's canonical UDS path written by Group 11.5.
 - Omni consumer migration: ships `packages/api/autopg.json`, same pattern + chains existing `legacy-data-migration.ts` pattern (FK trigger bypass via `SET session_replication_role = replica` + per-table COPY + schema-drift abort) for data-preservation when post-rename canonical detected empty.
 - Genie + omni release pipeline extension: cosign-sign the published `autopg.json` (LOCK 1 source-of-trust). Without this, `autopg create-app`'s verify side has nothing to verify against.
 - Final `pgserve@2.260503.0` npm advisory release: `console.error("npm publishing discontinued — install via curl https://get.automagik.dev/autopg | bash"); process.exit(2);`.
@@ -90,6 +92,9 @@ Cut **autopg `2.260503.1`** as the rename + distribution-cutover ship line. Rena
 | D20 | `autopg update` default = TTY confirmation prompt (matches omni) | Brand-new command; safer default for daemon restart. |
 | D21 | Sequencing = parallel with genie+omni `update-unify-stages` siblings | Default — verify with Felipe if doubt. |
 | D22 | SHARED-DESIGN.md byte-equality CI lint enforced | Single source of truth across 3 repos. |
+| D23 | pm2 process name is `autopg-server`, not `autopg` | The CLI binary is `autopg`; the supervised daemon is `autopg-server`. Pairs with the existing `autopg-ui` pm2 entry for a clean two-process model. Operators read `pm2 list` and see `autopg-server` + `autopg-ui` — no ambiguity with the CLI invocation. |
+| D24 | `autopg serve` binds BOTH UDS (canonical path) and TCP from a single supervised process | One supervisor, two transports, zero auth-handshake gotchas: UDS for fingerprinted local consumers, TCP for everyone else. The previous pgserve@2.x split (daemon mode = UDS-with-fingerprint, install mode = TCP-only) created a contract gap that broke genie + omni when only one mode was running. |
+| D25 | Credentials and transport are decoupled in the consumer contract | `~/.autopg/<app>.env` carries SCRAM creds (static). Transport is discovered at runtime via the canonical UDS probe and `autopg port` fallback (dynamic). Coupling them into the env file recreates the lockfile-drift problem this cutover kills. Genie `#1667` already implements the consumer side; omni mirrors in Group 14. |
 
 ## Success Criteria
 
@@ -138,7 +143,8 @@ This wish ships in six waves. Wave 1 is sequential (auth foundation must land co
 | 8 | engineer | cosign keyless OIDC sign + SLSA L3 attest per-platform tarball. |
 | 9 | engineer | CDN publish (`cdn.automagik.dev/autopg/<channel>/<version>/<platform>/`). |
 | 10 | engineer | `install.sh` ≤80 lines: `ensure_bun` + `ensure_pm2` + `ensure_curl` + download + verify + handoff. |
-| 11 | engineer | `autopg install` (binary subcommand) — pm2 register + paths + rc-file edit. |
+| 11 | engineer | `autopg install` (binary subcommand) — pm2 register as `autopg-server` + paths + rc-file edit. |
+| 11.5 | engineer | `autopg serve` — dual-transport binding (UDS canonical + TCP) + `admin.json` discovery file. |
 
 ### Wave 4 — Update pipeline (depends on Wave 3 + sibling SHARED-DESIGN.md)
 
@@ -441,7 +447,8 @@ shellcheck install.sh && wc -l install.sh && bash test/integration/install-sh-fr
 
 **Deliverables:**
 1. `src/cli/install.js` implementing `autopg install [--non-interactive]`:
-   - pm2 register with `name: autopg`, `script: <install-dir>/autopg`, `args: 'serve'`, `cwd: ~/.autopg`, `autorestart: true`.
+   - pm2 register with `name: autopg-server` (paired with the existing `autopg-ui` pm2 entry for the two-process model — CLI binary stays `autopg`, supervised daemon is `autopg-server`), `script: <install-dir>/autopg`, `args: 'serve'`, `cwd: ~/.autopg`, `autorestart: true`.
+   - Migration step: detect a legacy pm2 entry named `pgserve` (pre-rename) OR `autopg` (early-cutover variant) and `pm2 delete` it before creating `autopg-server` so re-running `autopg install` after a partial migration is idempotent.
    - Symlink `~/.local/bin/autopg` → `<install-dir>/autopg`.
    - Append `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` AND `~/.zshrc` if not already present (idempotent grep-then-append).
    - Install bash + zsh completions to `~/.local/share/autopg/completions/`.
@@ -451,8 +458,9 @@ shellcheck install.sh && wc -l install.sh && bash test/integration/install-sh-fr
 
 **Acceptance Criteria:**
 - [ ] After `autopg install --non-interactive`, `autopg --version` works in a new shell (PATH wired).
-- [ ] `pm2 list` shows `autopg` process with `online` status.
+- [ ] `pm2 list` shows `autopg-server` process with `online` status (paired with `autopg-ui`).
 - [ ] Re-running `autopg install --non-interactive` is idempotent — no duplicate pm2 entry, no duplicated PATH lines.
+- [ ] On a host with a legacy `pgserve` pm2 entry, `autopg install` deletes it and creates `autopg-server` cleanly (no port conflict, no orphan).
 - [ ] `bash --rcfile ~/.bashrc -c 'autopg --version'` succeeds in CI fixture.
 - [ ] First run after install creates `~/.autopg/admin.secret` (Group 1 wired).
 
@@ -462,6 +470,41 @@ bun test test/cli/install.test.js && bash test/integration/install-binary.sh
 ```
 
 **depends-on:** Group 10
+
+---
+
+### Group 11.5: `autopg serve` — dual-transport binding + canonical UDS discovery
+
+**Goal:** Specify what the pm2-supervised `autopg serve` command actually does at the transport level. Bind BOTH a Unix domain socket at a stable canonical path AND TCP at the configured port from a single supervised process, and write a `admin.json` discovery file so consumers' UDS-first probes find the live socket without globbing ephemeral pid-stamped dirs. This closes the contract gap between `pgserve install` (foreground TCP-only, embedded postgres also binds an ephemeral UDS at `/tmp/pgserve-sock-<pid>-<ts>/`) and downstream consumers like genie + omni who want UDS performance with TCP fallback.
+
+**Deliverables:**
+1. New `src/cli/serve.js` implementing `autopg serve`:
+   - Resolves the canonical socket dir: `$XDG_RUNTIME_DIR/autopg/` (preferred) or `/tmp/autopg/` (fallback when XDG_RUNTIME_DIR is unset / not writable). Mirrors genie's `resolvePgserveSocketDir()` shape.
+   - Spawns embedded postgres with `-k <canonical-socket-dir>` so the postmaster's primary Unix socket lands at `<canonical-socket-dir>/.s.PGSQL.<port>` (no longer at the ephemeral `/tmp/pgserve-sock-<pid>-<ts>/`).
+   - Also passes `-h 127.0.0.1` (or `0.0.0.0` per config) + `--port <port>` so TCP loopback continues to work for non-fingerprinted peers and remote-loopback tooling (psql, pg-clients).
+   - Writes `<canonical-socket-dir>/admin.json` after the postmaster greets healthy: `{ socketDir: "<canonical-socket-dir>", port: <port>, pid: <postmaster-pid>, autopgPid: <serve-process-pid>, schemaVersion: 1 }`.
+   - Cleans `<canonical-socket-dir>/admin.json` on graceful shutdown (SIGTERM); leaves it on crash (operator can detect stale via `process.kill(autopgPid, 0)`).
+2. `autopg port` / `autopg url` / `autopg status --json` discovery primitives continue to work unchanged — they read `admin.json` first, fall back to the legacy pm2-process inspection.
+3. `~/.pgserve/` symlink-compat (Group 3 already handles config dir; this group adds the analogous symlink for the runtime socket dir): `<canonical-socket-dir>` symlinked at `/run/user/<uid>/pgserve/` for one milestone so legacy consumers reading the pre-rename canonical path keep working.
+4. Tests:
+   - `bun test test/cli/serve.test.js`: spawn `autopg serve` against a temp datadir, assert both UDS at `<canonical>/.s.PGSQL.<port>` and TCP at `127.0.0.1:<port>` accept connections in <2s.
+   - `admin.json` shape lock + presence check after greet.
+   - SIGTERM cleanup: `admin.json` removed.
+   - Crash leaves stale `admin.json` with non-live pid (consumers detect via `process.kill(pid, 0)`).
+
+**Acceptance Criteria:**
+- [ ] `autopg serve --port 8432 --data /tmp/test-data` exposes BOTH `<canonical>/.s.PGSQL.8432` AND `127.0.0.1:8432` for client connections.
+- [ ] `<canonical>/admin.json` exists post-greet with `{ socketDir, port, pid, autopgPid, schemaVersion }` matching the live process.
+- [ ] Genie's `resolvePgserveTransport()` (already shipped at `automagik-dev/genie #1667`) returns `{ kind: 'unix', socketDir: <canonical>, port: <port> }` against an `autopg serve` host without modification.
+- [ ] Genie's `resolvePgserveTransport()` returns `{ kind: 'tcp', host: '127.0.0.1', port: <port> }` only when the canonical UDS isn't reachable (autopg crashed, autopg not installed). Confirms TCP-fallback path still works.
+- [ ] On hosts with stale `/run/user/<uid>/pgserve/` from pgserve@2.x daemon mode, `autopg serve` doesn't collide — it owns `/run/user/<uid>/autopg/` and links the legacy path through.
+
+**Validation:**
+```bash
+bun test test/cli/serve.test.js && bash test/integration/serve-dual-transport.sh
+```
+
+**depends-on:** Group 11
 
 ---
 
@@ -479,7 +522,7 @@ bun test test/cli/install.test.js && bash test/integration/install-binary.sh
    6. `installPrimary` — download new tarball, verify (sig + SLSA), extract to `~/.autopg/install/<new-version>/`.
    7. `installSecondary` — no-op for autopg; logged as `skipped: not-applicable`.
    8. `syncArtifacts` — flip `~/.local/bin/autopg` symlink to new install dir.
-   9. `restartServicesIfRunning` — `pm2 restart autopg` (skipped under `--no-restart`).
+   9. `restartServicesIfRunning` — `pm2 restart autopg-server` (skipped under `--no-restart`).
    10. `verifyOrFail` — call `runDoctor({ json: true, dryRun: true })`, feed into pure `decideVerify` returning the shared tagged union.
    11. `postUpdateMaintenance` — call `cleanupLegacyArtifacts(skipList)` registry.
    12. `captureDiagnostics` — write `~/.autopg/logs/update-diagnostics-<iso>.json` with `schemaVersion: 1`.
@@ -505,24 +548,32 @@ bun test test/cli/install.test.js && bash test/integration/install-binary.sh
 bun test test/cli/update.test.js test/cli/legacy-cleanup.test.js test/cli/pgserve-alias.test.js
 ```
 
-**depends-on:** Group 11
+**depends-on:** Group 11, Group 11.5
 
 ---
 
 ### Group 13: Genie consumer migration
 
-**Goal:** Switch genie to consume autopg via `~/.autopg/genie.env` + ship a signed `autopg.json` at the repo root.
+**Goal:** Switch genie to consume autopg via `~/.autopg/genie.env` (credentials only) + the canonical UDS / TCP-fallback transport discovery (already shipped at `automagik-dev/genie #1667`) + ship a signed `autopg.json` at the repo root.
+
+**Contract — credentials vs. transport are split:**
+- `~/.autopg/genie.env` carries the **credentials**: per-app SCRAM role + password (`PGUSER=app_genie`, `PGPASSWORD=<scram-secret>`, `PGDATABASE=genie`).
+- **Transport** (UDS canonical path vs TCP fallback) is discovered by genie's `resolvePgserveTransport()` independently — it probes `<canonical-socket-dir>/.s.PGSQL.<port>` first (autopg-server's Group 11.5 admin.json discovery), falls back to TCP via `autopg port`. The env file no longer carries `host:port` — that data is in autopg-server's published discovery, not duplicated.
+- Rationale: env files are static, daemons restart and rotate ports; coupling transport into the env file recreates the lockfile-drift problem the cutover is trying to kill.
 
 **Deliverables:**
 1. New `autopg.json` at repo root (in genie repo, opened as separate PR per the cross-wish blocks below) declaring `app: genie`, `needs.database: genie`, `extensions: ['pgcrypto', 'uuid-ossp']` (or actuals).
-2. `_buildConnection` in genie reads `DATABASE_URL` from `~/.autopg/genie.env` if present; falls back to legacy `~/.pgserve/...` path with stderr deprecation for one milestone.
-3. genie release pipeline cosign-signs the published `autopg.json` (LOCK 1 source-of-trust) per Group 5.
-4. genie host-migration step: detect a host with empty canonical `genie` DB but non-empty embedded pgserve `genie` DB, surface a one-time prompt to run `autopg create-app genie --adopt-existing-db genie` (Felipe-host pattern).
+2. `_buildConnection` in genie reads **credentials** (PGUSER/PGPASSWORD/PGDATABASE) from `~/.autopg/genie.env` if present, then composes the connection string by combining those creds with the transport discovered by `resolvePgserveTransport()`. Falls back to legacy `~/.pgserve/...` env file shape with stderr deprecation for one milestone.
+3. `resolvePgserveTransport()` in genie (already shipped at `automagik-dev/genie #1667`) is forward-compatible with autopg-server's canonical UDS path under `$XDG_RUNTIME_DIR/autopg/`. No additional changes needed in genie for this group.
+4. genie release pipeline cosign-signs the published `autopg.json` (LOCK 1 source-of-trust) per Group 5.
+5. genie host-migration step: detect a host with empty canonical `genie` DB but non-empty embedded pgserve `genie` DB, surface a one-time prompt to run `autopg create-app genie --adopt-existing-db genie` (Felipe-host pattern).
 
 **Acceptance Criteria:**
-- [ ] Fresh genie install reads `DATABASE_URL` from `~/.autopg/genie.env`, connects via SCRAM with the per-app role.
+- [ ] Fresh genie install reads creds from `~/.autopg/genie.env`, transport from `resolvePgserveTransport()`, connects via SCRAM with the per-app role over the discovered UDS or TCP fallback.
 - [ ] Pre-existing genie install on pgserve@2.2.x continues working with stderr deprecation for one milestone.
 - [ ] genie CLI no longer auto-spawns embedded PG when `~/.autopg/genie.env` exists (kills the bug noted in handoff §7).
+- [ ] On a host with autopg-server canonical UDS up, `resolvePgserveTransport()` returns `kind: 'unix'` and genie connects via the canonical socket without TCP overhead.
+- [ ] On a host with autopg-server up but the canonical UDS missing (legacy install or daemon mode disabled), `resolvePgserveTransport()` returns `kind: 'tcp'` and genie connects via TCP loopback.
 - [ ] genie release pipeline uploads `autopg.json` AND `autopg.json.sig` together; missing sig fails CI.
 
 **Validation:**
@@ -531,7 +582,7 @@ bun test test/cli/update.test.js test/cli/legacy-cleanup.test.js test/cli/pgserv
 bun test src/db/__tests__/build-connection.test.ts && bash test/integration/genie-autopg-handoff.sh
 ```
 
-**depends-on:** Group 5, Group 12
+**depends-on:** Group 5, Group 11.5, Group 12
 
 ---
 
