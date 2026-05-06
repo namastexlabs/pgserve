@@ -17,6 +17,8 @@
 
 Major bump to pgserve **2.3.0**. Kill the bun bridge from the data plane: postgres backend listens directly on Unix socket (`$XDG_RUNTIME_DIR/pgserve/.s.PGSQL.5432`) AND TCP 5432, no proxy. Replace the always-on bun daemon with on-demand CLI verbs (`pgserve provision`, `pgserve verify`, `pgserve gc`, `pgserve trust`, `pgserve doctor`). Add cosign-keyless-OIDC publisher attestation as Tier 2 on top of the existing host_signed identity (Tier 1) and path-based default (Tier 0). Bake a hardcoded blocklist of known-bad versions. Wire self-healing semantics into `pgserve update` (auto-migrate old layout, pm2 restart, doctor --fix tiered). See `SHARED-DESIGN.md` §1-§9 for full design context.
 
+> **⚠ BREAKING — accept-downtime contract**: TCP port `8432` dies in this release. Out-of-trio consumers that hardcode `localhost:8432` (brain, rlmx, hapvida-eugenia, email, any third-party app) **WILL break silently** when `pgserve update` runs. This is intentional: pgserve 2.3 is a major bump and the cutover is the right moment to take that hit once. CHANGELOG must warn explicitly. QA Criteria adds a consumer-fan-out test (verify all known consumers connect post-cutover). **No socat shim. No port-redirect. No backwards-compat layer.** Operators update connection strings to Unix socket (preferred) or TCP 5432.
+
 ## Scope
 
 ### IN
@@ -70,6 +72,7 @@ Major bump to pgserve **2.3.0**. Kill the bun bridge from the data plane: postgr
 - One-shot migration runs inside `pgserve update` when old layout detected.
 - Action: stop bun process, reconfigure pm2 entry, update `~/.autopg/admin.json` to publish new socket dir, archive old socket dirs to `~/.autopg/.legacy/<ts>/`.
 - Idempotent: re-running on already-migrated host is no-op.
+- **Best-effort recovery, not atomic**: rollback is via `pgserve install --restore-bridge` (manual escape hatch). Snapshot scope: `~/.autopg/admin.json` + pm2 ecosystem dump only (not socket dirs — those archive forward). On mid-flight failure, restore admin.json from snapshot, log diagnostic exit non-zero with operator remediation hint.
 
 **Group 9 — Tests + docs + CHANGELOG**
 - Tests for every new CLI verb.
@@ -99,7 +102,7 @@ See `SHARED-DESIGN.md` §6 for the cross-repo decision table. pgserve-specific:
 | P2 | TCP fallback to `/tmp/pgserve` when XDG_RUNTIME_DIR unset | CI runners and minimal containers lack XDG. |
 | P3 | `pgserve gc` as cron / timer (not in-daemon) | Matches `SHARED-DESIGN.md` decision #2: zero always-on processes besides postgres. |
 | P4 | `pgserve_meta` schema additive (no breaking column drop) | Existing `path`-kind rows from pre-cosign installs continue to work. |
-| P5 | Vendor sigstore-rs OR shell out to `cosign` CLI; both paths supported | sigstore-rs gives single-binary; `cosign` CLI is reference impl. |
+| P5 | **Shell out to `cosign` CLI as the verifier (locked).** Vendor sigstore-rs deferred to a follow-up wish. | Single verifier path → simpler test matrix; matches CDN distribution model where cosign CLI is already on the install pipeline; if `cosign` not on PATH, `pgserve install` shells out to a downloader to fetch the official static binary into `~/.pgserve/bin/cosign`. Operators wanting fully-bundled verification get it via the sigstore-rs follow-up. |
 | P6 | Blocklist as compile-time constant (not config file) | Trust root must be opaque to operators. Updates flow via `pgserve update`. |
 | P7 | Migration runs inside `pgserve update` (not separate command) | Self-healing contract: one verb fixes everything. |
 
@@ -133,13 +136,13 @@ See `SHARED-DESIGN.md` §6 for the cross-repo decision table. pgserve-specific:
 | 1 | engineer | Postmaster reconfig: `-k`, `-p 5432`, dual-transport. `pgserve install` socket dir setup. |
 | 2 | engineer | Delete bun proxy data plane. Replace audit with `pgaudit`. |
 
-### Wave 2 — CLI surface + verification (parallel after Wave 1)
+### Wave 2 — CLI surface + verification (sequential — G3+G4+G7 all author `pgserve provision` and share `pgserve_meta` schema)
 
 | Group | Agent | Description |
 |-------|-------|-------------|
-| 3 | engineer | New CLI verbs (`provision`, `gc`, `trust`, `doctor` tiered). |
-| 4 | engineer | Cosign verification primitives + cache token + `pgserve verify`. |
-| 7 | engineer | Roles + GRANTs schema, hba/ident templates, `pgserve grant`. |
+| 4 | engineer | Cosign verification primitives + cache token + `pgserve verify` + `pgserve_meta` schema delta (additive). **First in Wave 2** — defines schema columns G3 writes. |
+| 3 | engineer | New CLI verbs (`provision`, `gc`, `trust`, `doctor` tiered). Provisioning writes columns G4 added. |
+| 7 | engineer | Roles + GRANTs schema, hba/ident templates, `pgserve grant`. Adds role logic on top of provision skeleton from G3. |
 
 ### Wave 3 — Self-healing wiring (sequential after Wave 2)
 
@@ -199,11 +202,15 @@ psql -h "$XDG_RUNTIME_DIR/pgserve" -c 'SELECT 1' postgres
 - [ ] No bun process listening on TCP 8432 after `pgserve install`.
 - [ ] `pg_settings` shows `pgaudit.log = 'all'`.
 - [ ] pm2 `pgserve` entry's `pm_exec_path` points to postgres wrapper, not bun.
+- [ ] **Positive check**: `psql -h $XDG_RUNTIME_DIR/pgserve -c 'SELECT 1' postgres` returns `1` (postgres is responsive on canonical socket via the new pm2 wrapper).
+- [ ] **Positive check**: `psql -h 127.0.0.1 -p 5432 -c 'SELECT 1' postgres` returns `1` (postgres is responsive on canonical TCP).
 
 **Validation:**
 ```bash
 pm2 jlist | jq '.[] | select(.name == "pgserve") | .pm2_env.pm_exec_path'
 ss -tlnp | grep -E ':8432' && exit 1 || echo "OK no 8432 listener"
+psql -h $XDG_RUNTIME_DIR/pgserve -c 'SELECT 1' postgres
+psql -h 127.0.0.1 -p 5432 -c 'SELECT 1' postgres
 ```
 
 **depends-on:** Group 1
@@ -368,9 +375,11 @@ bash tests/integration/migration-rollback-on-failure.sh
 **Deliverables:**
 1. Full test suite for all CLI verbs + verify + GC + roles + migration.
 2. Integration tests: fresh-install, upgrade-from-2.2.x, upgrade-noop.
-3. README updates: install + upgrade flow, doctor verbs.
-4. `docs/security/cosign-trust.md`: tier model, identity_chain, self-signing.
-5. CHANGELOG entry.
+3. **CI fixture provisioning** (no sudo): tests boot postgres + pm2 in user-space via `bunx pm2-runtime` and `pgserve install --data ./tmp/test-data --port 65432 --skip-system-units`. Documented in `tests/integration/README.md`. Validates on Linux Blacksmith runners + macOS dev laptops without root.
+4. README updates: install + upgrade flow, doctor verbs.
+5. `docs/security/cosign-trust.md`: tier model, identity_chain, self-signing.
+6. CHANGELOG entry naming: socket path canonical-ization, port 5432, no bun bridge, blocklist mechanism, tiered doctor, cosign tier on top of host_signed, **breaking-version bump rationale + accept-downtime contract** (TCP 8432 dies; out-of-trio consumers break silently; this is intentional for a major bump).
+7. **Consumer fan-out smoke test** (`tests/integration/consumer-fanout.sh`): on a canary host with all 6+ consumers installed (genie, omni, brain, rlmx, hapvida-eugenia, email), run `pgserve update` and verify each consumer can re-establish DB connection (operator may need to update consumer config first; test verifies which consumers need updates).
 
 **Acceptance Criteria:**
 - [ ] `bun test` passes.
