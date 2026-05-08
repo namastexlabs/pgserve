@@ -6,6 +6,7 @@
     "bin/pgserve-wrapper.cjs",
     "src/upgrade/index.js",
     "src/commands/**",
+    "src/cosign/**",
     "console/src/main.jsx"
   ],
   "project": [
