@@ -41,8 +41,8 @@ Cut **autopg `2.260503.1`** as the rename + distribution-cutover ship line. Rena
 - CDN publish to `cdn.automagik.dev/autopg/<channel>/<version>/<platform>/` (channels: `stable`, `beta`, `canary`).
 - `install.sh` ≤80 lines: `ensure_bun` + `ensure_pm2` + `ensure_curl` + download `manifest.json` + verify SHA256 + verify cosign sig + verify SLSA provenance + extract tarball + handoff to `autopg install --non-interactive`.
 - `autopg install` binary subcommand: pm2 register (process name `autopg-server`, paired with the existing `autopg-ui` for the two-process model) + `~/.local/bin/autopg` symlink + rc-file PATH edit + completions.
-- `autopg serve` dual-transport binding: the supervised process binds BOTH a Unix domain socket at the canonical path `$XDG_RUNTIME_DIR/autopg/.s.PGSQL.5432` AND TCP at the configured port (default 8432). Embedded Postgres handles this natively (`-k <socketDir> -h 0.0.0.0`); we just stabilize the canonical UDS path under `$XDG_RUNTIME_DIR/autopg/` (or `/tmp/autopg/` fallback) so consumers can probe a fixed location regardless of the postmaster's ephemeral pid-stamped working dir.
-- `autopg serve` discovery file: writes `<canonical-socket-dir>/admin.json` with `{ socketDir, port, pid }` matching pgserve@2.x daemon-mode `admin.json` shape so consumers' UDS-first probes resolve without globbing `/tmp/pgserve-sock-<pid>-<ts>/`.
+- `autopg serve` dual-transport binding: the supervised process binds BOTH a Unix domain socket at the canonical path `$XDG_RUNTIME_DIR/autopg/.s.PGSQL.5432` AND TCP at the configured port (default **5432**, matches PG standard; cohort sibling `pgserve-singleton-no-proxy` kills 8432 explicitly). Embedded Postgres handles this natively (`-k <socketDir> -h 0.0.0.0`); we just stabilize the canonical UDS path under `$XDG_RUNTIME_DIR/autopg/` (or `/tmp/autopg/` fallback) so consumers can probe a fixed location regardless of the postmaster's ephemeral pid-stamped working dir.
+- `autopg serve` discovery file: writes `<canonical-socket-dir>/runtime.json` (renamed from `admin.json` to avoid collision with the cohort supervisor file at `~/.autopg/admin.json` — see Group 19 for the renaming rationale) with `{ socketDir, port, pid, autopgPid, schemaVersion }` so consumers' UDS-first probes resolve without globbing `/tmp/pgserve-sock-<pid>-<ts>/`. The supervisor file `~/.autopg/admin.json` (singleton G1 + canonical Group 1 + this wish's Group 11 co-owned schema) is a SEPARATE file recording active supervisor + connection metadata.
 - `autopg update` 13-stage pipeline per SHARED-DESIGN.md §4.2 (`resolveChannel`, `checkLatestVersion`, `shortCircuitIfCurrent`, `confirmIfTTY`, `detectInstallers`, `installPrimary`, `installSecondary`, `syncArtifacts`, `restartServicesIfRunning`, `verifyOrFail`, `postUpdateMaintenance`, `captureDiagnostics`, `successBanner`).
 - Cleanup-registry entries for autopg's `cleanupLegacyArtifacts()`: legacy embedded pgserve dirs (`~/.pgserve/data/*` after rename), stale postmaster ports, orphan `postmaster.pid`, legacy `~/.pgserve` config dir (after symlink-compat window).
 - Diagnostics JSON `~/.autopg/logs/update-diagnostics-<iso>.json` `schemaVersion: 1` (autopg's first; asymmetric per SHARED-DESIGN.md §4.4).
@@ -456,7 +456,8 @@ shellcheck install.sh && wc -l install.sh && bash test/integration/install-sh-fr
    - Install bash + zsh completions to `~/.local/share/autopg/completions/`.
    - Write canonical `~/.autopg/config.json` if absent (channel: `stable`, default port, etc.).
    - First-run hooks: invoke admin SCRAM bootstrap (Group 1) + run upgrade migrations (Group 3) — defensive double-fire per D12.
-2. `--non-interactive` mode: never prompts, picks safe defaults, exits 0 only on full success.
+2. **Cohort supervisor file write (`~/.autopg/admin.json`)**: invoke the writer module from `pgserve-singleton-no-proxy` Group 1 (`src/lib/admin-json.ts`/`.js`) after successful pm2 register. Writes `{ supervisor: "pm2", socketDir: <resolved>, port: 5432, installedAt: <ISO8601> }`. **Refuses with non-zero exit** if `admin.json` already records `supervisor ∈ {systemd-user, launchd}` (Tier B host — operator must run `autopg service uninstall` first). This is the cohort source of truth for `autopg doctor`'s liveness-check dispatch.
+3. `--non-interactive` mode: never prompts, picks safe defaults, exits 0 only on full success.
 
 **Acceptance Criteria:**
 - [ ] After `autopg install --non-interactive`, `autopg --version` works in a new shell (PATH wired).
@@ -465,6 +466,8 @@ shellcheck install.sh && wc -l install.sh && bash test/integration/install-sh-fr
 - [ ] On a host with a legacy `pgserve` pm2 entry, `autopg install` deletes it and creates `autopg-server` cleanly (no port conflict, no orphan).
 - [ ] `bash --rcfile ~/.bashrc -c 'autopg --version'` succeeds in CI fixture.
 - [ ] First run after install creates `~/.autopg/admin.secret` (Group 1 wired).
+- [ ] After `autopg install`, `jq -e '.supervisor == "pm2"' ~/.autopg/admin.json` succeeds (cohort supervisor field written).
+- [ ] On a host with `~/.autopg/admin.json.supervisor == "systemd-user"`, `autopg install` exits non-zero with the locked remediation hint `"autopg is on Tier B (systemd-user); run autopg service uninstall to revert to Tier A first"` (mirrors `pgserve-singleton-no-proxy` G1 behavior).
 
 **Validation:**
 ```bash
@@ -484,19 +487,21 @@ bun test test/cli/install.test.js && bash test/integration/install-binary.sh
    - Resolves the canonical socket dir: `$XDG_RUNTIME_DIR/autopg/` (preferred) or `/tmp/autopg/` (fallback when XDG_RUNTIME_DIR is unset / not writable). Mirrors genie's `resolvePgserveSocketDir()` shape.
    - Spawns embedded postgres with `-k <canonical-socket-dir>` so the postmaster's primary Unix socket lands at `<canonical-socket-dir>/.s.PGSQL.<port>` (no longer at the ephemeral `/tmp/pgserve-sock-<pid>-<ts>/`).
    - Also passes `-h 127.0.0.1` (or `0.0.0.0` per config) + `--port <port>` so TCP loopback continues to work for non-fingerprinted peers and remote-loopback tooling (psql, pg-clients).
-   - Writes `<canonical-socket-dir>/admin.json` after the postmaster greets healthy: `{ socketDir: "<canonical-socket-dir>", port: <port>, pid: <postmaster-pid>, autopgPid: <serve-process-pid>, schemaVersion: 1 }`.
-   - Cleans `<canonical-socket-dir>/admin.json` on graceful shutdown (SIGTERM); leaves it on crash (operator can detect stale via `process.kill(autopgPid, 0)`).
-2. `autopg port` / `autopg url` / `autopg status --json` discovery primitives continue to work unchanged — they read `admin.json` first, fall back to the legacy pm2-process inspection.
+   - Writes `<canonical-socket-dir>/runtime.json` after the postmaster greets healthy: `{ socketDir: "<canonical-socket-dir>", port: <port>, pid: <postmaster-pid>, autopgPid: <serve-process-pid>, schemaVersion: 1 }`. **NOTE**: this is the RUNTIME discovery file. The cohort supervisor file at `~/.autopg/admin.json` (separate file, separate schema) records active supervisor + `installedAt`. Files were collapsed under the same name in earlier drafts; renamed here to eliminate naming collision per /review 2026-05-08.
+   - Cleans `<canonical-socket-dir>/runtime.json` on graceful shutdown (SIGTERM); leaves it on crash (operator can detect stale via `process.kill(autopgPid, 0)`).
+2. `autopg port` / `autopg url` / `autopg status --json` discovery primitives continue to work unchanged — they read `runtime.json` first (live socket info), fall back to `~/.autopg/admin.json` (supervisor metadata) and pm2-process inspection. The supervisor field NEVER lives in `runtime.json`.
 3. `~/.pgserve/` symlink-compat (Group 3 already handles config dir; this group adds the analogous symlink for the runtime socket dir): `<canonical-socket-dir>` symlinked at `/run/user/<uid>/pgserve/` for one milestone so legacy consumers reading the pre-rename canonical path keep working.
 4. Tests:
    - `bun test test/cli/serve.test.js`: spawn `autopg serve` against a temp datadir, assert both UDS at `<canonical>/.s.PGSQL.<port>` and TCP at `127.0.0.1:<port>` accept connections in <2s.
-   - `admin.json` shape lock + presence check after greet.
-   - SIGTERM cleanup: `admin.json` removed.
-   - Crash leaves stale `admin.json` with non-live pid (consumers detect via `process.kill(pid, 0)`).
+   - `runtime.json` shape lock + presence check after greet.
+   - SIGTERM cleanup: `runtime.json` removed.
+   - Crash leaves stale `runtime.json` with non-live pid (consumers detect via `process.kill(pid, 0)`).
+   - **No `supervisor` field in `runtime.json`**: assert `runtime.json` parses without a `supervisor` key (lives in `~/.autopg/admin.json` only).
 
 **Acceptance Criteria:**
-- [ ] `autopg serve --port 8432 --data /tmp/test-data` exposes BOTH `<canonical>/.s.PGSQL.8432` AND `127.0.0.1:8432` for client connections.
-- [ ] `<canonical>/admin.json` exists post-greet with `{ socketDir, port, pid, autopgPid, schemaVersion }` matching the live process.
+- [ ] `autopg serve --port 65432 --data /tmp/test-data` (non-default test port avoids collision with host PG) exposes BOTH `<canonical>/.s.PGSQL.65432` AND `127.0.0.1:65432` for client connections. Production default is `--port 5432`.
+- [ ] `<canonical>/runtime.json` exists post-greet with `{ socketDir, port, pid, autopgPid, schemaVersion }` matching the live process.
+- [ ] `<canonical>/runtime.json` does NOT contain a `supervisor` key (that field lives in `~/.autopg/admin.json` only — cohort contract).
 - [ ] Genie's `resolvePgserveTransport()` (already shipped at `automagik-dev/genie #1667`) returns `{ kind: 'unix', socketDir: <canonical>, port: <port> }` against an `autopg serve` host without modification.
 - [ ] Genie's `resolvePgserveTransport()` returns `{ kind: 'tcp', host: '127.0.0.1', port: <port> }` only when the canonical UDS isn't reachable (autopg crashed, autopg not installed). Confirms TCP-fallback path still works.
 - [ ] On hosts with stale `/run/user/<uid>/pgserve/` from pgserve@2.x daemon mode, `autopg serve` doesn't collide — it owns `/run/user/<uid>/autopg/` and links the legacy path through.
