@@ -12,6 +12,7 @@ import path from 'path';
 import os from 'os';
 import { startMultiTenantServer } from '../src/index.js';
 import { startClusterServer } from '../src/cluster.js';
+import { PostgresManager } from '../src/postgres.js';
 import { loadEffectiveConfig as loadAutopgConfig } from '../src/settings-loader.cjs';
 import {
   PgserveDaemon,
@@ -27,6 +28,8 @@ import {
 } from '../src/control-db.js';
 import { mintToken } from '../src/tokens.js';
 import { audit, AUDIT_EVENTS } from '../src/audit.js';
+import { resolveSocketDir, ensureSocketDir } from '../src/lib/socket-dir.js';
+import { createLogger } from '../src/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -47,6 +50,163 @@ const args = process.argv.slice(2);
 
 if (args[0] === 'daemon') {
   await runDaemonSubcommand(args.slice(1));
+}
+
+if (args[0] === 'postmaster') {
+  await runPostmasterSubcommand(args.slice(1));
+}
+
+/**
+ * `pgserve postmaster` — supervises an embedded PostgreSQL postmaster
+ * directly (no router, no bun proxy, no daemon control socket).
+ *
+ * pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 1.
+ *
+ * The postmaster listens on the canonical Unix socket at
+ * `<socketDir>/.s.PGSQL.<port>` AND TCP `<port>` (via postgres' default
+ * `listen_addresses = 'localhost'`). Operators connect with either:
+ *
+ *     psql -h $XDG_RUNTIME_DIR/pgserve         # Unix socket (no -p)
+ *     psql -h 127.0.0.1 -p 5432                # canonical TCP
+ *
+ * This is the entry point pm2 invokes for the `autopg-server` process. The
+ * legacy router/foreground mode (`pgserve [options]` without a subcommand)
+ * is unchanged and will be removed in Group 2 once the bun proxy is gone.
+ */
+async function runPostmasterSubcommand(postmasterArgs) {
+  const opts = parsePostmasterArgs(postmasterArgs);
+  const logger = createLogger({ level: opts.logLevel });
+
+  // Resolve and ensure the socket directory before postgres tries to bind.
+  // Surfaces "not writable" / "wrong owner" failures here with a clear
+  // diagnostic instead of leaving the operator to chase a libpq error.
+  let socketDir;
+  try {
+    socketDir = ensureSocketDir(opts.socketDir);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+
+  const manager = new PostgresManager({
+    dataDir: opts.dataDir,
+    port: opts.port,
+    socketDir,
+    useRam: opts.useRam,
+    enablePgvector: opts.enablePgvector,
+    logger: logger.child({ component: 'postgres' }),
+  });
+
+  // Surface unexpected backend death so pm2 can restart us cleanly. Mirrors
+  // the daemon-mode contract from PR #49 (issue #45).
+  manager.on('backendDiedUnexpectedly', ({ code }) => {
+    logger.error(
+      { code },
+      'pgserve postmaster: postgres backend exited unexpectedly; exiting so the supervisor can restart',
+    );
+    process.exit(1);
+  });
+
+  try {
+    await manager.start();
+  } catch (err) {
+    logger.error({ err: err.message }, 'pgserve postmaster: failed to start');
+    process.exit(1);
+  }
+
+  logger.info(
+    { port: opts.port, socketDir, dataDir: opts.dataDir },
+    'pgserve postmaster: ready (Unix socket + TCP)',
+  );
+
+  const shutdown = async (signal) => {
+    logger.info({ signal }, 'pgserve postmaster: stopping');
+    try {
+      await manager.stop();
+    } catch (err) {
+      logger.warn({ err: err.message }, 'pgserve postmaster: error during shutdown');
+    }
+    process.exit(0);
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+  // Park forever; the supervisor decides when to stop us.
+  await new Promise(() => {});
+}
+
+function parsePostmasterArgs(postmasterArgs) {
+  const opts = {
+    port: 5432,
+    dataDir: null,
+    socketDir: undefined, // resolved via resolveSocketDir() if unset
+    logLevel: 'info',
+    useRam: false,
+    enablePgvector: false,
+  };
+  for (let i = 0; i < postmasterArgs.length; i++) {
+    const arg = postmasterArgs[i];
+    switch (arg) {
+      case '--port':
+      case '-p': {
+        const raw = postmasterArgs[++i];
+        const parsed = Number.parseInt(raw, 10);
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+          console.error(`pgserve postmaster: invalid --port "${raw}"`);
+          process.exit(1);
+        }
+        opts.port = parsed;
+        break;
+      }
+      case '--data':
+      case '-d':
+        opts.dataDir = postmasterArgs[++i];
+        break;
+      case '--socket-dir':
+      case '-k':
+        opts.socketDir = postmasterArgs[++i];
+        break;
+      case '--log':
+      case '-l':
+        opts.logLevel = postmasterArgs[++i];
+        break;
+      case '--ram':
+        opts.useRam = true;
+        break;
+      case '--pgvector':
+        opts.enablePgvector = true;
+        break;
+      case '--help':
+        console.log(`
+pgserve postmaster — direct embedded PostgreSQL supervision (singleton v2.4)
+
+USAGE:
+  pgserve postmaster [options]
+
+OPTIONS:
+  --port, -p <n>        TCP port (default: 5432)
+  --data, -d <path>     Data directory (required for persistence)
+  --socket-dir, -k <p>  Unix socket dir (default: $XDG_RUNTIME_DIR/pgserve)
+  --log, -l <level>     Log level: error|warn|info|debug (default: info)
+  --ram                 Use /dev/shm (Linux only)
+  --pgvector            Auto-enable pgvector on new databases
+  --help                Show this help
+
+The postmaster binds <socket-dir>/.s.PGSQL.<port> and TCP <port> on
+localhost. This entry point is invoked by pm2/systemd-user/launchd; it has
+no router, no bun proxy, no daemon control socket.
+`);
+        process.exit(0);
+        // falls through (unreachable)
+      default:
+        if (arg.startsWith('-')) {
+          console.error(`pgserve postmaster: unknown option "${arg}"`);
+          process.exit(1);
+        }
+    }
+  }
+  if (opts.socketDir === undefined) opts.socketDir = resolveSocketDir();
+  return opts;
 }
 
 async function runDaemonSubcommand(daemonArgs) {

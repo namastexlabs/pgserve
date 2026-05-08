@@ -49,7 +49,7 @@ if (args[0] === 'jlist') {
   const sentinel = ${JSON.stringify(path.join(dir, 'registered'))};
   if (fs.existsSync(sentinel)) {
     process.stdout.write(JSON.stringify([{
-      name: 'pgserve',
+      name: 'autopg-server',
       pid: 12345,
       pm2_env: { status: 'online', pm_uptime: Date.now() - 1000, restart_time: 0 }
     }]) + '\\n');
@@ -110,25 +110,22 @@ describe('pgserve install', () => {
     const result = runCli(['install']);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('installed');
-    expect(result.stdout).toContain('postgres://localhost:8432');
+    expect(result.stdout).toContain('postgres://localhost:5432');
 
     const config = JSON.parse(fs.readFileSync(path.join(tmpHome, 'config.json'), 'utf8'));
-    expect(config.port).toBe(8432);
+    expect(config.port).toBe(5432);
     expect(config.dataDir).toBe(path.join(tmpHome, 'data'));
     expect(config.registeredAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
     const calls = readCallLog(stubBin.calls);
-    const startCall = calls.find((c) => c[0] === 'start');
+    const startCall = calls.find((c) => c[0] === 'start' && c.includes('autopg-server'));
     expect(startCall).toBeDefined();
     expect(startCall).toContain('--name');
-    expect(startCall).toContain('pgserve');
+    expect(startCall).toContain('autopg-server');
     expect(startCall).toContain('--max-restarts');
     expect(startCall).toContain('50');
-    // pm2 ≥ 6.0 dropped `--min-uptime` from the CLI surface — it now lives
-    // only inside ecosystem files. Passing it on the command line aborts
-    // `pm2 start` with `error: unknown option --min-uptime`. Lock that out:
-    // `pgserve install` must NOT pass `--min-uptime` so it stays compatible
-    // across pm2 5.x → 6.x. See cli-install.cjs:HARDENED_DEFAULTS.
+    // pm2 ≥ 6.0 dropped `--min-uptime` from the CLI surface; install must
+    // NOT pass it (compat across pm2 5.x → 6.x).
     expect(startCall).not.toContain('--min-uptime');
     expect(startCall).toContain('--exp-backoff-restart-delay');
     expect(startCall).toContain('--max-memory-restart');
@@ -138,19 +135,17 @@ describe('pgserve install', () => {
     expect(startCall).toContain('--interpreter');
     expect(startCall).toContain('none');
 
-    // pgserve install must launch the foreground multi-tenant server, NOT
-    // the daemon. Daemon mode rejects `--port` (it only accepts --data,
-    // --ram, --log, --no-provision, --listen, --pgvector) and its TCP
-    // listeners require fingerprint+token auth which downstream services
-    // (omni, genie) don't speak. Foreground mode binds plain TCP on
-    // 127.0.0.1:<port> with auto-provisioning. Lock that out:
+    // pgserve singleton (v2.4): pm2 supervises the postmaster directly via
+    // the `pgserve postmaster` subcommand — no router, no bun proxy, no
+    // daemon mode. Lock that out: the script-arg handover (after `--`)
+    // starts with `postmaster` and includes the canonical socket dir.
     expect(startCall).not.toContain('daemon');
-    // The script-arg handover (after `--`) must include `--port` so the
-    // foreground parser binds the right TCP port.
     const dashDashIdx = startCall.indexOf('--');
     const scriptArgs = startCall.slice(dashDashIdx + 1);
+    expect(scriptArgs[0]).toBe('postmaster');
     expect(scriptArgs).toContain('--port');
     expect(scriptArgs).toContain('--data');
+    expect(scriptArgs).toContain('--socket-dir');
     expect(scriptArgs).toContain('--log');
     expect(scriptArgs).not.toContain('daemon');
   });
@@ -173,17 +168,17 @@ describe('pgserve install', () => {
     expect(startCount2).toBe(1); // no second start
   });
 
-  test('autopg install registers BOTH pgserve and autopg-ui by default', () => {
+  test('autopg install registers BOTH autopg-server and autopg-ui by default', () => {
     runCli(['install']);
     const calls = readCallLog(stubBin.calls);
     const starts = calls.filter((c) => c[0] === 'start');
-    // One start each for pgserve + autopg-ui
+    // One start each for autopg-server (the postmaster) + autopg-ui.
     expect(starts.length).toBe(2);
     const names = starts.map((c) => {
       const idx = c.indexOf('--name');
       return idx >= 0 ? c[idx + 1] : null;
     });
-    expect(names).toContain('pgserve');
+    expect(names).toContain('autopg-server');
     expect(names).toContain('autopg-ui');
   });
 
@@ -194,7 +189,7 @@ describe('pgserve install', () => {
     const starts = calls.filter((c) => c[0] === 'start');
     expect(starts.length).toBe(1);
     const idx = starts[0].indexOf('--name');
-    expect(starts[0][idx + 1]).toBe('pgserve');
+    expect(starts[0][idx + 1]).toBe('autopg-server');
     // The CLI should advertise the opt-out path on stderr or stdout.
     expect(result.stdout + result.stderr).toContain('skipping console install');
   });
@@ -215,13 +210,13 @@ describe('pgserve install', () => {
     expect(scriptArgs[portIdx + 1]).toBe('8500');
   });
 
-  test('autopg uninstall tears down both pgserve and autopg-ui', () => {
+  test('autopg uninstall tears down both autopg-server and autopg-ui', () => {
     runCli(['install']);
     runCli(['uninstall']);
     const calls = readCallLog(stubBin.calls);
     const deletes = calls.filter((c) => c[0] === 'delete');
     const deletedNames = deletes.map((c) => c[1]);
-    expect(deletedNames).toContain('pgserve');
+    expect(deletedNames).toContain('autopg-server');
     expect(deletedNames).toContain('autopg-ui');
   });
 
@@ -251,12 +246,15 @@ describe('pgserve install', () => {
   });
 
   test('fails clearly when pm2 is missing', () => {
-    // Build a sanitized PATH that has node (so spawnSync can resolve the
-    // interpreter) but explicitly NO directory containing pm2. Skipping
-    // /usr/bin etc. would make the test brittle on different hosts.
+    // Build a sanitized PATH that has NO pm2 anywhere — we want pm2 to be
+    // genuinely missing for this scenario. Invoke the wrapper through the
+    // current runtime via its absolute path so we never need to put a
+    // node/bun dir back on PATH (under bun's test runner, `process.execPath`
+    // resolves to `/home/.../.bun/bin/bun` whose dir typically also contains
+    // pm2 — adding it back to PATH leaks pm2 into the spawned process and
+    // masks the failure).
     fs.rmSync(stubBin.dir, { recursive: true, force: true });
     stubBin = makeStubPm2('missing');
-    const nodeDir = path.dirname(process.execPath);
     const sanitizedPath = (process.env.PATH || '')
       .split(':')
       .filter((p) => {
@@ -266,9 +264,9 @@ describe('pgserve install', () => {
           return true;
         }
       })
-      .concat([nodeDir, stubBin.dir])
+      .concat([stubBin.dir])
       .join(':');
-    const result = spawnSync('node', [BIN, 'install'], {
+    const result = spawnSync(process.execPath, [BIN, 'install'], {
       encoding: 'utf8',
       env: { ...process.env, PGSERVE_CONFIG_DIR: tmpHome, PATH: sanitizedPath },
     });
@@ -282,7 +280,7 @@ describe('pgserve url / port', () => {
     runCli(['install']);
     const result = runCli(['url']);
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('postgres://localhost:8432/postgres');
+    expect(result.stdout.trim()).toBe('postgres://localhost:5432/postgres');
   });
 
   test('port after install prints the registered port', () => {
@@ -290,6 +288,13 @@ describe('pgserve url / port', () => {
     const result = runCli(['port']);
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('8442');
+  });
+
+  test('port after default install prints 5432 (canonical)', () => {
+    runCli(['install']);
+    const result = runCli(['port']);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('5432');
   });
 
   test('url before install fails with helpful message', () => {
@@ -313,7 +318,7 @@ describe('pgserve status', () => {
     expect(result.status).toBe(0);
     const out = JSON.parse(result.stdout);
     expect(out.installed).toBe(true);
-    expect(out.name).toBe('pgserve');
+    expect(out.name).toBe('autopg-server');
     expect(out.status).toBe('online');
     expect(out.port).toBe(8482);
     expect(out.url).toBe('postgres://localhost:8482/postgres');
@@ -324,8 +329,8 @@ describe('pgserve status', () => {
     const result = runCli(['status']);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('port');
-    expect(result.stdout).toContain('8432');
-    expect(result.stdout).toContain('postgres://localhost:8432/postgres');
+    expect(result.stdout).toContain('5432');
+    expect(result.stdout).toContain('postgres://localhost:5432/postgres');
   });
 });
 
@@ -339,7 +344,7 @@ describe('pgserve uninstall', () => {
     expect(result.stdout).toContain('uninstalled');
 
     const calls = readCallLog(stubBin.calls);
-    expect(calls.find((c) => c[0] === 'delete' && c[1] === 'pgserve')).toBeDefined();
+    expect(calls.find((c) => c[0] === 'delete' && c[1] === 'autopg-server')).toBeDefined();
 
     // Config preserved so a re-install reuses port/dataDir.
     expect(fs.existsSync(path.join(tmpHome, 'config.json'))).toBe(true);
@@ -349,6 +354,105 @@ describe('pgserve uninstall', () => {
     const result = runCli(['uninstall']);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('not registered');
+  });
+});
+
+describe('pgserve singleton (v2.4) — socket dir + admin.json supervisor record', () => {
+  // Use a unique XDG_RUNTIME_DIR per test so we don't pollute the host's
+  // canonical socket dir. ensureSocketDir() probes writability on the
+  // resolved path and refuses on EACCES — the temp path keeps tests
+  // hermetic across CI / dev laptops.
+  let tmpXdg;
+  beforeEach(() => {
+    tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'pgserve-xdg-'));
+  });
+  afterEach(() => {
+    if (tmpXdg) fs.rmSync(tmpXdg, { recursive: true, force: true });
+  });
+
+  function runWithXdg(args, env = {}) {
+    return runCli(args, { XDG_RUNTIME_DIR: tmpXdg, ...env });
+  }
+
+  test('install creates the canonical socket dir under $XDG_RUNTIME_DIR with mode 0700', () => {
+    const result = runWithXdg(['install', '--no-ui']);
+    expect(result.status).toBe(0);
+    const socketDir = path.join(tmpXdg, 'pgserve');
+    expect(fs.existsSync(socketDir)).toBe(true);
+    const stat = fs.statSync(socketDir);
+    expect(stat.isDirectory()).toBe(true);
+    expect(stat.mode & 0o777).toBe(0o700);
+  });
+
+  test('install passes --socket-dir to the postmaster pm2 args', () => {
+    runWithXdg(['install', '--no-ui']);
+    const calls = readCallLog(stubBin.calls);
+    const startCall = calls.find((c) => c[0] === 'start' && c.includes('autopg-server'));
+    const dashIdx = startCall.indexOf('--');
+    const scriptArgs = startCall.slice(dashIdx + 1);
+    const sdIdx = scriptArgs.indexOf('--socket-dir');
+    expect(sdIdx).toBeGreaterThan(-1);
+    expect(scriptArgs[sdIdx + 1]).toBe(path.join(tmpXdg, 'pgserve'));
+  });
+
+  test('install writes admin.json with supervisor=pm2 + canonical socketDir + port', () => {
+    runWithXdg(['install', '--no-ui']);
+    const adminFile = path.join(tmpHome, 'admin.json');
+    expect(fs.existsSync(adminFile)).toBe(true);
+    const stat = fs.statSync(adminFile);
+    expect(stat.mode & 0o777).toBe(0o600);
+    const onDisk = JSON.parse(fs.readFileSync(adminFile, 'utf8'));
+    expect(onDisk.supervisor).toBe('pm2');
+    expect(onDisk.socketDir).toBe(path.join(tmpXdg, 'pgserve'));
+    expect(onDisk.port).toBe(5432);
+    expect(onDisk.installedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  test('install --no-pm2 skips pm2 register but still writes admin.json with supervisor=external', () => {
+    const result = runWithXdg(['install', '--no-pm2', '--no-ui']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--no-pm2');
+    expect(result.stdout).toContain('supervisor=external');
+
+    const calls = readCallLog(stubBin.calls);
+    expect(calls.filter((c) => c[0] === 'start')).toEqual([]);
+
+    const adminFile = path.join(tmpHome, 'admin.json');
+    expect(fs.existsSync(adminFile)).toBe(true);
+    const onDisk = JSON.parse(fs.readFileSync(adminFile, 'utf8'));
+    expect(onDisk.supervisor).toBe('external');
+    expect(onDisk.socketDir).toBe(path.join(tmpXdg, 'pgserve'));
+    expect(onDisk.port).toBe(5432);
+  });
+
+  test('install refuses with non-zero when admin.json records supervisor=systemd-user', () => {
+    // Pre-seed the lock file as if `autopg service install` had already run.
+    fs.mkdirSync(tmpHome, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpHome, 'admin.json'),
+      JSON.stringify({
+        supervisor: 'systemd-user',
+        socketDir: '/run/user/1000/pgserve',
+        port: 5432,
+        installedAt: '2026-05-01T00:00:00.000Z',
+      }),
+      { mode: 0o600 },
+    );
+    const result = runWithXdg(['install', '--no-ui']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/supervisor mismatch|systemd-user/);
+    expect(result.stderr).toContain('autopg service uninstall');
+  });
+
+  test('install fallback uses /tmp/pgserve when XDG_RUNTIME_DIR is unset', () => {
+    // Clear XDG so resolveSocketDir falls back. The canonical /tmp/pgserve
+    // path may already exist on the host — that's fine: ensureSocketDir
+    // is idempotent and re-chmods to 0700.
+    const result = runCli(['install', '--no-ui'], { XDG_RUNTIME_DIR: '' });
+    expect(result.status).toBe(0);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(tmpHome, 'admin.json'), 'utf8'));
+    expect(onDisk.socketDir).toBe('/tmp/pgserve');
+    expect(fs.statSync('/tmp/pgserve').mode & 0o777).toBe(0o700);
   });
 });
 
