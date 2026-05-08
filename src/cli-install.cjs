@@ -27,8 +27,37 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const PM2_PROCESS_NAME = 'pgserve';
-const DEFAULT_PORT = 8432;
+// pgserve singleton (v2.4): the cohort-shared admin-json + socket-dir
+// helpers live in `src/lib/*.js` as ESM modules (project convention: new
+// modules ship as .js / ESM). cli-install.cjs runs under node — which
+// cannot synchronously `require()` ESM — so we cache the dynamic-import
+// promise once at module load and await it from async install paths.
+const _adminJsonModuleP = import('./lib/admin-json.js');
+const _socketDirModuleP = import('./lib/socket-dir.js');
+
+async function loadCohortModules() {
+  const [adminJson, socketDirMod] = await Promise.all([_adminJsonModuleP, _socketDirModuleP]);
+  return { adminJson, socketDirMod };
+}
+
+// pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 1.
+//
+// The pm2 entry name moves from `pgserve` to `autopg-server` so the canonical
+// two-process layout matches the cohort design (`autopg-server` + `autopg-ui`).
+// Tier B operators install a systemd-user unit that ALSO claims the
+// `autopg-server` lifecycle role — `~/.autopg/admin.json` records which
+// supervisor owns the host and `pgserve install` refuses to register pm2 over
+// an existing Tier B record.
+//
+// Default postgres port moves from 8432 (the old bun-proxy listener) to 5432
+// (the postgres standard, since the postmaster now binds TCP directly).
+const PM2_PROCESS_NAME = 'autopg-server';
+// Legacy entry name (pre-v2.4). Self-healing migration in Group 6 will
+// `pm2 delete pgserve` after registering `autopg-server`; we surface the
+// constant here so cleanup tooling and tests can reference it without
+// hardcoding strings.
+const LEGACY_PM2_PROCESS_NAME = 'pgserve';
+const DEFAULT_PORT = 5432;
 
 // Console UI is auto-supervised under pm2 alongside the daemon since v2.2.3.
 // The bundled SPA (console/dist/) is served on this port; operator-facing
@@ -200,7 +229,7 @@ function getEffectiveSupervision() {
   }
 }
 
-function buildPm2StartArgs({ scriptPath, port, dataDir }) {
+function buildPm2StartArgs({ scriptPath, port, dataDir, socketDir }) {
   const logs = {
     out: path.join(getLogsDir(), `${PM2_PROCESS_NAME}-out.log`),
     error: path.join(getLogsDir(), `${PM2_PROCESS_NAME}-error.log`),
@@ -215,19 +244,11 @@ function buildPm2StartArgs({ scriptPath, port, dataDir }) {
     'none',
     '--max-restarts',
     String(supervision.maxRestarts),
-    // NOTE: pm2 ≥ 6.0 dropped `--min-uptime` from the CLI surface — passing
-    // it produces `error: unknown option --min-uptime` and aborts the
-    // install. The flag still works inside an ecosystem file, but per the
-    // canonical-pm2-supervision wish we keep `pgserve install` as a pure
-    // CLI flow (no extra files for operators to manage). The trade-off is
-    // that `--max-restarts` now counts every restart (rapid or not) rather
-    // than only sub-`min_uptime` ones; the budget of 50 above is sized
-    // accordingly.
+    // pm2 ≥ 6.0 dropped `--min-uptime` from the CLI surface — passing it
+    // aborts the install. Restart budget (50) is sized to absorb a few
+    // long-uptime crashes without burning through.
     '--restart-delay',
     String(supervision.restartDelayMs),
-    // Exponential backoff between successive failures: starts at 100ms,
-    // doubles each crash, ramps to ~60s. Avoids hammering pm2 + the host
-    // when the underlying issue is persistent.
     '--exp-backoff-restart-delay',
     String(supervision.expBackoffRestartDelayMs),
     '--max-memory-restart',
@@ -241,28 +262,19 @@ function buildPm2StartArgs({ scriptPath, port, dataDir }) {
     '--error',
     logs.error,
     '--',
-    // Foreground multi-tenant mode (`pgserve [options]`), NOT daemon mode.
-    //
-    // Daemon mode binds a unix control socket and requires libpq peers to
-    // authenticate via a fingerprint+token handshake (`pgserve daemon
-    // issue-token`). Downstream services that connect with a plain
-    // `postgres://` URL (omni, genie, anything that doesn't speak the
-    // fingerprint protocol) cannot reach a daemon-mode listener. We also
-    // observed live: `pgserve install` was passing `--port` to the daemon
-    // parser, which only accepts `--data | --ram | --log | --no-provision
-    // | --listen | --pgvector` — every install attempt crashed with
-    // `Unknown daemon option: --port` and pm2 burned its restart budget.
-    //
-    // Foreground mode (the default `pgserve [options]` invocation in
-    // postgres-server.js) accepts `--port`, auto-provisions databases on
-    // first connect, runs the cluster on multi-core hosts, and binds TCP
-    // on `127.0.0.1:<port>` with no auth dance — exactly what canonical
-    // pgserve consumers expect. Pass the same flags pgserve already
-    // documents in its own `pgserve --help` output.
+    // pgserve singleton (v2.4): pm2 supervises the postmaster directly via
+    // the `pgserve postmaster` subcommand — no router, no bun proxy, no
+    // daemon control socket. Postgres binds the canonical Unix socket
+    // under <socketDir> AND TCP <port> natively. Operators connect via
+    //   psql -h $XDG_RUNTIME_DIR/pgserve     (Unix socket, no -p)
+    //   psql -h 127.0.0.1 -p 5432            (canonical TCP)
+    'postmaster',
     '--port',
     String(port),
     '--data',
     dataDir,
+    '--socket-dir',
+    socketDir,
     '--log',
     'warn',
   ];
@@ -429,12 +441,19 @@ function writeAdminFile({ password, rotated = false }) {
   const hash = hashAdminPassword(password, salt);
   const file = getAdminFilePath();
   const now = new Date().toISOString();
+  // pgserve singleton (v2.4): admin.json is shared with the supervisor
+  // record (`{ supervisor, socketDir, port, installedAt }`) written by
+  // `src/lib/admin-json.js`. Merge with any existing fields so the scrypt
+  // Basic-Auth scheme can never wipe the supervisor metadata (and vice
+  // versa).
+  const existing = readAdminFile() || {};
   const payload = {
+    ...existing,
     scheme: 'scrypt',
     params: SCRYPT_PARAMS,
     salt: salt.toString('base64'),
     hash: hash.toString('base64'),
-    createdAt: rotated ? readAdminFile()?.createdAt ?? now : now,
+    createdAt: rotated ? existing.createdAt ?? now : now,
     rotatedAt: rotated ? now : null,
   };
   ensureConfigDir();
@@ -487,9 +506,14 @@ function verifyAdminPassword(candidate) {
 
 function ensureAdminPassword({ rotate = false } = {}) {
   const existing = readAdminFile();
-  if (existing && !rotate) return null;
+  // pgserve singleton (v2.4): admin.json may exist with only supervisor
+  // fields (`{ supervisor, socketDir, port, installedAt }`) and no scrypt
+  // scheme yet. Treat "no scrypt scheme" as "no password" so the install
+  // path still mints one on first run.
+  const hasScryptScheme = !!(existing && existing.scheme === 'scrypt');
+  if (hasScryptScheme && !rotate) return null;
   const password = generateAdminPassword();
-  writeAdminFile({ password, rotated: !!existing });
+  writeAdminFile({ password, rotated: !!hasScryptScheme });
   return password;
 }
 
@@ -532,13 +556,40 @@ function cmdAuthDispatch(args) {
  * `scriptPath` is the path to `bin/postgres-server.js` resolved by the
  * wrapper before this module is required (avoids re-resolving here).
  */
-function cmdInstall(args, ctx) {
-  if (!pm2IsAvailable()) {
-    fail('pm2 not found in PATH. Install with: bun add -g pm2  (or npm i -g pm2)');
+async function cmdInstall(args, ctx) {
+  const { adminJson, socketDirMod } = await loadCohortModules();
+
+  // pgserve singleton (v2.4): refuse to install if a different supervisor
+  // (Tier B systemd-user / launchd) already owns the host. The cohort
+  // contract guarantees one and only one supervisor records itself in
+  // `~/.autopg/admin.json`. `pgserve install` is the Tier A (pm2) entry —
+  // it asserts that nothing else has already claimed the host before
+  // touching pm2.
+  const noPm2 = args.includes('--no-pm2');
+  const expectedSupervisor = noPm2 ? 'external' : 'pm2';
+  try {
+    adminJson.assertSupervisor(expectedSupervisor, { configDir: getConfigDir() });
+  } catch (err) {
+    fail(err.message);
+  }
+
+  if (!noPm2 && !pm2IsAvailable()) {
+    fail('pm2 not found in PATH. Install with: bun add -g pm2  (or npm i -g pm2). Pass --no-pm2 for CI / Tier B-bound hosts.');
   }
 
   const port = parsePort(args) ?? readConfig()?.port ?? DEFAULT_PORT;
   const dataDir = parseDataDir(args) ?? readConfig()?.dataDir ?? getDataDir();
+
+  // Set up the canonical socket directory before pm2 launches the
+  // postmaster. `ensureSocketDir` enforces mode 0700 and probes writability
+  // so failure surfaces here — not as a libpq bind error a few seconds
+  // into pm2 backoff.
+  const socketDir = parseSocketDir(args) ?? socketDirMod.resolveSocketDir();
+  try {
+    socketDirMod.ensureSocketDir(socketDir);
+  } catch (err) {
+    fail(err.message);
+  }
 
   const noUi = args.includes('--no-ui');
   const withUi = args.includes('--with-ui');
@@ -556,6 +607,22 @@ function cmdInstall(args, ctx) {
   // post-install without restarting postgres.
   if (withUi) {
     cmdInstallUi(ctx, { uiPort, uiHost, refresh: true });
+    return 0;
+  }
+
+  // --no-pm2: skip pm2 register entirely. Used by CI fixture provisioning
+  // (no sudo, no pm2 ambient state) and by Tier B-bound hosts that will
+  // immediately hand off to `autopg service install`. Still record the
+  // supervisor + canonical socket dir + port in admin.json so downstream
+  // tooling (pgserve doctor, omni install, genie install) can discover
+  // where to connect without an active pm2 entry.
+  if (noPm2) {
+    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    writeConfig({ port, dataDir, registeredAt: readConfig()?.registeredAt ?? new Date().toISOString() });
+    writeSupervisorRecord(adminJson, { supervisor: 'external', socketDir, port });
+    ok(`installed (--no-pm2): supervisor=external, socketDir=${socketDir}, port=${port}`);
+    ok(`url: postgres://localhost:${port}/postgres`);
+    note(`--no-pm2: pm2 register skipped. Start the postmaster manually with \`pgserve postmaster --port ${port} --data ${dataDir} --socket-dir ${socketDir}\` or hand off to systemd-user / launchd.`);
     return 0;
   }
 
@@ -581,6 +648,7 @@ function cmdInstall(args, ctx) {
     // don't tear down the live process. Operators wanting a port change
     // should `uninstall` then `install` (or pass --redeploy).
     writeConfig({ port, dataDir, registeredAt: readConfig()?.registeredAt ?? new Date().toISOString() });
+    writeSupervisorRecord(adminJson, { supervisor: 'pm2', socketDir, port });
     if (!noUi) cmdInstallUi(ctx, { uiPort, uiHost });
     return 0;
   }
@@ -588,14 +656,15 @@ function cmdInstall(args, ctx) {
   ensureLogsDir();
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 
-  const pm2Args = buildPm2StartArgs({ scriptPath: ctx.scriptPath, port, dataDir });
+  const pm2Args = buildPm2StartArgs({ scriptPath: ctx.scriptPath, port, dataDir, socketDir });
   const result = spawnSync('pm2', pm2Args, { stdio: 'inherit' });
   if (result.status !== 0) {
     fail(`pm2 start failed (exit ${result.status}). Logs: ${getLogsDir()}/${PM2_PROCESS_NAME}-error.log`);
   }
 
   writeConfig({ port, dataDir, registeredAt: new Date().toISOString() });
-  ok(`installed: pm2 process "${PM2_PROCESS_NAME}" on port ${port} (data: ${dataDir})`);
+  writeSupervisorRecord(adminJson, { supervisor: 'pm2', socketDir, port });
+  ok(`installed: pm2 process "${PM2_PROCESS_NAME}" on port ${port} (socket: ${socketDir}, data: ${dataDir})`);
   ok(`url: postgres://localhost:${port}/postgres`);
 
   if (noUi) {
@@ -617,6 +686,31 @@ function cmdInstall(args, ctx) {
     cmdInstallUi(ctx, { uiPort, uiHost, refresh: redeploy });
   }
   return 0;
+}
+
+/**
+ * Persist the supervisor record into `~/.autopg/admin.json`. Wraps
+ * `writeAdminJson` from the cohort-shared module so the install path can
+ * pin its own ISO timestamp + log a friendly diagnostic on the
+ * supervisor-lock refusal.
+ */
+function writeSupervisorRecord(adminJson, { supervisor, socketDir, port }) {
+  try {
+    adminJson.writeAdminJson(
+      {
+        supervisor,
+        socketDir,
+        port,
+        installedAt: new Date().toISOString(),
+      },
+      { configDir: getConfigDir() },
+    );
+  } catch (err) {
+    // The "Tier B already owns this host" error is the contract failure
+    // we surface to operators. Other errors (EACCES, ENOSPC, etc.) just
+    // pass through with their stock message.
+    fail(err.message);
+  }
 }
 
 /**
@@ -744,6 +838,14 @@ function parseDataDir(args) {
   if (i < 0) return null;
   const v = args[i + 1];
   if (!v) fail('--data requires a value');
+  return path.resolve(v);
+}
+
+function parseSocketDir(args) {
+  const i = args.indexOf('--socket-dir');
+  if (i < 0) return null;
+  const v = args[i + 1];
+  if (!v) fail('--socket-dir requires a value');
   return path.resolve(v);
 }
 

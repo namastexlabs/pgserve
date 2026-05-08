@@ -548,6 +548,15 @@ export class PostgresManager extends EventEmitter {
     this.binaries = null;
     this.creatingDatabases = new Map(); // Track in-progress creations
     this.socketDir = null; // Unix socket directory for faster local connections
+    // pgserve singleton (v2.4): callers that own the socket directory (e.g.
+    // `pgserve postmaster` invoked under pm2 or a systemd-user unit) pass an
+    // explicit, externally-managed path so libpq peers connecting via
+    // `psql -h $XDG_RUNTIME_DIR/pgserve` reach a stable, well-known socket.
+    // When unset we fall back to the legacy per-pid `os.tmpdir()` path so
+    // foreground / daemon / cluster modes keep working unchanged.
+    this.explicitSocketDir = typeof options.socketDir === 'string' && options.socketDir.length > 0
+      ? options.socketDir
+      : null;
     this.adminPool = null; // Connection pool for database admin operations
     this.useRam = options.useRam || false; // Use /dev/shm for true RAM storage (Linux only)
     this.isTrueRam = false; // Tracks if we're actually using RAM storage
@@ -634,9 +643,24 @@ export class PostgresManager extends EventEmitter {
 
     // Create Unix socket directory (Linux/macOS only, Windows uses TCP)
     if (os.platform() !== 'win32') {
-      this.socketDir = path.join(os.tmpdir(), `pgserve-sock-${process.pid}-${Date.now()}`);
-      if (!fs.existsSync(this.socketDir)) {
-        fs.mkdirSync(this.socketDir, { recursive: true, mode: 0o700 });
+      if (this.explicitSocketDir) {
+        // pgserve singleton (v2.4): operator-supplied socket dir is created
+        // and chmoded by the install path (`pgserve install`); we only
+        // refuse to start when it doesn't exist so the operator's intent
+        // surfaces cleanly instead of postgres bailing on bind() with a
+        // cryptic libpq error.
+        if (!fs.existsSync(this.explicitSocketDir)) {
+          throw new Error(
+            `pgserve: socketDir does not exist: ${this.explicitSocketDir}. `
+            + `Run \`pgserve install\` to create it (or pass --socket-dir <existing-dir>).`,
+          );
+        }
+        this.socketDir = this.explicitSocketDir;
+      } else {
+        this.socketDir = path.join(os.tmpdir(), `pgserve-sock-${process.pid}-${Date.now()}`);
+        if (!fs.existsSync(this.socketDir)) {
+          fs.mkdirSync(this.socketDir, { recursive: true, mode: 0o700 });
+        }
       }
     }
 
@@ -1574,8 +1598,16 @@ export class PostgresManager extends EventEmitter {
         }
       }
 
-      // Clean up socket directory
-      if (this.socketDir) {
+      // Clean up socket directory.
+      // pgserve singleton (v2.4): when the caller supplied an explicit
+      // socket dir (operator-owned canonical path under
+      // `$XDG_RUNTIME_DIR/pgserve` or `/tmp/pgserve`), the install path
+      // owns the directory's lifecycle — postgres unlinks its own
+      // `.s.PGSQL.<port>` + `.lock` files on graceful shutdown, and
+      // tearing the directory down here would race with operator tooling
+      // (pm2 restarts, doctor --fix, etc.). Only sweep the legacy
+      // per-pid `os.tmpdir()/pgserve-sock-*` form we generated ourselves.
+      if (this.socketDir && !this.explicitSocketDir) {
         try {
           fs.rmSync(this.socketDir, { recursive: true, force: true });
           this.logger.debug({ socketDir: this.socketDir }, 'Cleaned up socket directory');
