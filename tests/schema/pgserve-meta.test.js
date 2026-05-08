@@ -49,7 +49,18 @@ describe('getBootstrapStatements', () => {
 
   test('first statement creates the table with IF NOT EXISTS', () => {
     const [createTable] = getBootstrapStatements();
-    expect(createTable).toMatch(/CREATE TABLE IF NOT EXISTS pgserve_meta/);
+    expect(createTable).toMatch(/CREATE TABLE IF NOT EXISTS public\.pgserve_meta/);
+  });
+
+  test('table + indexes are schema-qualified to public (matches cosign-meta-migration probe)', () => {
+    const sql = getBootstrapStatements().join(';');
+    // The upgrade pipeline probes to_regclass('public.pgserve_meta'),
+    // so the bootstrap MUST land in public to stay discoverable.
+    expect(sql).toContain('public.pgserve_meta');
+    // Defensive: there is no unqualified mention of the bare name in
+    // a CREATE / ON clause that would imply search_path resolution.
+    expect(sql).not.toMatch(/CREATE TABLE IF NOT EXISTS pgserve_meta(?!\w)/);
+    expect(sql).not.toMatch(/ON pgserve_meta(?!\w)/);
   });
 
   test('table SQL declares the expected primary key + uniqueness', () => {

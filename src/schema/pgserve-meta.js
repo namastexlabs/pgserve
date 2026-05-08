@@ -57,10 +57,18 @@ export const PGSERVE_META_COLUMNS = Object.freeze([
  *   - last_used_at:   NOT NULL DEFAULT now() — touched by provision; gc
  *                     uses it as the staleness signal
  */
+// Schema-qualified name. The upgrade pipeline probes
+// `to_regclass('public.pgserve_meta')` (cosign-meta-migration.js); if a
+// non-default search_path is configured on the active role, an
+// unqualified CREATE TABLE could land the bootstrap in a non-public
+// schema while later migrations + gc continue to look in `public.`. The
+// only safe option is to qualify both halves consistently.
+const QUALIFIED = `public.${PGSERVE_META_TABLE}`;
+
 export function getBootstrapStatements() {
   return [
     [
-      `CREATE TABLE IF NOT EXISTS ${PGSERVE_META_TABLE} (`,
+      `CREATE TABLE IF NOT EXISTS ${QUALIFIED} (`,
       '  fingerprint   TEXT        PRIMARY KEY,',
       '  database_name TEXT        NOT NULL UNIQUE,',
       '  role_name     TEXT        NOT NULL,',
@@ -70,8 +78,8 @@ export function getBootstrapStatements() {
       '  last_used_at  TIMESTAMPTZ NOT NULL DEFAULT now()',
       ')',
     ].join('\n'),
-    `CREATE INDEX IF NOT EXISTS ${PGSERVE_META_TABLE}_last_used_at_idx ON ${PGSERVE_META_TABLE} (last_used_at)`,
-    `CREATE INDEX IF NOT EXISTS ${PGSERVE_META_TABLE}_publisher_idx ON ${PGSERVE_META_TABLE} (publisher)`,
+    `CREATE INDEX IF NOT EXISTS ${PGSERVE_META_TABLE}_last_used_at_idx ON ${QUALIFIED} (last_used_at)`,
+    `CREATE INDEX IF NOT EXISTS ${PGSERVE_META_TABLE}_publisher_idx ON ${QUALIFIED} (publisher)`,
   ];
 }
 
