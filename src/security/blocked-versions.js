@@ -35,12 +35,46 @@ export const BLOCKED_VERSIONS = Object.freeze([
 ]);
 
 /**
+ * Test-only override. The compile-time list is frozen so production code
+ * cannot mutate it; tests need a way to inject blocked entries to exercise
+ * the throw path. Populated via __addBlockedForTest() and consulted by
+ * findBlocked() when non-empty. Cleared via __clearBlockedTestOverridesForTest().
+ *
+ * @type {BlockedVersion[]}
+ */
+const _testOverrides = [];
+
+/**
+ * Test-only — register an additional blocked entry for the lifetime of a
+ * test. Call __clearBlockedTestOverridesForTest() in afterEach to keep
+ * tests isolated.
+ *
+ * @param {BlockedVersion} entry
+ */
+export function __addBlockedForTest(entry) {
+  if (!entry || typeof entry.version !== 'string' || typeof entry.reason !== 'string') {
+    throw new Error('__addBlockedForTest: entry needs { version, reason }');
+  }
+  _testOverrides.push(entry);
+}
+
+/** Test-only — drop all entries registered via __addBlockedForTest. */
+export function __clearBlockedTestOverridesForTest() {
+  _testOverrides.length = 0;
+}
+
+/**
  * Find the blocklist entry for an exact version string, if any.
+ * Considers both the compile-time BLOCKED_VERSIONS list and any test
+ * overrides registered via __addBlockedForTest().
+ *
  * @param {string} version
  * @returns {BlockedVersion | undefined}
  */
 export function findBlocked(version) {
   if (typeof version !== 'string' || version.length === 0) return undefined;
+  const fromOverrides = _testOverrides.find((b) => b.version === version);
+  if (fromOverrides) return fromOverrides;
   return BLOCKED_VERSIONS.find((b) => b.version === version);
 }
 

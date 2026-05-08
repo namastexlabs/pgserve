@@ -2,8 +2,18 @@
  * Tests for the hardcoded blocklist (pgserve-singleton-no-proxy G5).
  */
 
-import { test, expect, describe } from 'bun:test';
-import { BLOCKED_VERSIONS, findBlocked, assertNotBlocked } from '../../src/security/blocked-versions.js';
+import { test, expect, describe, afterEach } from 'bun:test';
+import {
+  BLOCKED_VERSIONS,
+  findBlocked,
+  assertNotBlocked,
+  __addBlockedForTest,
+  __clearBlockedTestOverridesForTest,
+} from '../../src/security/blocked-versions.js';
+
+afterEach(() => {
+  __clearBlockedTestOverridesForTest();
+});
 
 describe('BLOCKED_VERSIONS export', () => {
   test('is a frozen array', () => {
@@ -36,6 +46,11 @@ describe('findBlocked', () => {
     expect(findBlocked(42)).toBeUndefined();
     expect(findBlocked('')).toBeUndefined();
   });
+
+  test('returns the entry when an injected version is blocked', () => {
+    __addBlockedForTest({ version: '0.0.0-test', reason: 'fixture' });
+    expect(findBlocked('0.0.0-test')).toEqual({ version: '0.0.0-test', reason: 'fixture' });
+  });
 });
 
 describe('assertNotBlocked', () => {
@@ -48,26 +63,52 @@ describe('assertNotBlocked', () => {
     expect(() => assertNotBlocked('')).not.toThrow();
   });
 
-  test('throws EBLOCKEDVERSION for an injected blocked entry', () => {
-    // We cannot mutate BLOCKED_VERSIONS (frozen). Instead, smoke-test the
-    // throw shape by calling the same code path with a synthetic record
-    // shape. The contract: when a blocked version IS hit, the error has
-    // `code === 'EBLOCKEDVERSION'` and a multi-line message starting with
-    // `EBLOCKEDVERSION: pgserve@<version> is blocked.`
-    // We assert the message-builder shape via the source-of-truth helper
-    // by patching the array in a child sandbox is overkill; instead we
-    // verify findBlocked + manual error construction parity here. Real
-    // injection is covered in the integration test that flips the import.
-    const synthetic = { version: '0.0.0-test-blocked', reason: 'test fixture' };
-    const expectedPrefix = `EBLOCKEDVERSION: pgserve@${synthetic.version} is blocked.`;
-    // Construct the same error shape the helper would, validates contract
-    const err = new Error(`${expectedPrefix}\n  reason: ${synthetic.reason}\n  remediation: install a different version (run \`pgserve update\` for the latest).`);
-    err.code = 'EBLOCKEDVERSION';
-    err.version = synthetic.version;
-    err.reason = synthetic.reason;
-    expect(err.code).toBe('EBLOCKEDVERSION');
-    expect(err.message.startsWith('EBLOCKEDVERSION:')).toBe(true);
-    expect(err.message).toContain('reason: test fixture');
-    expect(err.message).toContain('remediation:');
+  test('throws EBLOCKEDVERSION when an injected blocked version is hit', () => {
+    __addBlockedForTest({
+      version: '0.0.0-bad',
+      reason: 'crashes at startup',
+    });
+    let caught;
+    try {
+      assertNotBlocked('0.0.0-bad');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.code).toBe('EBLOCKEDVERSION');
+    expect(caught.version).toBe('0.0.0-bad');
+    expect(caught.reason).toBe('crashes at startup');
+    expect(caught.message.startsWith('EBLOCKEDVERSION: pgserve@0.0.0-bad is blocked.')).toBe(true);
+    expect(caught.message).toContain('reason: crashes at startup');
+    expect(caught.message).toContain('remediation:');
+  });
+
+  test('includes advisoryUrl in the message when provided', () => {
+    __addBlockedForTest({
+      version: '0.0.0-cve',
+      reason: 'CVE-2026-9999',
+      advisoryUrl: 'https://example.test/advisory',
+    });
+    let caught;
+    try {
+      assertNotBlocked('0.0.0-cve');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught.message).toContain('advisory: https://example.test/advisory');
+  });
+
+  test('test override is cleared between tests (isolation check)', () => {
+    // Previous tests registered overrides; afterEach should have wiped them.
+    expect(findBlocked('0.0.0-bad')).toBeUndefined();
+    expect(findBlocked('0.0.0-cve')).toBeUndefined();
+  });
+});
+
+describe('test overrides do not leak into production code path', () => {
+  test('BLOCKED_VERSIONS itself is unaffected by overrides', () => {
+    __addBlockedForTest({ version: '0.0.0-leak-check', reason: 'test' });
+    expect(BLOCKED_VERSIONS.length).toBe(0);
+    expect(BLOCKED_VERSIONS.find((b) => b.version === '0.0.0-leak-check')).toBeUndefined();
   });
 });
