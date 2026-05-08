@@ -39,15 +39,11 @@ on:
       - 'scripts/build-binary.sh'
       - 'scripts/fetch-postgres-bins.sh'
       - 'scripts/assemble-tarball.sh'
-      - 'scripts/aggregate-manifest.sh'
-      - 'scripts/verify-published-artifacts.sh'
-      - 'scripts/cdn-publish.sh'
       - 'tests/integration/tarball-smoke.sh'
       - 'tests/integration/sign-attest-smoke.sh'
-      - 'tests/integration/cdn-publish.sh'
       - '.github/workflows/build-tarballs.yml'
       - '.github/workflows/sign-attest.yml'
-      - '.github/workflows/cdn-publish.yml'
+      - '.github/workflows/release-publish.yml'
 
 concurrency:
   group: build-tarballs-${{ github.ref }}
@@ -87,12 +83,8 @@ jobs:
             scripts/build-binary.sh \
             scripts/fetch-postgres-bins.sh \
             scripts/assemble-tarball.sh \
-            scripts/aggregate-manifest.sh \
-            scripts/verify-published-artifacts.sh \
-            scripts/cdn-publish.sh \
             tests/integration/tarball-smoke.sh \
-            tests/integration/sign-attest-smoke.sh \
-            tests/integration/cdn-publish.sh
+            tests/integration/sign-attest-smoke.sh
 
       - name: Run fixture smoke
         run: bash tests/integration/tarball-smoke.sh --fixture --platform ${{ matrix.platform }}
@@ -115,18 +107,12 @@ jobs:
         run: bash tests/integration/sign-attest-smoke.sh
 
   # ---------------------------------------------------------------------------
-  # CDN Publish (fixture) — exercises Group 9's cdn-publish.sh against a
-  # local-backend target dir simulating the cdn.automagik.dev layout.
-  # No AWS credentials needed; gates every PR that touches the publish path.
+  # Distribution model: GitHub Releases (Felipe directive 2026-05-08).
+  # The cdn.automagik.dev publish job has been replaced with `gh release
+  # upload` — see .github/workflows/release-publish.yml. GitHub's Fastly
+  # CDN handles distribution; cosign signatures live in Sigstore Rekor
+  # (storage-agnostic). No bucket, no DNS, no cache-control gymnastics.
   # ---------------------------------------------------------------------------
-  cdn-publish-smoke:
-    name: CDN Publish (fixture)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run cdn-publish fixture smoke
-        run: bash tests/integration/cdn-publish.sh --channel stable --version 2.260503.1
 
   # ---------------------------------------------------------------------------
   # Build (real) — runs on tag pushes + dispatch. Builds + bundles real
