@@ -92,7 +92,10 @@ afterEach(async () => {
   }
 });
 
-function spawnPostmaster({ port = TEST_PORT, extraArgs = [] } = {}) {
+function spawnPostmaster({ port, extraArgs = [] } = {}) {
+  if (!Number.isInteger(port)) {
+    throw new Error('spawnPostmaster: port is required (each test owns its port to avoid TIME_WAIT collision)');
+  }
   const args = [
     POSTMASTER_BIN,
     'postmaster',
@@ -175,8 +178,8 @@ async function waitForExit(child, timeoutMs = 10_000) {
 
 describe('autopg serve — dual-transport binding', () => {
   test('binds UDS at <socketDir>/.s.PGSQL.<port> AND TCP 127.0.0.1:<port>', async () => {
-    proc = spawnPostmaster();
-    const ready = await waitForReady(TEST_PORT);
+    proc = spawnPostmaster({ port: PORT_BIND });
+    const ready = await waitForReady(PORT_BIND);
     if (!ready.ok) {
       const { stdout, stderr } = proc.captureStreams();
       throw new Error(
@@ -190,15 +193,15 @@ describe('autopg serve — dual-transport binding', () => {
     expect(udsOk).toBe(true);
 
     // TCP reachable — bound at 127.0.0.1:<port>
-    const tcpOk = await tcpProbe('127.0.0.1', TEST_PORT);
+    const tcpOk = await tcpProbe('127.0.0.1', PORT_BIND);
     expect(tcpOk).toBe(true);
   }, STARTUP_TIMEOUT_MS + 5000);
 });
 
 describe('autopg serve — runtime.json contract', () => {
   test('writes runtime.json after greet with the cohort-locked shape', async () => {
-    proc = spawnPostmaster();
-    const ready = await waitForReady(TEST_PORT);
+    proc = spawnPostmaster({ port: PORT_RUNTIME });
+    const ready = await waitForReady(PORT_RUNTIME);
     expect(ready.ok).toBe(true);
 
     // runtime.json appears after the postmaster greets healthy. Poll
@@ -218,7 +221,7 @@ describe('autopg serve — runtime.json contract', () => {
 
     // Required fields, all present, all of the right shape.
     expect(record.socketDir).toBe(socketDir);
-    expect(record.port).toBe(TEST_PORT);
+    expect(record.port).toBe(PORT_RUNTIME);
     expect(Number.isInteger(record.pid)).toBe(true);
     expect(record.pid).toBeGreaterThan(0);
     expect(Number.isInteger(record.autopgPid)).toBe(true);
@@ -237,8 +240,8 @@ describe('autopg serve — runtime.json contract', () => {
 
 describe('autopg serve — graceful shutdown removes runtime.json', () => {
   test('SIGTERM clears <socketDir>/runtime.json', async () => {
-    proc = spawnPostmaster();
-    const ready = await waitForReady(TEST_PORT);
+    proc = spawnPostmaster({ port: PORT_SIGTERM });
+    const ready = await waitForReady(PORT_SIGTERM);
     expect(ready.ok).toBe(true);
 
     // Wait for runtime.json to land before signalling — otherwise the
@@ -262,8 +265,8 @@ describe('autopg serve — graceful shutdown removes runtime.json', () => {
 
 describe('autopg serve — crash leaves stale runtime.json', () => {
   test('SIGKILL leaves runtime.json with a non-live autopgPid', async () => {
-    proc = spawnPostmaster();
-    const ready = await waitForReady(TEST_PORT);
+    proc = spawnPostmaster({ port: PORT_SIGKILL });
+    const ready = await waitForReady(PORT_SIGKILL);
     expect(ready.ok).toBe(true);
 
     const deadline = Date.now() + 5000;
