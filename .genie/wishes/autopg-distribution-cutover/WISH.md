@@ -143,8 +143,9 @@ This wish ships in six waves. Wave 1 is sequential (auth foundation must land co
 | 8 | engineer | cosign keyless OIDC sign + SLSA L3 attest per-platform tarball. |
 | 9 | engineer | CDN publish (`cdn.automagik.dev/autopg/<channel>/<version>/<platform>/`). |
 | 10 | engineer | `install.sh` ≤80 lines: `ensure_bun` + `ensure_pm2` + `ensure_curl` + download + verify + handoff. |
-| 11 | engineer | `autopg install` (binary subcommand) — pm2 register as `autopg-server` + paths + rc-file edit. |
+| 11 | engineer | `autopg install` (binary subcommand) — Tier A: pm2 register as `autopg-server` + paths + rc-file edit (rootless default). |
 | 11.5 | engineer | `autopg serve` — dual-transport binding (UDS canonical + TCP) + `admin.json` discovery file. |
+| 11.6 | engineer | `autopg service install` — Tier B: systemd user-unit (Linux) / launchd plist (macOS), privileged opt-in supervisor. Replaces pm2 entry on the host when invoked. |
 
 ### Wave 4 — Update pipeline (depends on Wave 3 + sibling SHARED-DESIGN.md)
 
@@ -441,9 +442,9 @@ shellcheck install.sh && wc -l install.sh && bash test/integration/install-sh-fr
 
 ---
 
-### Group 11: autopg install (binary subcommand)
+### Group 11: autopg install (binary subcommand) — Tier A pm2 (rootless default)
 
-**Goal:** Pick up where `install.sh` hands off — register the daemon under pm2, install the symlink + completions, edit rc-files for PATH.
+**Goal:** Pick up where `install.sh` hands off — register the daemon under pm2, install the symlink + completions, edit rc-files for PATH. This is the **rootless default** supervisor tier; the privileged systemd/launchd sibling is delivered by Group 11.6 (`autopg service install`).
 
 **Deliverables:**
 1. `src/cli/install.js` implementing `autopg install [--non-interactive]`:
@@ -505,6 +506,63 @@ bun test test/cli/serve.test.js && bash test/integration/serve-dual-transport.sh
 ```
 
 **depends-on:** Group 11
+
+---
+
+### Group 11.6: `autopg service install` — Tier B systemd-user / launchd (privileged opt-in, **migrates from pm2**)
+
+**Goal:** Add the privileged-supervisor sibling to Group 11. `autopg install` defaults to pm2 (rootless); `autopg service install` is the explicit opt-in for operators who want OS-native supervision via **systemd user-unit** (Linux) or **launchd LaunchAgent** (macOS). v2.4 ships **`--user` scope only**. System-wide `--system` mode (sudo, dedicated UNIX user, selinux/apparmor) is OUT OF SCOPE — covered by a separate dedicated wish on the next-version `/dream` queue.
+
+**Hard MIGRATE contract (no duplicates):**
+
+`autopg service install` is a **migration**, not a parallel install. It MUST execute in this order, atomically per step:
+
+1. Read `~/.autopg/admin.json` → if `supervisor == "pm2"` and `pm2 list` shows `autopg-server`: capture the entry's start args + cwd + env, then `pm2 stop autopg-server` → `pm2 delete autopg-server` → `pm2 save` (persist the deletion across reboot).
+2. Verify pm2 entry is gone (`pm2 jlist | jq '.[] | select(.name=="autopg-server")'` returns empty). If anything remains, ABORT with non-zero and a clear error — do NOT proceed to write the unit. This is the "no duplicates" guarantee.
+3. Write the systemd user-unit / launchd plist using the captured args.
+4. Enable + start the unit; verify postgres responds on UDS + TCP.
+5. Update `~/.autopg/admin.json`: `{ "supervisor": "systemd-user" | "launchd", "migratedFrom": "pm2", "migratedAt": "<ISO8601>" }`.
+6. On any failure between steps 3–5: `pm2 start <captured-args>` rollback restores Tier A, exit non-zero with diagnostic.
+
+`autopg-ui` stays under pm2 in v2.4 (UI is short-lived, not the data plane). A future wish may add a separate UI service unit; not now.
+
+**Deliverables:**
+1. `src/cli/service-install.js` implementing `autopg service install [--non-interactive]`:
+   - Detect platform: `linux` → systemd user-unit, `darwin` → launchd LaunchAgent, anything else → exit non-zero with "unsupported".
+   - **Linux systemd-user only**: write `~/.config/systemd/user/autopg.service`; `systemctl --user daemon-reload && systemctl --user enable --now autopg.service`. Run `loginctl enable-linger $USER` (idempotent; prompts confirmation when interactive) so the unit survives logout.
+   - **macOS launchd**: write `~/Library/LaunchAgents/dev.automagik.autopg.plist`; `launchctl load -w` it.
+   - Unit/plist points at `<install-dir>/autopg serve`, restart-on-failure, runtime dir `$XDG_RUNTIME_DIR/autopg` (Linux) or `$HOME/.autopg/runtime` (macOS).
+   - Refuse if `--system` is passed with: `"--system not supported in v2.4; covered by a future wish. Use the default --user mode."`
+2. `autopg service uninstall` — reverse migration: stop+disable the unit → `pm2 start` the captured args → restore `admin.json.supervisor = "pm2"`. Idempotent.
+3. `autopg service status` — `systemctl --user status` / `launchctl print` wrapper that surfaces a uniform JSON shape.
+4. `autopg doctor` extension (passive reporting only — **no auto-swap, no migration prompts**): read `admin.json.supervisor`, run the matching liveness check (pm2-online | `systemctl --user is-active` | `launchctl print state == running`), report current state. Does NOT suggest swapping tiers.
+
+**Acceptance Criteria:**
+- [ ] Fresh Linux host, non-root user, **starting from Tier A**: `autopg service install` deletes the pm2 entry, writes the user-unit, `systemctl --user is-active autopg.service` returns `active`, postgres responds on UDS + TCP.
+- [ ] After Tier-B install: `pm2 list` does NOT show `autopg-server` (no duplicate supervision).
+- [ ] If pm2 deletion fails mid-migration, `autopg service install` aborts non-zero, the unit is NOT written, and pm2 entry is left intact (no half-state).
+- [ ] If unit-write fails after pm2 deletion, rollback re-creates the pm2 entry from captured args (no orphaned data plane).
+- [ ] `autopg service install --system` exits non-zero with a "not supported in v2.4" message.
+- [ ] macOS host: `autopg service install` writes the LaunchAgent plist, `launchctl print gui/$UID/dev.automagik.autopg | grep "state = running"` succeeds.
+- [ ] `autopg doctor` reports `supervisor: systemd-user` (or `launchd` / `pm2`) and runs the matching health check; never suggests a tier change.
+- [ ] `autopg service uninstall` restores Tier A: pm2 entry returns with original args, unit is disabled.
+- [ ] Re-running `autopg service install` after success is idempotent (detects `supervisor == "systemd-user"` and reports "already on Tier B" without trying to migrate).
+
+**Validation:**
+```bash
+bun test test/cli/service-install.test.js
+bash test/integration/service-install-migrate-from-pm2.sh   # Linux Blacksmith fixture — starts on Tier A, asserts no-duplicates after migration
+bash test/integration/service-install-rollback.sh            # Linux fixture — inject unit-write failure, assert pm2 restored
+bash test/integration/service-install-launchd.sh             # macOS dev laptop manual
+```
+
+**depends-on:** Group 11
+
+**out-of-scope (next-version dedicated wish):**
+- `--system` mode (sudo + system unit + dedicated `autopg` user)
+- selinux / apparmor profile
+- pm2-ui → systemd unit migration
+- `autopg doctor --suggest-tier` interactive swap helper
 
 ---
 
