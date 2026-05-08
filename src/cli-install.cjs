@@ -34,10 +34,15 @@ const path = require('node:path');
 // promise once at module load and await it from async install paths.
 const _adminJsonModuleP = import('./lib/admin-json.js');
 const _socketDirModuleP = import('./lib/socket-dir.js');
+const _runtimeJsonModuleP = import('./lib/runtime-json.js');
 
 async function loadCohortModules() {
-  const [adminJson, socketDirMod] = await Promise.all([_adminJsonModuleP, _socketDirModuleP]);
-  return { adminJson, socketDirMod };
+  const [adminJson, socketDirMod, runtimeJson] = await Promise.all([
+    _adminJsonModuleP,
+    _socketDirModuleP,
+    _runtimeJsonModuleP,
+  ]);
+  return { adminJson, socketDirMod, runtimeJson };
 }
 
 // pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 1.
@@ -163,6 +168,131 @@ function readConfig() {
   } catch {
     return null;
   }
+}
+
+// cutover G19: discovery layer used by `autopg port / url / status`.
+//
+// Order of precedence (most-authoritative first):
+//   1. `<socketDir>/runtime.json` — written by the live postmaster at greet
+//      time, removed on graceful shutdown. Carries the *current* port + pid
+//      for an actually-running daemon.
+//   2. `~/.autopg/admin.json` — supervisor record written at install time.
+//      Survives postmaster restarts; doesn't reflect runtime state.
+//   3. `~/.autopg/config.json` — legacy pre-G19 install record. Final
+//      fallback so older installs that haven't been re-installed under v2.4
+//      still discover cleanly.
+//
+// All readers swallow errors — discovery must never throw on a missing or
+// truncated file. Synchronous on purpose: `dispatch()` for status/url/port
+// is sync and the wrapper handles only `Promise OR number` return types.
+function readRuntimeJsonSync(socketDir) {
+  if (typeof socketDir !== 'string' || socketDir.length === 0) return null;
+  const file = path.join(socketDir, 'runtime.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readAdminJsonSync() {
+  const file = path.join(getConfigDir(), ADMIN_FILE_NAME);
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveCanonicalSocketDir() {
+  // Mirror src/lib/socket-dir.js#resolveSocketDir — pure function, no fs
+  // touch. Inlined here so the sync discovery layer doesn't need a top-
+  // level await on the ESM module.
+  const xdg = process.env.XDG_RUNTIME_DIR;
+  const base = xdg && xdg.length > 0 ? xdg : '/tmp';
+  return path.join(base, 'pgserve');
+}
+
+function isLivePid(pid) {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === 'EPERM';
+  }
+}
+
+/**
+ * Compose a discovery view from runtime.json (preferred), admin.json
+ * (fallback), and config.json (legacy fallback). Returns:
+ *   {
+ *     runtime: { socketDir, port, pid, autopgPid, schemaVersion } | null,
+ *     admin:   { supervisor, socketDir, port, installedAt, ... }    | null,
+ *     config:  { port, dataDir, registeredAt }                       | null,
+ *     // composed view — best effort merge for callers that just want
+ *     // "where do I connect right now?":
+ *     socketDir: <string|null>,
+ *     port:      <number|null>,
+ *     liveAutopg: <boolean>     // true when runtime.json names a live pid
+ *   }
+ */
+function readDiscovery() {
+  const config = readConfig();
+  const admin = readAdminJsonSync();
+  // Prefer the socket dir the supervisor recorded at install time — that's
+  // the path operators configured. Only fall back to the canonical resolver
+  // when the install record is missing (fresh-host case).
+  const socketDir = (admin && typeof admin.socketDir === 'string' && admin.socketDir.length > 0)
+    ? admin.socketDir
+    : resolveCanonicalSocketDir();
+  const runtime = readRuntimeJsonSync(socketDir);
+
+  // PR #80 P2 fix: previous logic treated ANY parsed runtime.json as
+  // authoritative — a malformed-but-JSON file (no port, no socketDir) would
+  // hide later admin.json / config fallbacks because composedPort stayed
+  // null while the precedence chain stopped early. Validate that runtime
+  // actually carries a usable port + socketDir before treating it as live.
+  // Mirrors the admin / config branches' Number.isInteger guard.
+  let composedSocketDir = null;
+  let composedPort = null;
+  const runtimeUsable = runtime
+    && Number.isInteger(runtime.port)
+    && typeof runtime.socketDir === 'string'
+    && runtime.socketDir.length > 0;
+  if (runtimeUsable) {
+    composedSocketDir = runtime.socketDir;
+    composedPort = runtime.port;
+  } else if (admin && Number.isInteger(admin.port)) {
+    composedSocketDir = admin.socketDir ?? socketDir;
+    composedPort = admin.port;
+  } else if (config && Number.isInteger(config.port)) {
+    composedPort = config.port;
+    composedSocketDir = socketDir;
+  }
+
+  return {
+    runtime,
+    admin,
+    config,
+    socketDir: composedSocketDir,
+    port: composedPort,
+    liveAutopg: !!(runtime && isLivePid(runtime.autopgPid)),
+  };
 }
 
 function writeConfig(config) {
@@ -704,15 +834,20 @@ function writeSupervisorRecord(adminJson, { supervisor, socketDir, port }) {
 /**
  * `pgserve status [--json]`
  *
- * Reports both pm2 state and on-disk config. Exits 0 with status info
- * regardless of running/stopped — operators script around the JSON output.
- * Non-zero only when the config is missing entirely (i.e. pgserve was
- * never installed).
+ * Reports both pm2 state and on-disk discovery (runtime.json → admin.json
+ * → config.json fallback chain). Exits 0 with status info regardless of
+ * running/stopped — operators script around the JSON output. Non-zero
+ * only when nothing was ever installed (no admin.json AND no config.json).
+ *
+ * Cutover G19: surfaces `runtime` (live socket discovery) and `socketDir`
+ * top-level so consumers can pick UDS vs TCP without parsing pm2 jlist.
  */
 function cmdStatus(args) {
   const json = args.includes('--json');
-  const config = readConfig();
-  if (!config) {
+  const discovery = readDiscovery();
+  const { config, admin, runtime } = discovery;
+
+  if (!config && !admin) {
     if (json) {
       process.stdout.write(`${JSON.stringify({ installed: false })}\n`);
     } else {
@@ -720,24 +855,41 @@ function cmdStatus(args) {
     }
     return 1;
   }
+
   const proc = pm2GetProcess(PM2_PROCESS_NAME);
   const status = proc?.pm2_env?.status ?? 'stopped';
   const pid = proc?.pid ?? null;
   const uptimeMs = proc?.pm2_env?.pm_uptime ? Date.now() - proc.pm2_env.pm_uptime : null;
   const restarts = proc?.pm2_env?.restart_time ?? 0;
 
+  const port = discovery.port;
+  const socketDir = discovery.socketDir;
+  const dataDir = config?.dataDir ?? null;
+
   const payload = {
     installed: true,
     name: PM2_PROCESS_NAME,
     status,
     pid,
-    port: config.port,
-    dataDir: config.dataDir,
+    port,
+    socketDir,
+    dataDir,
     logsDir: getLogsDir(),
-    url: `postgres://localhost:${config.port}/postgres`,
+    url: port ? `postgres://localhost:${port}/postgres` : null,
     uptimeMs,
     restarts,
-    registeredAt: config.registeredAt,
+    registeredAt: config?.registeredAt ?? null,
+    supervisor: admin?.supervisor ?? null,
+    runtime: runtime
+      ? {
+          socketDir: runtime.socketDir,
+          port: runtime.port,
+          pid: runtime.pid,
+          autopgPid: runtime.autopgPid,
+          schemaVersion: runtime.schemaVersion,
+          live: discovery.liveAutopg,
+        }
+      : null,
   };
 
   if (json) {
@@ -746,42 +898,53 @@ function cmdStatus(args) {
   }
   process.stdout.write(`name        ${payload.name}\n`);
   process.stdout.write(`status      ${payload.status}${payload.pid ? ` (pid ${payload.pid})` : ''}\n`);
-  process.stdout.write(`port        ${payload.port}\n`);
-  process.stdout.write(`url         ${payload.url}\n`);
-  process.stdout.write(`dataDir     ${payload.dataDir}\n`);
+  if (payload.supervisor) {
+    process.stdout.write(`supervisor  ${payload.supervisor}\n`);
+  }
+  if (payload.port != null) process.stdout.write(`port        ${payload.port}\n`);
+  if (payload.url) process.stdout.write(`url         ${payload.url}\n`);
+  if (payload.socketDir) process.stdout.write(`socketDir   ${payload.socketDir}\n`);
+  if (payload.dataDir) process.stdout.write(`dataDir     ${payload.dataDir}\n`);
   process.stdout.write(`logsDir     ${payload.logsDir}\n`);
+  if (payload.runtime) {
+    process.stdout.write(`runtime     pid=${payload.runtime.pid} autopgPid=${payload.runtime.autopgPid} live=${payload.runtime.live}\n`);
+  } else {
+    process.stdout.write(`runtime     (no runtime.json — postmaster down or never started)\n`);
+  }
   if (payload.uptimeMs != null) {
     const sec = Math.floor(payload.uptimeMs / 1000);
     process.stdout.write(`uptime      ${sec}s\n`);
   }
   process.stdout.write(`restarts    ${payload.restarts}\n`);
-  process.stdout.write(`registered  ${payload.registeredAt}\n`);
+  if (payload.registeredAt) process.stdout.write(`registered  ${payload.registeredAt}\n`);
   return 0;
 }
 
 /**
  * `pgserve url`
  *
- * Discovery API. Prints the canonical connection string. Downstream
+ * Discovery API. Prints the canonical TCP connection string. Downstream
  * installers (genie install, omni install) call this to learn where to
- * connect, instead of hardcoding a port.
+ * connect, instead of hardcoding a port. The TCP form is stable across
+ * Tier A / Tier B / fingerprint-disabled hosts; UDS callers should
+ * resolve `<socketDir>/.s.PGSQL.<port>` from `autopg status --json`.
  */
 function cmdUrl() {
-  const config = readConfig();
-  if (!config) {
+  const discovery = readDiscovery();
+  if (discovery.port == null) {
     fail('not installed (run: pgserve install)');
   }
-  process.stdout.write(`postgres://localhost:${config.port}/postgres\n`);
+  process.stdout.write(`postgres://localhost:${discovery.port}/postgres\n`);
   return 0;
 }
 
-/** `pgserve port` — print the canonical port. */
+/** `pgserve port` — print the canonical port from runtime.json → admin.json → config.json. */
 function cmdPort() {
-  const config = readConfig();
-  if (!config) {
+  const discovery = readDiscovery();
+  if (discovery.port == null) {
     fail('not installed (run: pgserve install)');
   }
-  process.stdout.write(`${config.port}\n`);
+  process.stdout.write(`${discovery.port}\n`);
   return 0;
 }
 
