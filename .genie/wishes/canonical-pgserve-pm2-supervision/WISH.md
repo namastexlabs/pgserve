@@ -280,6 +280,8 @@ nohup genie install &  # close shell; bridge stays alive
 
 **depends-on:** Group 1
 
+**cross-wish depends-on:** `pgserve#autopg-distribution-cutover` Group 11 (autopg install Tier A — provides the binary subcommand this wish's `genie install` shells out to before registering `genie-serve`). Also Group 20 for the Tier-B-refusal acceptance criterion (line 272 — must read `admin.json.supervisor` set by Group 20's MIGRATE flow).
+
 ---
 
 ### Group 3: omni install reconfig + migration (Wave 3)
@@ -309,6 +311,8 @@ omni doctor | grep -q "canonical-connection-string: ok"
 ```
 
 **depends-on:** Group 1
+
+**cross-wish depends-on:** `pgserve#autopg-distribution-cutover` Group 11 (autopg install Tier A — `omni install` shells out to it before registering `omni-api` + `omni-nats`). Also Group 20 for the Tier-B-refusal acceptance criterion (line 302).
 
 ---
 
