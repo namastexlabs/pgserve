@@ -17,6 +17,7 @@
 
 import { PostgresManager } from '../src/postgres.js';
 import { resolveSocketDir, ensureSocketDir } from '../src/lib/socket-dir.js';
+import { writeRuntimeJson, clearRuntimeJson } from '../src/lib/runtime-json.js';
 import { createLogger } from '../src/logger.js';
 
 // Global error handlers — surface unhandled rejections + uncaught errors
@@ -95,6 +96,27 @@ async function runPostmasterSubcommand(postmasterArgs) {
     process.exit(1);
   }
 
+  // cutover G19: drop a runtime discovery file at <socketDir>/runtime.json
+  // so consumers' UDS-first probes find the live socket without globbing
+  // ephemeral pid-stamped dirs. The file is intentionally separate from
+  // ~/.autopg/admin.json (which records supervisor metadata, not live
+  // socket info) — that split lets the postmaster restart under a new
+  // pid without rewriting the supervisor record. NO `supervisor` key
+  // here; the writer rejects it.
+  try {
+    writeRuntimeJson({
+      socketDir,
+      port: opts.port,
+      pid: manager.process?.pid ?? process.pid,
+      autopgPid: process.pid,
+    });
+  } catch (err) {
+    logger.warn(
+      { err: err.message },
+      'pgserve postmaster: runtime.json write failed; consumers will fall back to admin.json',
+    );
+  }
+
   logger.info(
     { port: opts.port, socketDir, dataDir: opts.dataDir },
     'pgserve postmaster: ready (Unix socket + TCP)',
@@ -102,6 +124,12 @@ async function runPostmasterSubcommand(postmasterArgs) {
 
   const shutdown = async (signal) => {
     logger.info({ signal }, 'pgserve postmaster: stopping');
+    // Clear runtime.json BEFORE stopping the postmaster so the moment
+    // a graceful-shutdown signal lands, fresh consumers see "no live
+    // socket" instead of racing against a stale-pid record. On crash
+    // (uncaughtException, backend died) the file is left behind; the
+    // operator-facing detector is `process.kill(record.autopgPid, 0)`.
+    clearRuntimeJson(socketDir);
     try {
       await manager.stop();
     } catch (err) {
