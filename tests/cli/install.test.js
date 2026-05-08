@@ -48,6 +48,9 @@ function captureStream() {
 }
 
 function makeCtx({ binaryPath, version = '2.260503.1', overrides = {} } = {}) {
+  // Keep ensureSocketDir off the host's /tmp/pgserve — tests own their
+  // socket dir under tmpHome so concurrent test runs don't collide.
+  const socketDir = path.join(tmpHome, 'sockets', 'pgserve');
   return {
     stdout,
     stderr,
@@ -67,6 +70,12 @@ function makeCtx({ binaryPath, version = '2.260503.1', overrides = {} } = {}) {
     runUpgrade: async (opts) => {
       upgradeCalls.push(opts);
       return { ran: true, ok: true };
+    },
+    resolveSocketDir: () => socketDir,
+    ensureSocketDir: (dir) => {
+      const target = dir || socketDir;
+      fs.mkdirSync(target, { recursive: true, mode: 0o700 });
+      return target;
     },
     ...overrides,
   };
@@ -332,6 +341,106 @@ describe('first-run upgrade hook', () => {
     const code = await install(['--non-interactive'], ctx);
     expect(code).toBe(0);
     expect(stderr.text()).toContain('upgrade migrations reported a failed step');
+  });
+});
+
+describe('admin.json supervisor record', () => {
+  test('writes ~/.autopg/admin.json with supervisor=pm2 after successful pm2 register', async () => {
+    const ctx = makeCtx();
+    const code = await install(['--non-interactive'], ctx);
+    expect(code).toBe(0);
+    const adminPath = path.join(getConfigDir(env), 'admin.json');
+    expect(fs.existsSync(adminPath)).toBe(true);
+    const record = JSON.parse(fs.readFileSync(adminPath, 'utf8'));
+    expect(record.supervisor).toBe('pm2');
+    expect(record.port).toBe(5432);
+    expect(typeof record.socketDir).toBe('string');
+    expect(record.socketDir.length).toBeGreaterThan(0);
+    expect(record.installedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    const stat = fs.statSync(adminPath);
+    expect(stat.mode & 0o777).toBe(0o600);
+  });
+
+  test('skips admin.json write when pm2 is unavailable', async () => {
+    const ctx = makeCtx({ overrides: { pm2IsAvailable: () => false } });
+    const code = await install(['--non-interactive'], ctx);
+    expect(code).toBe(0);
+    const adminPath = path.join(getConfigDir(env), 'admin.json');
+    expect(fs.existsSync(adminPath)).toBe(false);
+  });
+
+  test('refuses with locked Tier-B text when admin.json supervisor is systemd-user', async () => {
+    const adminDir = getConfigDir(env);
+    fs.mkdirSync(adminDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      path.join(adminDir, 'admin.json'),
+      JSON.stringify({
+        supervisor: 'systemd-user',
+        socketDir: '/run/user/1000/pgserve',
+        port: 5432,
+        installedAt: '2026-05-01T00:00:00.000Z',
+      }),
+      { mode: 0o600 },
+    );
+    const code = await install(['--non-interactive'], makeCtx());
+    expect(code).toBe(1);
+    expect(stderr.text()).toContain('Tier B (systemd-user)');
+    expect(stderr.text()).toContain('autopg service uninstall');
+    // pm2 must not have been touched on the refusal path.
+    expect(pm2Calls.length).toBe(0);
+  });
+
+  test('refuses with locked Tier-B text when admin.json supervisor is launchd', async () => {
+    const adminDir = getConfigDir(env);
+    fs.mkdirSync(adminDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      path.join(adminDir, 'admin.json'),
+      JSON.stringify({
+        supervisor: 'launchd',
+        socketDir: '/tmp/pgserve',
+        port: 5432,
+        installedAt: '2026-05-01T00:00:00.000Z',
+      }),
+      { mode: 0o600 },
+    );
+    const code = await install(['--non-interactive'], makeCtx());
+    expect(code).toBe(1);
+    expect(stderr.text()).toContain('Tier B (launchd)');
+  });
+
+  test('re-running install preserves admin.json (merge-write, not replace)', async () => {
+    const ctx = makeCtx();
+    expect(await install(['--non-interactive'], ctx)).toBe(0);
+    const adminPath = path.join(getConfigDir(env), 'admin.json');
+    const before = JSON.parse(fs.readFileSync(adminPath, 'utf8'));
+    expect(before.supervisor).toBe('pm2');
+
+    expect(await install(['--non-interactive'], ctx)).toBe(0);
+    const after = JSON.parse(fs.readFileSync(adminPath, 'utf8'));
+    expect(after.supervisor).toBe('pm2');
+    expect(after.socketDir).toBe(before.socketDir);
+    expect(after.port).toBe(before.port);
+  });
+
+  test('preserves unrelated admin.json keys (e.g. console UI scrypt scheme)', async () => {
+    const adminDir = getConfigDir(env);
+    fs.mkdirSync(adminDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      path.join(adminDir, 'admin.json'),
+      JSON.stringify({
+        scheme: 'scrypt',
+        salt: 'aaaa',
+        hash: 'bbbb',
+      }),
+      { mode: 0o600 },
+    );
+    const code = await install(['--non-interactive'], makeCtx());
+    expect(code).toBe(0);
+    const after = JSON.parse(fs.readFileSync(path.join(adminDir, 'admin.json'), 'utf8'));
+    expect(after.supervisor).toBe('pm2');
+    expect(after.scheme).toBe('scrypt');
+    expect(after.salt).toBe('aaaa');
+    expect(after.hash).toBe('bbbb');
   });
 });
 

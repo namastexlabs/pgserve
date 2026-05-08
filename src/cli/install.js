@@ -37,10 +37,21 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync, spawnSync } from 'child_process';
+import { readAdminJson, writeAdminJson } from '../lib/admin-json.js';
+import { resolveSocketDir, ensureSocketDir } from '../lib/socket-dir.js';
 
 export const PM2_PROCESS_NAME = 'autopg';
 export const DEFAULT_PORT = 8432;
 export const DEFAULT_CHANNEL = 'stable';
+
+/**
+ * Canonical postgres port recorded in `~/.autopg/admin.json` for the
+ * cohort-shared supervisor record (wish §G11 deliverable 2). This is
+ * the v2.4 postmaster's public listen port — distinct from the legacy
+ * `config.json.port` (DEFAULT_PORT, 8432) which still reflects the
+ * router-era proxy port for backwards compatibility.
+ */
+export const ADMIN_JSON_PORT = 5432;
 
 // ─── path resolvers ──────────────────────────────────────────────────────
 
@@ -363,9 +374,28 @@ export async function install(args, ctx = {}) {
   const pm2GetProcess = ctx.pm2GetProcess || defaultPm2GetProcess;
   const pm2Start = ctx.pm2Start || defaultPm2Start;
   const runUpgrade = ctx.runUpgrade || defaultRunUpgrade;
+  const readAdminJsonFn = ctx.readAdminJson || readAdminJson;
+  const writeAdminJsonFn = ctx.writeAdminJson || writeAdminJson;
+  const resolveSocketDirFn = ctx.resolveSocketDir || resolveSocketDir;
+  const ensureSocketDirFn = ctx.ensureSocketDir || ensureSocketDir;
 
   const log = (msg) => out.write(`autopg install: ${msg}\n`);
   const warn = (msg) => err.write(`autopg install: ${msg}\n`);
+
+  // 0. Tier-B refusal — wish §G11 acceptance criterion 8. If admin.json
+  // already records a Tier-B supervisor (systemd-user / launchd), refuse
+  // to install over it. Operators must `autopg service uninstall` first.
+  const adminConfigDir = getConfigDir(env);
+  {
+    const existing = readAdminJsonFn({ configDir: adminConfigDir });
+    if (existing?.supervisor === 'systemd-user' || existing?.supervisor === 'launchd') {
+      err.write(
+        `autopg install: autopg is on Tier B (${existing.supervisor}); `
+        + `run autopg service uninstall to revert to Tier A first\n`,
+      );
+      return 1;
+    }
+  }
 
   // 1. canonical config.json
   const configResult = writeCanonicalConfig({ binaryPath, version, env });
@@ -400,12 +430,14 @@ export async function install(args, ctx = {}) {
   log(`installed completions: ${comp.bashPath}, ${comp.zshPath}`);
 
   // 5. pm2 register
+  let pm2Registered = false;
   if (!pm2IsAvailable()) {
     warn('pm2 not found in PATH — install with: bun add -g pm2  (skipping daemon registration)');
   } else {
     const existing = pm2GetProcess(PM2_PROCESS_NAME);
     if (existing) {
       log(`pm2 process "${PM2_PROCESS_NAME}" already registered (status=${existing.pm2_env?.status ?? 'unknown'})`);
+      pm2Registered = true;
     } else {
       ensureDir(dataDir, 0o700);
       const result = pm2Start({
@@ -420,6 +452,34 @@ export async function install(args, ctx = {}) {
         return 1;
       }
       log(`pm2 process "${PM2_PROCESS_NAME}" registered (binary=${binaryPath})`);
+      pm2Registered = true;
+    }
+  }
+
+  // 5b. cohort supervisor record — wish §G11 deliverable 2. Only fires
+  // when pm2 register actually succeeded (or the entry was already
+  // present). When pm2 is missing we skip silently — operator gets the
+  // earlier "pm2 not found" warning and admin.json stays untouched so
+  // the next `autopg install` after they install pm2 lands the record.
+  if (pm2Registered) {
+    try {
+      const socketDir = ensureSocketDirFn(resolveSocketDirFn());
+      writeAdminJsonFn(
+        {
+          supervisor: 'pm2',
+          socketDir,
+          port: ADMIN_JSON_PORT,
+          installedAt: new Date().toISOString(),
+        },
+        { configDir: adminConfigDir },
+      );
+      log(`recorded supervisor=pm2 in ${path.join(adminConfigDir, 'admin.json')}`);
+    } catch (e) {
+      // EADMINSUPERVISORLOCK should not reach here — the Tier-B refusal
+      // at step 0 catches that path before pm2. Any other error means
+      // the cohort source-of-truth is unwritable; fail the install.
+      warn(`admin.json write failed: ${e.message}`);
+      return 1;
     }
   }
 
