@@ -34,7 +34,7 @@ Major bump to pgserve **2.4.0**. Kill the bun bridge from the data plane: postgr
 
 **Group 1 — Postmaster reconfig + dual-transport + Tier A pm2 wiring (data-plane core)**
 - Postmaster boot args: `-k $XDG_RUNTIME_DIR/pgserve` + `-p 5432` + `listen_addresses = 'localhost'`. Fallback `/tmp/pgserve` when `$XDG_RUNTIME_DIR` unset (CI runners).
-- `pgserve install` ensures `$XDG_RUNTIME_DIR/pgserve` directory exists (mode 0700), wires the **Tier A pm2 entry** (`autopg-server`) pointing at postmaster directly (no bun bridge process). **Tier A only** in this group — systemd-user (Linux) / launchd (macOS) ship separately via `autopg service install` (cutover wish G11.6).
+- `pgserve install` ensures `$XDG_RUNTIME_DIR/pgserve` directory exists (mode 0700), wires the **Tier A pm2 entry** (`autopg-server`) pointing at postmaster directly (no bun bridge process). **Tier A only** in this group — systemd-user (Linux) / launchd (macOS) ship separately via `autopg service install` (cutover wish G20).
 - `~/.autopg/admin.json` records `{ "supervisor": "pm2", "socketDir": "<XDG-or-tmp>", "port": 5432 }` so cohort siblings + `autopg doctor` can read the active supervisor without inspecting pm2 state directly.
 - Stale-lock detection: refuse install if `pgserve.pid` exists with live PID; archive prior socket dirs to `.legacy/`.
 - `pgserve port` returns 5432 (was 8432).
@@ -137,7 +137,7 @@ See `SHARED-DESIGN.md` §6 for the cross-repo decision table. pgserve-specific:
 - [ ] Migration test: synthetic v2.2.x state → run `pgserve update` → assert v2.4.x state.
 - [ ] `bun run lint` and `bun run typecheck` clean.
 - [ ] `pgserve doctor` reports active supervisor (`pm2` | `systemd-user` | `launchd` | `external`) by reading `~/.autopg/admin.json` and runs the matching liveness check; never auto-swaps tiers.
-- [ ] On a host where Tier A (pm2) is active and operator runs `autopg service install` (Tier B from cutover G11.6), the MIGRATE contract is honored: pm2 entry deleted BEFORE unit write; `admin.json.supervisor` flips from `pm2` to `systemd-user`; `pgserve install` afterwards refuses with remediation hint.
+- [ ] On a host where Tier A (pm2) is active and operator runs `autopg service install` (Tier B from cutover G20), the MIGRATE contract is honored: pm2 entry deleted BEFORE unit write; `admin.json.supervisor` flips from `pm2` to `systemd-user`; `pgserve install` afterwards refuses with remediation hint.
 
 ## Execution Strategy
 
@@ -174,7 +174,7 @@ See `SHARED-DESIGN.md` §6 for the cross-repo decision table. pgserve-specific:
 
 ### Group 1: Postmaster reconfig + dual-transport + Tier A pm2
 
-**Goal:** Postgres backend listens on canonical Unix socket + TCP 5432 natively. `pgserve install` ensures the socket dir exists with correct perms AND registers Tier A pm2 entry (`autopg-server`). Tier B systemd-user / launchd is **out of scope** here — delivered by cutover wish G11.6 via `autopg service install`.
+**Goal:** Postgres backend listens on canonical Unix socket + TCP 5432 natively. `pgserve install` ensures the socket dir exists with correct perms AND registers Tier A pm2 entry (`autopg-server`). Tier B systemd-user / launchd is **out of scope** here — delivered by cutover wish G20 via `autopg service install`.
 
 **Deliverables:**
 1. `bin/postgres-server.js` updated to pass `-k <socket-dir>` and `-p 5432` to postmaster.
@@ -182,7 +182,7 @@ See `SHARED-DESIGN.md` §6 for the cross-repo decision table. pgserve-specific:
 3. `pgserve install` step: `mkdir -p <socket-dir>` (mode 0700), validate writability.
 4. `pgserve port` returns `5432`.
 5. `pgserve install` registers/updates pm2 entry `autopg-server` pointing at postgres wrapper. `--no-pm2` flag for CI / Tier B-bound hosts.
-6. `~/.autopg/admin.json` writer module: atomic write of `{ supervisor: "pm2", socketDir, port: 5432, installedAt }` after pm2 register success. Refuses to write `supervisor: "pm2"` if file already records `systemd-user` or `launchd` (operator must run `autopg service uninstall` first to revert to Tier A).
+6. `src/lib/admin-json.js` (cohort-shared module — co-owned with cohort sibling `canonical-pgserve-pm2-supervision` Group 1 deliverable 2): atomic writer (writes to `<file>.tmp` + `fs.rename`) + reader + `assertSupervisor(expected)` helper that throws with the locked remediation hint when actual differs. Schema: `{ supervisor, socketDir, port, installedAt }` with `supervisor ∈ { "pm2" | "systemd-user" | "launchd" | "external" }`. After successful pm2 register, `pgserve install` invokes the writer with `{ supervisor: "pm2", socketDir, port: 5432, installedAt: <ISO> }`. Refuses to write `supervisor: "pm2"` if file already records `systemd-user` or `launchd` (operator must run `autopg service uninstall` first to revert to Tier A).
 
 **Acceptance Criteria:**
 - [ ] `pgserve install` on a fresh host creates `$XDG_RUNTIME_DIR/pgserve/` with mode 0700.
@@ -434,13 +434,13 @@ test -f docs/security/cosign-trust.md
 
 - **paired-with** `automagik-dev/genie#pgserve-singleton-no-proxy` — consumer-side wiring; ships in lockstep.
 - **paired-with** `automagik/omni#pgserve-singleton-no-proxy` — consumer-side wiring; ships in lockstep.
-- **paired-with** `pgserve#autopg-distribution-cutover` — v2.4 cohort sibling. Owns the rename → `autopg`, CDN distribution, and the **Tier B `autopg service install` G11.6** that this wish defers to. Both wishes share the `~/.autopg/admin.json` schema and the hard MIGRATE contract that prevents pm2 + systemd-user double-supervision.
+- **paired-with** `pgserve#autopg-distribution-cutover` — v2.4 cohort sibling. Owns the rename → `autopg`, CDN distribution, and the **Tier B `autopg service install` G20** that this wish defers to. Both wishes share the `~/.autopg/admin.json` schema and the hard MIGRATE contract that prevents pm2 + systemd-user double-supervision.
 - **paired-with** `pgserve#canonical-pgserve-pm2-supervision` — v2.4 cohort sibling. Specifies cross-repo pm2 reuse (genie / omni install reuse the pgserve pm2 ecosystem). Tier A only.
 - **builds-on** `pgserve-canonical-cutover` (genie merged) — consumer-only foundation.
 - **builds-on** `pgserve-host-signed-identity` (genie merged, pgserve pending) — host_signed Tier 1 stays; cosign Tier 2 layered on top.
 - **builds-on** `update-unify-stages` (all merged) — pre-flight + decideVerify + diagnostics inherited.
 - **builds-on** `genie-supply-chain-signing` — reuses `--unsafe-unverified <INCIDENT_ID>` typed-ack.
-- **blocks** `autopg-service-install-system` (parked) — that wish extends G11.6's `--user` mode to `--system` mode; cannot start until v2.4 ships.
+- **blocks** `autopg-service-install-system` (parked) — that wish extends G20's `--user` mode to `--system` mode; cannot start until v2.4 ships.
 
 ## QA Criteria
 
@@ -471,7 +471,7 @@ test -f docs/security/cosign-trust.md
 | Old socket dir archives grow unboundedly | Low | Document cleanup recipe. Future `pgserve gc --legacy-archives`. |
 | Some operators rely on TCP 8432 in scripts | Medium | TCP 5432 is canonical; 8432 dies. CHANGELOG warns explicitly. |
 | `--skip-sigstore` becomes default in CI by accident | Low | Refuses unless `--offline-cosign-key` pretrusted; emits warning; audit-log entry. |
-| **Tier A pm2 + Tier B systemd-user double-supervision** (operator runs both `pgserve install` and `autopg service install`) | High | `autopg service install` (cutover G11.6) MUST `pm2 delete autopg-server` BEFORE writing the unit; `pgserve install` refuses if `admin.json.supervisor == "systemd-user"` until operator runs `autopg service uninstall` first. Group 1 acceptance criterion validates both directions. |
+| **Tier A pm2 + Tier B systemd-user double-supervision** (operator runs both `pgserve install` and `autopg service install`) | High | `autopg service install` (cutover G20) MUST `pm2 delete autopg-server` BEFORE writing the unit; `pgserve install` refuses if `admin.json.supervisor == "systemd-user"` until operator runs `autopg service uninstall` first. Group 1 acceptance criterion validates both directions. |
 | `~/.autopg/admin.json` corruption leaves doctor unable to identify supervisor | Low | doctor `--fix` (Cat 1) rewrites admin.json from observed pm2/systemd state; G3 acceptance criterion covers the missing-pm2-entry inconsistency case. |
 | Operator on Tier B systemd-user runs `pgserve update`, expecting pm2 restart | Medium | `pgserve update` (G6) reads `admin.json.supervisor` and dispatches the matching restart primitive (`pm2 restart` / `systemctl --user restart` / `launchctl kickstart`). G6 acceptance criterion adds an explicit Tier-B-restart test. |
 
