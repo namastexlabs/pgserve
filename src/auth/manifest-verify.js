@@ -91,16 +91,21 @@ export const __test_internals = Object.freeze({
 
 /**
  * Resolve the cosign public key path. Order:
- *   1. opts.pubKeyPath (explicit caller override)
+ *   1. opts.pubKeyPath (explicit caller override — honors null/'' as
+ *      "no key", which short-circuits the lookup so callers can force
+ *      the ENOPUBKEY path without env or bundled fallback)
  *   2. AUTOPG_COSIGN_PUB env var
  *   3. <repo>/keys/cosign.pub (bundled with the autopg binary)
  *
- * Returns null when no key can be located — callers treat that as a
- * verification failure (the caller string captures "missing publisher
- * key" rather than swallowing it).
+ * Returns null when no key can be located — `verifyManifest` treats that
+ * as a fast-fail ENOPUBKEY rather than spawning cosign against a missing
+ * key (which would otherwise hang for seconds on cosign's transparency-
+ * log fetch).
  */
 export function resolvePubKeyPath(opts = {}) {
-  if (opts.pubKeyPath) return opts.pubKeyPath;
+  if (Object.prototype.hasOwnProperty.call(opts, 'pubKeyPath')) {
+    return opts.pubKeyPath || null;
+  }
   if (process.env.AUTOPG_COSIGN_PUB) return process.env.AUTOPG_COSIGN_PUB;
   const bundled = path.resolve(__dirname, '..', '..', 'keys', 'cosign.pub');
   if (fs.existsSync(bundled)) return bundled;
