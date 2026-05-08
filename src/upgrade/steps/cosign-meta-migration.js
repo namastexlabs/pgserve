@@ -14,7 +14,7 @@
  * provisioned anything) the step is a SKIP.
  */
 
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 
 import { getMigrationStatements } from '../../cosign/schema.js';
 
@@ -22,12 +22,27 @@ export const name = 'cosign-meta-migration';
 const CANONICAL_PORT = 5432;
 const SYSTEM_DBS = new Set(['template0', 'template1']);
 
+// PR #79 fix: previous implementation used execSync with a template string +
+// JSON.stringify(sql). The migration SQL contains `DO $$ ... $$` blocks; bash
+// expands `$$` to its PID, corrupting the SQL before psql sees it. Switch to
+// spawnSync (shell:false) with the SQL fed through stdin — no shell parsing,
+// no expansion, no injection surface.
 function pgQuery({ db, sql, captureStdout = false, port = CANONICAL_PORT }) {
   const env = { ...process.env, PGPASSWORD: process.env.PGPASSWORD || 'postgres' };
-  const cmd = `psql -h 127.0.0.1 -p ${port} -U postgres -d ${db} -At -c ${JSON.stringify(sql)}`;
-  return captureStdout
-    ? execSync(cmd, { env, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim()
-    : execSync(cmd, { env, stdio: 'pipe' });
+  const result = spawnSync(
+    'psql',
+    ['-h', '127.0.0.1', '-p', String(port), '-U', 'postgres', '-d', db, '-At', '-f', '-'],
+    { env, input: sql, stdio: ['pipe', 'pipe', 'pipe'] }
+  );
+  if (result.status !== 0) {
+    const stderr = (result.stderr || Buffer.from('')).toString();
+    const err = new Error(`psql exited ${result.status}: ${stderr.trim()}`);
+    err.status = result.status;
+    err.stderr = stderr;
+    throw err;
+  }
+  const stdout = (result.stdout || Buffer.from('')).toString();
+  return captureStdout ? stdout.trim() : stdout;
 }
 
 function listUserDbs() {

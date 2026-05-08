@@ -212,18 +212,33 @@ export function runVerify(argv) {
   if (!opts.noCache) {
     const cache = readCacheToken(fingerprint, { binaryAttestation: attestation });
     if (cache.ok) {
-      // Cache hit — bump lastUsedAt and return.
-      touchCacheToken(cache.payload, {});
-      emit(opts, {
-        ok: true,
-        cached: true,
-        binary: binaryPath,
-        identity: cache.payload.identity,
-        tier: cache.payload.tier,
-        sha256: cache.payload.sha256 || sha256,
-        cacheFile: cache.file,
-      });
-      return EXIT_OK;
+      // PR #79 P1 security fix: honor the requested tier strictly. Without
+      // this gate, a token written under `--skip-sigstore` (tier:self_signed)
+      // would be accepted on a subsequent run WITHOUT `--skip-sigstore`,
+      // letting the operator bypass cosign verification entirely. The fix:
+      // - default invocation (no --skip-sigstore) requires tier:cosign_signed
+      // - --skip-sigstore invocation requires tier:self_signed
+      // Mismatched-tier cache hits are treated as cache misses (fall through
+      // to re-verify under the requested tier).
+      const cachedTier = cache.payload.tier;
+      const expectedTier = opts.skipSigstore ? 'self_signed' : 'cosign_signed';
+      if (cachedTier === expectedTier) {
+        // Tier matches — bump lastUsedAt and return.
+        touchCacheToken(cache.payload, {});
+        emit(opts, {
+          ok: true,
+          cached: true,
+          binary: binaryPath,
+          identity: cache.payload.identity,
+          tier: cachedTier,
+          sha256: cache.payload.sha256 || sha256,
+          cacheFile: cache.file,
+        });
+        return EXIT_OK;
+      }
+      // Tier mismatch — fall through. Do NOT delete the cache token: the
+      // existing token is valid for its own tier; we just need a fresh
+      // verification under the currently-requested tier.
     }
     // Stale binary attestation invalidates the cache so the new fingerprint
     // wins. We delete defensively when the binary changed under us.
