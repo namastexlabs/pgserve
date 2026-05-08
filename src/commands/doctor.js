@@ -35,10 +35,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { createRequire } from 'node:module';
-import { execSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
-import { getAdminFilePath, readAdminJson } from '../lib/admin-json.js';
+import { getAdminFilePath, readAdminJson, SUPERVISOR_VALUES } from '../lib/admin-json.js';
 import { resolveSocketDir } from '../lib/socket-dir.js';
 import { readRuntimeJson, isLiveRuntime } from '../lib/runtime-json.js';
 import { findBlocked } from '../security/blocked-versions.js';
@@ -147,21 +147,38 @@ function checkAdminJsonShape() {
     );
   }
   const supervisor = admin.supervisor;
-  const validSupervisor = ['pm2', 'systemd-user', 'launchd', 'external'].includes(supervisor);
-  if (!validSupervisor) {
+  if (!SUPERVISOR_VALUES.includes(supervisor)) {
     return check(
       'admin_json_shape',
       `admin.json.supervisor is invalid: ${JSON.stringify(supervisor)}`,
       SEVERITY.FAIL,
-      'expected one of {pm2, systemd-user, launchd, external}',
+      `expected one of {${SUPERVISOR_VALUES.join(', ')}}`,
       'reinstall via `pgserve install` (Tier A) or `autopg service install` (Tier B)',
+    );
+  }
+  if (!Number.isInteger(admin.port) || admin.port <= 0 || admin.port > 65535) {
+    return check(
+      'admin_json_shape',
+      `admin.json.port is invalid: ${JSON.stringify(admin.port)}`,
+      SEVERITY.FAIL,
+      'expected a positive integer in [1, 65535]',
+      'reinstall via `pgserve install` to regenerate admin.json',
+    );
+  }
+  if (typeof admin.socketDir !== 'string' || admin.socketDir.length === 0) {
+    return check(
+      'admin_json_shape',
+      `admin.json.socketDir is invalid: ${JSON.stringify(admin.socketDir)}`,
+      SEVERITY.FAIL,
+      'expected a non-empty string',
+      'reinstall via `pgserve install` to regenerate admin.json',
     );
   }
   return check(
     'admin_json_shape',
     `admin.json.supervisor = "${supervisor}"`,
     SEVERITY.PASS,
-    `port=${admin.port ?? '?'}, socketDir=${admin.socketDir ?? '?'}`,
+    `port=${admin.port}, socketDir=${admin.socketDir}`,
   );
 }
 
@@ -240,12 +257,7 @@ function checkSupervisorLiveness(admin) {
 
 function checkRuntimeJson(admin) {
   const socketDir = admin?.socketDir || resolveSocketDir();
-  let runtime;
-  try {
-    runtime = readRuntimeJson(socketDir);
-  } catch {
-    runtime = null;
-  }
+  const runtime = readRuntimeJson(socketDir);
   if (!runtime) {
     return check(
       'runtime_json',
@@ -286,32 +298,30 @@ function checkUdsReachable(admin) {
   const port = admin?.port || 5432;
   const sockPath = path.join(socketDir, `.s.PGSQL.${port}`);
   if (!fs.existsSync(sockPath)) {
-    return check(
+    return Promise.resolve(check(
       'uds_reachable',
       `Unix socket missing at ${sockPath}`,
       SEVERITY.FAIL,
       'postmaster has not bound the canonical socket',
       'check postmaster logs / supervisor liveness',
-    );
+    ));
   }
   // Probe by connecting; postgres responds even before SSL handshake on a healthy socket.
-  try {
+  return new Promise((resolve) => {
     const sock = new net.Socket();
-    let connected = false;
-    sock.on('connect', () => { connected = true; sock.destroy(); });
+    let resolved = false;
+    const done = (severity, title, detail) => {
+      if (resolved) return;
+      resolved = true;
+      sock.destroy();
+      resolve(check('uds_reachable', title, severity, detail));
+    };
+    sock.setTimeout(500);
+    sock.on('connect', () => done(SEVERITY.PASS, `Unix socket accepting at ${sockPath}`));
+    sock.on('timeout', () => done(SEVERITY.FAIL, `Unix socket not accepting at ${sockPath}`, 'connect timed out'));
+    sock.on('error', (e) => done(SEVERITY.FAIL, `Unix socket probe failed`, e.code || e.message));
     sock.connect(sockPath);
-    // Synchronous-ish wait via deasync-free pattern: small timeout, deterministic result.
-    const start = Date.now();
-    while (!connected && Date.now() - start < 500) {
-      execSync('true'); // yield event loop without sleep
-    }
-    if (!connected) {
-      return check('uds_reachable', `Unix socket not accepting at ${sockPath}`, SEVERITY.FAIL);
-    }
-    return check('uds_reachable', `Unix socket accepting at ${sockPath}`, SEVERITY.PASS);
-  } catch (e) {
-    return check('uds_reachable', `Unix socket probe failed`, SEVERITY.FAIL, e.message);
-  }
+  });
 }
 
 function checkTcpReachable(admin) {
@@ -350,7 +360,7 @@ export async function runChecks() {
 
   findings.push(checkSupervisorLiveness(admin));
   findings.push(checkRuntimeJson(admin));
-  findings.push(checkUdsReachable(admin));
+  findings.push(await checkUdsReachable(admin));
   findings.push(await checkTcpReachable(admin));
 
   return findings;

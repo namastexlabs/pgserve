@@ -47,6 +47,10 @@ const __installSubcommands = new Set([
   // `verify` shells out to cosign + writes an HMAC cache token. Pure node
   // (no bun) so it must skip the bun probe like the install surface above.
   'verify',
+  // pgserve singleton (v2.4) — wish Group 3, read-only V1. `doctor` runs
+  // entirely in node (admin.json + supervisor probes + socket reachability)
+  // and must skip the bun probe so it works on any installed binary.
+  'doctor',
 ]);
 if (__subcommand && __installSubcommands.has(__subcommand)) {
   const cli = require(path.join(__dirname, '..', 'src', 'cli-install.cjs'));
