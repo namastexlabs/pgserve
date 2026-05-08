@@ -262,11 +262,21 @@ function readDiscovery() {
     : resolveCanonicalSocketDir();
   const runtime = readRuntimeJsonSync(socketDir);
 
+  // PR #80 P2 fix: previous logic treated ANY parsed runtime.json as
+  // authoritative — a malformed-but-JSON file (no port, no socketDir) would
+  // hide later admin.json / config fallbacks because composedPort stayed
+  // null while the precedence chain stopped early. Validate that runtime
+  // actually carries a usable port + socketDir before treating it as live.
+  // Mirrors the admin / config branches' Number.isInteger guard.
   let composedSocketDir = null;
   let composedPort = null;
-  if (runtime) {
-    composedSocketDir = runtime.socketDir ?? socketDir;
-    composedPort = runtime.port ?? null;
+  const runtimeUsable = runtime
+    && Number.isInteger(runtime.port)
+    && typeof runtime.socketDir === 'string'
+    && runtime.socketDir.length > 0;
+  if (runtimeUsable) {
+    composedSocketDir = runtime.socketDir;
+    composedPort = runtime.port;
   } else if (admin && Number.isInteger(admin.port)) {
     composedSocketDir = admin.socketDir ?? socketDir;
     composedPort = admin.port;
