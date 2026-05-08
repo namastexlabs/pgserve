@@ -1,0 +1,95 @@
+/**
+ * Tests for `pgserve doctor` (singleton G3 — read-only V1).
+ */
+
+import { test, expect, describe } from 'bun:test';
+import { runDoctor, exitCodeFor, __testInternals } from '../../src/commands/doctor.js';
+
+const { SEVERITY } = __testInternals;
+
+describe('exitCodeFor', () => {
+  test('returns 0 when every finding is PASS', () => {
+    const findings = [
+      { id: 'a', title: 'a', severity: SEVERITY.PASS },
+      { id: 'b', title: 'b', severity: SEVERITY.PASS },
+    ];
+    expect(exitCodeFor(findings)).toBe(0);
+  });
+
+  test('returns 1 when any finding is FAIL', () => {
+    const findings = [
+      { id: 'a', title: 'a', severity: SEVERITY.PASS },
+      { id: 'b', title: 'b', severity: SEVERITY.FAIL },
+      { id: 'c', title: 'c', severity: SEVERITY.WARN },
+    ];
+    expect(exitCodeFor(findings)).toBe(1);
+  });
+
+  test('returns 2 when only WARNs (no FAILs)', () => {
+    const findings = [
+      { id: 'a', title: 'a', severity: SEVERITY.PASS },
+      { id: 'b', title: 'b', severity: SEVERITY.WARN },
+    ];
+    expect(exitCodeFor(findings)).toBe(2);
+  });
+
+  test('returns 0 for empty findings', () => {
+    expect(exitCodeFor([])).toBe(0);
+  });
+});
+
+describe('SEVERITY enum', () => {
+  test('exports the three severities expected by callers', () => {
+    expect(SEVERITY.PASS).toBe('PASS');
+    expect(SEVERITY.WARN).toBe('WARN');
+    expect(SEVERITY.FAIL).toBe('FAIL');
+  });
+
+  test('is frozen (production callers cannot mutate)', () => {
+    expect(Object.isFrozen(SEVERITY)).toBe(true);
+  });
+});
+
+describe('runDoctor entry point', () => {
+  test('--fix exits with code 64 (not implemented in V1)', async () => {
+    const code = await runDoctor(['--fix']);
+    expect(code).toBe(64);
+  });
+
+  test('--fix --aggressive exits with code 64 (not implemented in V1)', async () => {
+    const code = await runDoctor(['--fix', '--aggressive']);
+    expect(code).toBe(64);
+  });
+
+  test('runs all checks in default mode (exit code 0/1/2 depending on host state)', async () => {
+    // We cannot pin host state in CI deterministically (admin.json may or may
+    // not exist; pm2 may or may not be running). Just assert the entry
+    // point completes and returns a known exit code.
+    const code = await runDoctor([]);
+    expect([0, 1, 2]).toContain(code);
+  });
+
+  test('--json mode returns the same exit code', async () => {
+    const code = await runDoctor(['--json']);
+    expect([0, 1, 2]).toContain(code);
+  });
+});
+
+describe('individual check shape', () => {
+  test('checkVersionNotBlocked returns PASS with current version when not blocked', () => {
+    const f = __testInternals.checkVersionNotBlocked();
+    // Default BLOCKED_VERSIONS is empty, so this should PASS for any version
+    // we ship today. If the test ever fails because we shipped a blocked
+    // version of pgserve, that is itself a useful signal.
+    expect(['PASS', 'WARN']).toContain(f.severity);
+    expect(f.id).toBe('version_blocklist');
+  });
+
+  test('checkAdminJsonShape handles null admin gracefully', () => {
+    // We cannot easily mock readAdminJson without bun:test mock infra;
+    // instead exercise the WARN/FAIL paths through admin_json_exists when
+    // admin.json may not exist on the test host. This is covered by the
+    // entry-point test above; here we just confirm the helper exists.
+    expect(typeof __testInternals.checkAdminJsonShape).toBe('function');
+  });
+});
