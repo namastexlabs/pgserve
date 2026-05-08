@@ -20,11 +20,16 @@ import * as plpgsqlResolve from './steps/plpgsql-resolve.js';
 import * as envRefresh from './steps/env-refresh.js';
 import * as consumerSignal from './steps/consumer-signal.js';
 import * as healthValidate from './steps/health-validate.js';
+import * as cosignMetaMigration from './steps/cosign-meta-migration.js';
 
 export const STEPS = [
   { name: 'port-reconcile', impl: portReconcile },
   { name: 'binary-cache-flush', impl: binaryCacheFlush },
   { name: 'plpgsql-resolve', impl: plpgsqlResolve },
+  // pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 4.
+  // Adds the additive `verified_*` columns to `pgserve_meta`. Runs after
+  // plpgsql-resolve so the extension is available; idempotent per-DB.
+  { name: 'cosign-meta-migration', impl: cosignMetaMigration },
   { name: 'env-refresh', impl: envRefresh },
   { name: 'consumer-signal', impl: consumerSignal },
   { name: 'health-validate', impl: healthValidate },

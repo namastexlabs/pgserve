@@ -913,6 +913,13 @@ function dispatch(subcommand, args, ctx) {
     }
     case 'auth':
       return cmdAuthDispatch(args);
+    case 'verify': {
+      // pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 4.
+      // `pgserve verify` is a pure-node command (cosign shellout + HMAC
+      // cache token write); routes through the same async-import pattern
+      // as `uninstall` so the ESM module isn't eagerly loaded.
+      return import('./commands/verify.js').then((mod) => mod.runVerify(args));
+    }
     default:
       throw new Error(`pgserve: dispatch called with unknown subcommand "${subcommand}"`);
   }
