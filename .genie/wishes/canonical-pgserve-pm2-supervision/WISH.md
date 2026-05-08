@@ -10,9 +10,9 @@
 | **Branch** | `wish/canonical-pgserve-pm2-supervision` |
 | **Repos touched** | `automagik/autopg` (renamed from `namastexlabs/pgserve` in cohort sibling), `automagik-dev/omni`, `automagik-dev/genie`, `namastexlabs/genie-configure` (brain only) |
 | **Design** | _No brainstorm — direct wish from operational pain (live debugging session 2026-04-30)_ |
-| **v2.4 cohort** | peer wishes, separate branches/PRs: `autopg-distribution-cutover` (rename + CDN + Tier B G11.6), `pgserve-singleton-no-proxy` (data plane + admin.json), this wish (cross-repo pm2 reuse — Tier A only) |
+| **v2.4 cohort** | peer wishes, separate branches/PRs: `autopg-distribution-cutover` (rename + CDN + Tier B G20), `pgserve-singleton-no-proxy` (data plane + admin.json), this wish (cross-repo pm2 reuse — Tier A only) |
 
-> **🛡 TWO-TIER SUPERVISOR MODEL (Felipe constraint, 2026-05-08)**: this wish **specifies Tier A only** (rootless pm2). Tier B systemd-user / launchd is delivered by the cohort sibling `autopg-distribution-cutover` G11.6 via `autopg service install`. The hard MIGRATE contract (pm2-delete BEFORE unit-write; `~/.autopg/admin.json` records active supervisor) prevents Tier A + Tier B double-supervision. This wish writes `admin.json.supervisor = "pm2"` and downstream installers (`genie install`, `omni install`) MUST refuse to register their own pm2 entries if `admin.json.supervisor == "systemd-user"` (operator must run `autopg service uninstall` first to revert to Tier A).
+> **🛡 TWO-TIER SUPERVISOR MODEL (Felipe constraint, 2026-05-08)**: this wish **specifies Tier A only** (rootless pm2). Tier B systemd-user / launchd is delivered by the cohort sibling `autopg-distribution-cutover` G20 via `autopg service install`. The hard MIGRATE contract (pm2-delete BEFORE unit-write; `~/.autopg/admin.json` records active supervisor) prevents Tier A + Tier B double-supervision. This wish writes `admin.json.supervisor = "pm2"` and downstream installers (`genie install`, `omni install`) MUST refuse to register their own pm2 entries if `admin.json.supervisor == "systemd-user"` (operator must run `autopg service uninstall` first to revert to Tier A).
 
 ## Summary
 
@@ -34,7 +34,7 @@ Canonicalize **pgserve as the single, central, pm2-supervised database server** 
 └──────────────────────────────────────────────┘
 ```
 
-When the operator has run `autopg service install` (Tier B from cutover G11.6), entries 1+2 disappear from pm2 and live as `autopg.service` (systemd user-unit) instead. Entries 3-5 stay under pm2 either way (Tier B does not absorb them in v2.4).
+When the operator has run `autopg service install` (Tier B from cutover G20), entries 1+2 disappear from pm2 and live as `autopg.service` (systemd user-unit) instead. Entries 3-5 stay under pm2 either way (Tier B does not absorb them in v2.4).
 
 ## Trigger
 
@@ -111,7 +111,7 @@ Same session also revealed: **multiple pgserve instances running in parallel** (
 | 4 | `--interpreter none` for pm2 launches | Both genie and omni binaries use `#!/usr/bin/env bun` shebangs. `--interpreter bun` triggers pm2's ESM/require crash on top-level await. Shebang resolution side-steps the issue. **Empirically validated 2026-04-30** during the manual genie-serve pm2 registration. |
 | 5 | `genie serve start --headless --no-tui --no-interactive` for pm2 | TUI requires a real terminal; pm2 child has no tty. Headless + no-tui matches omni-api's mode. **Empirically validated 2026-04-30.** |
 | 6 | Migration via pg_dump + restore (not file-level copy) | Data file format is sensitive to PG version; pg_dump is portable. Even with same autopg version, dump+restore is the safe path. |
-| 7 | `~/.autopg/admin.json` is the single contract for supervisor + connection discovery | `autopg install` writes it; `genie install`/`omni install` read it via `autopg url` / `autopg port`; `autopg doctor` reads `supervisor` field to pick the right liveness check. The CLI is the contract. Schema co-owned with cohort sibling `pgserve-singleton-no-proxy` G1. |
+| 7 | `~/.autopg/admin.json` is the single contract for supervisor + connection discovery. Schema: `{ supervisor, socketDir, port, installedAt }` with `supervisor ∈ { "pm2" \| "systemd-user" \| "launchd" \| "external" }`. | `autopg install` writes it; `genie install`/`omni install` read it via `autopg url` / `autopg port`; `autopg doctor` reads `supervisor` field to pick the right liveness check. The CLI is the contract. Schema co-owned with cohort sibling `pgserve-singleton-no-proxy` G1. The `external` value is set by `autopg install --no-pm2` when the operator manages supervision externally; downstream `genie install`/`omni install` refuse on `external` (they cannot register their own services without claiming a supervisor). |
 | 8 | pm2-logrotate stays as a module, not a pm2 service | It's a pm2 module by design; `omni install` already configures it. `autopg install` reuses the same pm2-logrotate (no duplicate setup). |
 | 9 | Downstream installers refuse when `admin.json.supervisor != "pm2"` | If operator has run `autopg service install` (Tier B), `genie install`/`omni install` MUST refuse to add their own pm2 entries (would create double-supervision). Operator runs `autopg service uninstall` first to revert to Tier A. Felipe directive 2026-05-08. |
 
@@ -134,13 +134,15 @@ Same session also revealed: **multiple pgserve instances running in parallel** (
 
 Wave-based; each wave can ship independently. Three repos, four PRs total.
 
-### Wave 1 — `pgserve` foundation (BLOCKS waves 2 & 3)
+### Wave 1 — autopg library extraction + uninstall (BLOCKS waves 2 & 3)
 
-**Goal:** pgserve owns its pm2 lifecycle.
+**Note**: scope narrowed 2026-05-08 per /review. Cutover wish G11/G19 own the `autopg install` and `autopg serve` binary subcommands. This wish ships ONLY the libraries (pm2-args, admin-json) and the `autopg uninstall` surface that cutover doesn't cover. Genie / omni installers consume cutover's `autopg install` AND this wish's `pm2-args` library directly.
 
-- Group 1.1 — `pgserve install` + `pgserve serve` + `pgserve status` + `pgserve url` + `pgserve port`. Add `--non-interactive` for CI/install.sh. New file: `src/commands/install.ts` (mirror omni's structure).
-- Group 1.2 — Tests: install idempotency, status reflects pm2 state, url/port match what install registered.
-- Group 1.3 — README: document the 4 new subcommands.
+**Goal:** Provide library + uninstall surfaces that downstream installers consume. Cutover wish owns the binary subcommands themselves.
+
+- Group 1.1 — `src/lib/pm2-args.js` + `src/lib/admin-json.js` + `src/commands/uninstall.js` (autopg uninstall). Cutover G11 / G19 own `autopg install` / `serve` / `status` / `url` / `port` (see Group 1 ownership boundary, line 218).
+- Group 1.2 — Tests: pm2-args defaults match values pinned in this wish; admin-json writer is atomic; uninstall idempotency round-trip.
+- Group 1.3 — README: document `autopg uninstall` subcommand + the cohort `~/.autopg/admin.json` schema.
 
 **Validation:**
 ```bash
@@ -215,32 +217,35 @@ pm2 list                            # autopg-server + autopg-ui + omni-api + omn
 
 ## Execution Groups
 
-### Group 1: autopg pm2 lifecycle (Wave 1)
+### Group 1: autopg pm2 lifecycle libraries + uninstall (Wave 1)
 
-**Goal:** autopg owns Tier A pm2 lifecycle. New CLI subcommands (`install`, `serve`, `status`, `url`, `port`, `uninstall`) plus `~/.autopg/admin.json` writer/reader. Hardened pm2 defaults extracted into `src/lib/pm2-args.ts`.
+**Goal:** Provide the **library + uninstall surfaces** that downstream Tier A consumers (genie install, omni install) and the cohort sibling cutover wish Group 11 / Group 19 consume. **Ownership boundary** (locked 2026-05-08 per /review): cutover wish G11 owns `autopg install` (binary subcommand + pm2 register); cutover wish G19 owns `autopg serve` + `status` / `url` / `port` discovery primitives. This wish owns ONLY:
+- `src/lib/pm2-args.js` (Tier A hardened defaults — DUPLICATED constants per Decision 3, no shared package)
+- `src/lib/admin-json.js` (cohort-shared atomic writer/reader/supervisor-refusal helper, schema co-owned with `pgserve-singleton-no-proxy` G1)
+- `src/commands/uninstall.js` (NEW surface — `autopg uninstall` not declared anywhere in cutover wish)
 
 **Deliverables:**
-1. `src/commands/install.ts` — pm2 register `autopg-server` + `autopg-ui` with hardened defaults. Refuses if `admin.json.supervisor` ∈ {`systemd-user`, `launchd`}.
-2. `src/commands/serve.ts` — wrapper postmaster invocation (postmaster details in `pgserve-singleton-no-proxy` G1).
-3. `src/commands/status.ts` / `url.ts` / `port.ts` — JSON-shape discovery API.
-4. `src/commands/uninstall.ts` — pm2 delete + clear admin.json.
-5. `src/lib/pm2-args.ts` — `PM2_HARDENED_DEFAULTS` (maxRestarts=10, restartDelayMs=5000, maxMemoryRestart by service, killTimeoutMs=20000, log paths, `--interpreter none`).
-6. `src/lib/admin-json.ts` — atomic writer + reader; supervisor-refusal helper.
-7. `__tests__/install.test.ts`, `__tests__/url.test.ts`, `__tests__/admin-json.test.ts`.
+1. `src/lib/pm2-args.js` (NEW) — exports `PM2_HARDENED_DEFAULTS` (maxRestarts=10, restartDelayMs=5000, maxMemoryRestart per service, killTimeoutMs=20000, log paths, `--interpreter none`) + `buildPm2StartArgs(serviceName, opts)`. Constants are duplicated across repos (autopg, genie, omni) per Decision 3 — copying simpler than a shared package. Cutover G11's `autopg install` consumes this module.
+2. `src/lib/admin-json.js` (NEW) — atomic writer (writes to `<file>.tmp` + `fs.rename`) + reader + `assertSupervisor(expected: "pm2" | "systemd-user" | "launchd" | "external")` helper that throws with the locked remediation hint when the actual supervisor differs. Schema: `{ supervisor, socketDir, port, installedAt }`. **Co-owned with `pgserve-singleton-no-proxy` G1** — that wish's deliverable 6 references the same file path. This wish guarantees the module exists; singleton wish G1 wires it into postmaster bring-up.
+3. `src/commands/uninstall.js` (NEW) — `autopg uninstall`: `pm2 delete autopg-server autopg-ui` + clear `~/.autopg/admin.json.supervisor` (sets to `null` so a subsequent `autopg install` succeeds without the Tier-B refusal trigger) + leave data dir intact + audit-log entry. Idempotent.
+4. Tests: `__tests__/pm2-args.test.js`, `__tests__/admin-json.test.js` (atomic-write + supervisor-refusal cases), `__tests__/uninstall.test.js`.
+
+**Out of scope (owned elsewhere):**
+- `autopg install` binary subcommand — owned by cutover G11.
+- `autopg serve` — owned by cutover G19.
+- `autopg status` / `url` / `port` — owned by cutover G19 (the discovery primitives "continue to work unchanged" reading `runtime.json` first).
 
 **Acceptance Criteria:**
-- [ ] `autopg install` is idempotent; second run exits 0 with "already installed".
-- [ ] `pm2 list` shows `autopg-server` + `autopg-ui` post-install.
-- [ ] `~/.autopg/admin.json` contains `{ supervisor: "pm2", socketDir, port: 5432, installedAt }`.
-- [ ] `autopg url` / `autopg port` / `autopg status --json` return canonical values.
-- [ ] `autopg install` refuses with non-zero exit when `admin.json.supervisor == "systemd-user"`.
+- [ ] `src/lib/pm2-args.js` exports `PM2_HARDENED_DEFAULTS` with the exact values pinned in this wish + `buildPm2StartArgs(name, opts)` factory.
+- [ ] `src/lib/admin-json.js` writer is atomic (`<file>.tmp` rename pattern) — concurrent writers do not corrupt the file (validated under `__tests__/admin-json.test.js`).
+- [ ] `assertSupervisor("pm2")` throws when actual supervisor is `systemd-user` with the locked remediation hint.
+- [ ] `autopg uninstall` removes both pm2 entries + clears `admin.json.supervisor` (sets to `null`); idempotent on second invocation.
+- [ ] After `autopg uninstall`, a subsequent `autopg install` succeeds (no Tier-B-refusal false positive).
 
 **Validation:**
 ```bash
-autopg install && autopg install
-pm2 jlist | jq -e '.[] | select(.name=="autopg-server")' >/dev/null
-jq -e '.supervisor == "pm2"' ~/.autopg/admin.json
-autopg port | grep -q 5432
+bun test test/lib/pm2-args.test.js test/lib/admin-json.test.js test/cli/uninstall.test.js
+autopg install && autopg uninstall && autopg install   # idempotent round-trip
 ```
 
 **depends-on:** none (cross-wish dependency on `pgserve#pgserve-singleton-no-proxy` Group 1 declared in Cross-wish dependencies section)
@@ -255,7 +260,7 @@ autopg port | grep -q 5432
 1. `src/genie-commands/install.ts` — calls `autopg install`; reads `autopg url`; registers `genie-serve` with hardened defaults (`--interpreter none` + `serve start --headless --no-tui --no-interactive`).
 2. `src/genie-commands/doctor.ts` — adds `pm2-supervision` and `canonical-autopg` checks.
 3. `src/term-commands/serve.ts` — detects pm2 supervision and defers to `pm2 restart genie-serve`.
-4. `src/lib/pm2-args.ts` — copy from autopg's spec (Decision 3: constants duplicated, no shared package).
+4. `src/lib/pm2-args.js` — copy from autopg's spec (Decision 3: constants duplicated, no shared package).
 5. `install.sh` — route through `autopg install` → `genie install`.
 6. Refusal path: `genie install` refuses non-zero when `admin.json.supervisor == "external"` (operator owns supervision).
 
@@ -264,7 +269,7 @@ autopg port | grep -q 5432
 - [ ] `genie doctor` is green; `pm2-supervision` and `canonical-autopg` checks pass.
 - [ ] `genie serve` running under pm2 survives shell closure (regression test for original incident).
 - [ ] `genie install` refuses when `admin.json.supervisor == "external"` with remediation hint.
-- [ ] `genie install` succeeds when `admin.json.supervisor == "systemd-user"` (autopg on Tier B; genie still under pm2 — hybrid is allowed).
+- [ ] `genie install` refuses non-zero when `admin.json.supervisor == "systemd-user"` with the locked remediation hint `"autopg is on Tier B (systemd-user); run autopg service uninstall to revert to Tier A before installing genie/omni under pm2"` — matches Decision 9 (line 116) + Success Criterion line 130 + cohort sibling `pgserve-singleton-no-proxy` G1 acceptance line 194. The hybrid case (autopg on Tier B; genie under pm2) is reached by the OPPOSITE flow: install everything under Tier A first, THEN run `autopg service install` to migrate ONLY autopg to Tier B (cutover G20's hard MIGRATE contract handles the orderly swap).
 
 **Validation:**
 ```bash
@@ -294,6 +299,7 @@ nohup genie install &  # close shell; bridge stays alive
 - [ ] Post-migration: no embedded pgserve in pm2 list.
 - [ ] `omni doctor` `canonical-connection-string` passes; `DATABASE_URL` points at autopg.
 - [ ] `omni install` refuses when `admin.json.supervisor == "external"`.
+- [ ] `omni install` refuses non-zero when `admin.json.supervisor == "systemd-user"` (matches genie install behavior + Decision 9; same locked remediation hint).
 
 **Validation:**
 ```bash
@@ -340,7 +346,7 @@ Wave 1 (autopg)  ──┬──→ Wave 2 (genie)
 
 ## Cross-wish dependencies
 
-- **paired-with** `pgserve#autopg-distribution-cutover` — v2.4 cohort sibling. Owns the `pgserve` → `autopg` rename, CDN distribution, and `autopg service install` (Tier B G11.6). This wish's downstream installers (`genie install`, `omni install`) must read the `~/.autopg/admin.json.supervisor` field this cohort defines, and refuse when the value is not `pm2`.
+- **paired-with** `pgserve#autopg-distribution-cutover` — v2.4 cohort sibling. Owns the `pgserve` → `autopg` rename, CDN distribution, and `autopg service install` (Tier B G20). This wish's downstream installers (`genie install`, `omni install`) must read the `~/.autopg/admin.json.supervisor` field this cohort defines, and refuse when the value is not `pm2`.
 - **paired-with** `pgserve#pgserve-singleton-no-proxy` — v2.4 cohort sibling. Owns the data-plane refactor (`autopg-server` postmaster, dual-transport, `autopg url`/`port` discovery). Decision 7's `~/.autopg/admin.json` schema is co-owned with that wish's Group 1.
 - **builds-on** `omni-lifecycle-hardening` (archived) — established the `PM2_HARDENED_DEFAULTS` shape mirrored here.
 - **closes** the operator-lockout footgun the canonical-genie-omni-wiring + omni-host-fingerprint-trust wishes paved over with workarounds.
@@ -370,22 +376,25 @@ Wave 1 (autopg)  ──┬──→ Wave 2 (genie)
 ## Files to Create / Modify
 
 ### `automagik/autopg` (Wave 1)
-- `src/commands/install.ts` (new — Tier A pm2 register; respects admin.json.supervisor)
-- `src/commands/serve.ts` (new — thin wrapper; postmaster invocation lives in pgserve-singleton-no-proxy G1)
-- `src/commands/status.ts`, `src/commands/url.ts`, `src/commands/port.ts` (new)
-- `src/commands/uninstall.ts` (new — pm2 delete autopg-server + autopg-ui; clears admin.json.supervisor)
-- `src/lib/pm2-args.ts` (new — shared pm2 launch builder, mirror of omni's `PM2_HARDENED_DEFAULTS`)
-- `src/lib/admin-json.ts` (new — schema co-owned with pgserve-singleton-no-proxy G1; writer + reader + supervisor-refusal helper)
-- `bin/autopg` (modify — add subcommand routing post-rename)
-- `__tests__/install.test.ts`, `__tests__/url.test.ts`, `__tests__/admin-json.test.ts` (new)
-- `README.md` (modify — Tier A install flow)
+- `src/commands/uninstall.js` (new — pm2 delete autopg-server + autopg-ui; clears admin.json.supervisor)
+- `src/lib/pm2-args.js` (new — shared pm2 launch builder, mirror of omni's `PM2_HARDENED_DEFAULTS`; consumed by cutover G11)
+- `src/lib/admin-json.js` (new — schema co-owned with pgserve-singleton-no-proxy G1; writer + reader + supervisor-refusal helper; consumed by cutover G11 + singleton G1)
+- `bin/autopg` (modify — add `uninstall` subcommand routing only; install/serve/status/url/port routing lives in cutover G11/G19)
+- `__tests__/pm2-args.test.js`, `__tests__/admin-json.test.js`, `__tests__/uninstall.test.js` (new)
+- `README.md` (modify — `autopg uninstall` subcommand + cohort `~/.autopg/admin.json` schema)
+
+**Owned elsewhere (cohort sibling, NOT created by this wish):**
+- `src/cli/install.js` — cutover G11
+- `src/cli/serve.js` (or equivalent) — cutover G19
+- `src/cli/status.js` / `url.js` / `port.js` — cutover G19
+- `bin/autopg` install/serve subcommand routing — cutover G11/G19
 
 ### `automagik-dev/genie` (Wave 2)
 - `src/genie-commands/install.ts` (new)
 - `src/genie-commands/doctor.ts` (modify — add pm2-supervision check)
 - `src/term-commands/serve.ts` (modify — detect pm2 supervision, defer)
 - `install.sh` (modify — route through `pgserve install` + `genie install`)
-- `src/lib/pm2-args.ts` (new — copy from this wish's spec)
+- `src/lib/pm2-args.js` (new — copy from this wish's spec)
 - Tests for install + doctor changes.
 
 ### `automagik-dev/omni` (Wave 3)
