@@ -2,32 +2,39 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | DRAFT |
+| **Status** | DRAFT (one of three peer wishes that together ship v2.4; each gets its own branch + PR + `/dream` slot) |
 | **Slug** | `canonical-pgserve-pm2-supervision` |
-| **Date** | 2026-04-30 |
+| **Date** | 2026-04-30 (refined 2026-05-08 for v2.4 cohort + autopg rename) |
 | **Author** | genie-configure |
 | **Appetite** | medium-large |
-| **Repos touched** | `namastexlabs/pgserve`, `automagik-dev/omni`, `automagik-dev/genie`, `namastexlabs/genie-configure` (brain only) |
+| **Branch** | `wish/canonical-pgserve-pm2-supervision` |
+| **Repos touched** | `automagik/autopg` (renamed from `namastexlabs/pgserve` in cohort sibling), `automagik-dev/omni`, `automagik-dev/genie`, `namastexlabs/genie-configure` (brain only) |
 | **Design** | _No brainstorm — direct wish from operational pain (live debugging session 2026-04-30)_ |
+| **v2.4 cohort** | peer wishes, separate branches/PRs: `autopg-distribution-cutover` (rename + CDN + Tier B G11.6), `pgserve-singleton-no-proxy` (data plane + admin.json), this wish (cross-repo pm2 reuse — Tier A only) |
+
+> **🛡 TWO-TIER SUPERVISOR MODEL (Felipe constraint, 2026-05-08)**: this wish **specifies Tier A only** (rootless pm2). Tier B systemd-user / launchd is delivered by the cohort sibling `autopg-distribution-cutover` G11.6 via `autopg service install`. The hard MIGRATE contract (pm2-delete BEFORE unit-write; `~/.autopg/admin.json` records active supervisor) prevents Tier A + Tier B double-supervision. This wish writes `admin.json.supervisor = "pm2"` and downstream installers (`genie install`, `omni install`) MUST refuse to register their own pm2 entries if `admin.json.supervisor == "systemd-user"` (operator must run `autopg service uninstall` first to revert to Tier A).
 
 ## Summary
 
 Canonicalize **pgserve as the single, central, pm2-supervised database server** that every service in the stack connects to. Make `genie serve` and `omni-api`/`omni-nats` peer-equal pm2 services that boot under the same hardening, register via their own `*-install` commands, and consume pgserve through its CLI.
 
-**End-state pm2 list:**
+**End-state pm2 list (v2.4, Tier A — rootless default):**
 
 ```
-┌──────────────────────────────────────────┐
-│  pm2 supervisor                          │
-├──────────────────────────────────────────┤
-│  1. pgserve         ← NEW (canonical PG) │
-│  2. omni-api        ← existing, reconfig │
-│  3. omni-nats       ← existing            │
-│  4. genie-serve     ← NEW                 │
-│                                           │
-│  + pm2-logrotate (module, already there) │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  pm2 supervisor (Tier A)                     │
+├──────────────────────────────────────────────┤
+│  1. autopg-server    ← NEW (canonical PG)    │
+│  2. autopg-ui        ← NEW (console, opt.)   │
+│  3. omni-api         ← existing, reconfig    │
+│  4. omni-nats        ← existing               │
+│  5. genie-serve      ← NEW                    │
+│                                               │
+│  + pm2-logrotate (module, already there)     │
+└──────────────────────────────────────────────┘
 ```
+
+When the operator has run `autopg service install` (Tier B from cutover G11.6), entries 1+2 disappear from pm2 and live as `autopg.service` (systemd user-unit) instead. Entries 3-5 stay under pm2 either way (Tier B does not absorb them in v2.4).
 
 ## Trigger
 
@@ -46,11 +53,11 @@ Same session also revealed: **multiple pgserve instances running in parallel** (
 
 ### IN
 
-1. **pgserve gets `install` + `serve` commands.** New subcommands in the pgserve CLI:
-   - `pgserve install` — idempotent pm2 registration with hardened defaults (mirror omni's `PM2_HARDENED_DEFAULTS`); creates `~/.pgserve/config.json` with canonical port + data dir.
-   - `pgserve serve` — long-lived process pm2 invokes (currently `bin/pgserve-wrapper.cjs daemon`, just renamed for clarity).
-   - `pgserve status` / `pgserve url` / `pgserve port` — discovery API for downstream installers.
-   - `pgserve uninstall` — `pm2 delete pgserve` + leave data dir intact.
+1. **autopg gets `install` + `serve` commands** (CLI binary renamed from pgserve in cohort sibling `autopg-distribution-cutover`):
+   - `autopg install` — idempotent pm2 registration of `autopg-server` + `autopg-ui` with hardened defaults (mirror omni's `PM2_HARDENED_DEFAULTS`); writes `~/.autopg/admin.json` with `{ supervisor: "pm2", socketDir, port: 5432, installedAt }`. Refuses if `admin.json.supervisor == "systemd-user"` (operator on Tier B).
+   - `autopg serve` — long-lived postmaster wrapper pm2 invokes. Defined in cohort sibling `pgserve-singleton-no-proxy` G1.
+   - `autopg status` / `autopg url` / `autopg port` — discovery API for downstream installers. `port` returns 5432 (Unix socket preferred via `autopg url`).
+   - `autopg uninstall` — `pm2 delete autopg-server autopg-ui` + leave data dir intact + clear `admin.json.supervisor`.
 
 2. **Hardened pm2 defaults shared.** Extract `PM2_HARDENED_DEFAULTS` and `buildPm2StartArgs` from `omni/packages/cli/src/pm2.ts` into a small shared shape every installer copies. Constants stay duplicated across repos (avoids a new shared package), but the values are pinned in this wish:
    ```
@@ -63,22 +70,23 @@ Same session also revealed: **multiple pgserve instances running in parallel** (
    ```
 
 3. **`genie install` (NEW).** Mirror of `omni install`:
-   - Calls `pgserve install` first (no-op when already registered).
-   - Reads `pgserve url` to get the canonical connection string.
-   - Registers `genie-serve` under pm2 with hardened defaults.
-   - Writes `~/.genie/config.json` with `databaseUrl: <pgserve url>`.
+   - Calls `autopg install` first (no-op when already registered).
+   - Reads `autopg url` to get the canonical connection string (Unix socket via `host=$XDG_RUNTIME_DIR/pgserve` or TCP `localhost:5432`).
+   - Registers `genie-serve` under pm2 with hardened defaults — refuses if `admin.json.supervisor == "external"` (operator owns supervision; emits remediation).
+   - Writes `~/.genie/config.json` with `databaseUrl: <autopg url>`.
    - Idempotent; safe to re-run.
    - Adds `--non-interactive` for CI/install.sh.
 
 4. **`omni install` reconfigured.** Stops embedding pgserve inside `omni-api`'s lifecycle:
-   - Calls `pgserve install` first.
-   - Migration: pg_dump from current `~/.omni/data/pgserve/` → restore into canonical pgserve. Stop and pm2-delete the embedded pgserve.
-   - Update `omni-api`'s `DATABASE_URL` env to point at canonical pgserve.
-   - Existing `omni doctor` already audits this; extend it to check connection-string-points-at-canonical-pgserve.
+   - Calls `autopg install` first.
+   - Migration: pg_dump from current `~/.omni/data/pgserve/` → restore into canonical autopg → stop and pm2-delete the embedded pgserve.
+   - Update `omni-api`'s `DATABASE_URL` env to point at canonical autopg (Unix socket preferred).
+   - Existing `omni doctor` already audits this; extend it to check connection-string-points-at-canonical-autopg.
+   - Refuses if `admin.json.supervisor == "external"` (same guardrail as genie install).
 
 5. **`install.sh` updates.** Both repos' bootstrap scripts route through the new pattern:
-   - `omni/install.sh`: install pgserve@latest globally → `pgserve install` → `omni install`.
-   - `genie/install.sh`: install pgserve@latest globally → `pgserve install` → `genie install`.
+   - `omni/install.sh`: install autopg@latest → `autopg install` → `omni install`.
+   - `genie/install.sh`: install autopg@latest → `autopg install` → `genie install`.
 
 6. **Brain documentation.** Add to genie-configure's brain:
    - `Configuration & Routing/canonical-pgserve-pm2.md` — architecture map: 4 pm2 services, pgserve as central PG, install ordering.
@@ -97,27 +105,30 @@ Same session also revealed: **multiple pgserve instances running in parallel** (
 
 | # | Decision | Rationale |
 |---|---|---|
-| 1 | pgserve owns the install + serve subcommands | Other services should NOT know how to register pgserve under pm2 — that's pgserve's responsibility. Same pattern as omni owning omni-api/nats. |
-| 2 | Idempotent `*-install` everywhere | Every installer can be re-run without harm. Re-running `pgserve install` after it's already registered exits 0 with "already installed." Same for `omni install` and `genie install`. |
-| 3 | Cross-repo install dependency: pgserve → omni & genie | omni and genie shell out to `pgserve install` first. They DON'T re-implement pgserve registration. Tighter coupling, but simpler than a shared package, and avoids "two installers disagree on hardening defaults." |
+| 1 | autopg owns the install + serve subcommands | Other services should NOT know how to register autopg under pm2 — that's autopg's responsibility. Same pattern as omni owning omni-api/nats. |
+| 2 | Idempotent `*-install` everywhere | Every installer can be re-run without harm. Re-running `autopg install` after it's already registered exits 0 with "already installed." Same for `omni install` and `genie install`. |
+| 3 | Cross-repo install dependency: autopg → omni & genie | omni and genie shell out to `autopg install` first. They DON'T re-implement autopg registration. Tighter coupling, but simpler than a shared package, and avoids "two installers disagree on hardening defaults." |
 | 4 | `--interpreter none` for pm2 launches | Both genie and omni binaries use `#!/usr/bin/env bun` shebangs. `--interpreter bun` triggers pm2's ESM/require crash on top-level await. Shebang resolution side-steps the issue. **Empirically validated 2026-04-30** during the manual genie-serve pm2 registration. |
 | 5 | `genie serve start --headless --no-tui --no-interactive` for pm2 | TUI requires a real terminal; pm2 child has no tty. Headless + no-tui matches omni-api's mode. **Empirically validated 2026-04-30.** |
-| 6 | Migration via pg_dump + restore (not file-level copy) | Data file format is sensitive to PG version; pg_dump is portable. Even with same pgserve version, dump+restore is the safe path. |
-| 7 | Single config file per service, no shared "canonical config" file | `pgserve install` writes `~/.pgserve/config.json`; consumers read it via `pgserve url`. We don't introduce a `~/.canonical/` directory or similar. The CLI is the contract. |
-| 8 | pm2-logrotate stays as a module, not a pm2 service | It's a pm2 module by design; `omni install` already configures it. `pgserve install` reuses the same pm2-logrotate (no duplicate setup). |
+| 6 | Migration via pg_dump + restore (not file-level copy) | Data file format is sensitive to PG version; pg_dump is portable. Even with same autopg version, dump+restore is the safe path. |
+| 7 | `~/.autopg/admin.json` is the single contract for supervisor + connection discovery | `autopg install` writes it; `genie install`/`omni install` read it via `autopg url` / `autopg port`; `autopg doctor` reads `supervisor` field to pick the right liveness check. The CLI is the contract. Schema co-owned with cohort sibling `pgserve-singleton-no-proxy` G1. |
+| 8 | pm2-logrotate stays as a module, not a pm2 service | It's a pm2 module by design; `omni install` already configures it. `autopg install` reuses the same pm2-logrotate (no duplicate setup). |
+| 9 | Downstream installers refuse when `admin.json.supervisor != "pm2"` | If operator has run `autopg service install` (Tier B), `genie install`/`omni install` MUST refuse to add their own pm2 entries (would create double-supervision). Operator runs `autopg service uninstall` first to revert to Tier A. Felipe directive 2026-05-08. |
 
 ## Success Criteria
 
-- [ ] `pgserve install` registers `pgserve` as a pm2 service with hardened defaults; idempotent on second invocation.
-- [ ] `pgserve url` returns a valid connection string that other tools can use without pgserve being CLI-imported.
-- [ ] `omni install` on a clean machine results in: `pgserve` + `omni-api` + `omni-nats` all under pm2 with green status.
-- [ ] `genie install` on a clean machine results in: `pgserve` + `genie-serve` all under pm2 with green status.
-- [ ] On a machine where both omni and genie are installed, exactly **4 pm2 services** are present (pgserve, omni-api, omni-nats, genie-serve), pgserve is shared, and both `omni doctor` and `genie doctor` are green.
-- [ ] On reboot, `pm2 resurrect` brings all 4 services back online with correct env.
+- [ ] `autopg install` registers `autopg-server` + `autopg-ui` as pm2 services with hardened defaults; idempotent on second invocation; writes `~/.autopg/admin.json` with `supervisor: "pm2"`.
+- [ ] `autopg url` returns a valid connection string (Unix socket preferred, TCP 5432 fallback) that other tools can use without autopg being CLI-imported.
+- [ ] `omni install` on a clean machine results in: `autopg-server` + `autopg-ui` + `omni-api` + `omni-nats` all under pm2 with green status.
+- [ ] `genie install` on a clean machine results in: `autopg-server` + `autopg-ui` + `genie-serve` all under pm2 with green status.
+- [ ] On a machine where both omni and genie are installed, exactly **5 pm2 services** are present (`autopg-server`, `autopg-ui`, `omni-api`, `omni-nats`, `genie-serve`), autopg is shared, and both `omni doctor` and `genie doctor` are green.
+- [ ] On reboot, `pm2 resurrect` brings all 5 services back online with correct env.
 - [ ] Existing omni installs migrate without data loss: pre-migration `omni events list` content matches post-migration content.
 - [ ] `genie serve` running under pm2 survives shell closure (the bug that triggered this wish stays fixed forever).
-- [ ] `omni doctor` and `genie doctor` both gain a check: "process is registered under pm2 with hardened defaults" (yes/no with one-line remediation if no).
+- [ ] `omni doctor` and `genie doctor` both gain a check: "process is registered under pm2 with hardened defaults AND `admin.json.supervisor` matches host expectation" (yes/no with one-line remediation if no).
 - [ ] Brain entries (architecture map, runbook, ADR) merged in genie-configure.
+- [ ] **Tier B refusal**: on a host where operator has run `autopg service install` (admin.json.supervisor == "systemd-user"), running `genie install` or `omni install` exits non-zero with remediation hint `"autopg is on Tier B (systemd-user); run autopg service uninstall to revert to Tier A before installing genie/omni under pm2"`.
+- [ ] **Tier B coexistence**: with autopg on Tier B (systemd-user) and omni-api/omni-nats/genie-serve on pm2, `omni doctor` and `genie doctor` both pass when their connection-string check resolves against the systemd-managed autopg.
 
 ## Execution Strategy
 
@@ -133,14 +144,16 @@ Wave-based; each wave can ship independently. Three repos, four PRs total.
 
 **Validation:**
 ```bash
-bunx pgserve install              # green; pm2 list shows `pgserve`
-bunx pgserve install              # exits 0, "already installed"
-bunx pgserve url                  # postgres://localhost:8432/postgres
-bunx pgserve status --json        # { name: "pgserve", status: "online", port: 8432, dataDir: "..." }
-pm2 list | grep pgserve           # online, max-restarts=10, etc.
+autopg install                    # green; pm2 list shows `autopg-server` + `autopg-ui`
+autopg install                    # exits 0, "already installed"
+autopg url                        # postgres://localhost:5432/postgres or unix:$XDG_RUNTIME_DIR/pgserve
+autopg port                       # 5432
+autopg status --json              # { name: "autopg-server", status: "online", port: 5432, supervisor: "pm2", socketDir: "..." }
+pm2 list | grep -E '(autopg-server|autopg-ui)'   # both online, max-restarts=10
+jq -e '.supervisor == "pm2"' ~/.autopg/admin.json
 ```
 
-**PR:** `namastexlabs/pgserve#???` — `feat(cli): pgserve install + pm2 supervision`.
+**PR:** `automagik/autopg#???` — `feat(cli): autopg install + pm2 supervision (Tier A)`.
 
 ### Wave 2 — `genie install` (depends on Wave 1)
 
@@ -155,9 +168,11 @@ pm2 list | grep pgserve           # online, max-restarts=10, etc.
 **Validation:**
 ```bash
 genie install                                            # green
-pm2 list                                                 # includes pgserve + genie-serve
-genie doctor                                             # all green
+pm2 list                                                 # includes autopg-server + autopg-ui + genie-serve
+genie doctor                                             # all green; canonical-autopg=ok
 genie serve stop && genie install                        # idempotent
+# Tier B refusal: autopg service install (sets admin.json.supervisor=systemd-user), then re-run:
+genie install                                            # refuses: "autopg is on Tier B; revert with autopg service uninstall first"
 # kill the shell that ran install — bridge stays alive (the original incident's reproduction)
 ```
 
@@ -177,16 +192,16 @@ genie serve stop && genie install                        # idempotent
 ```bash
 # Fresh machine
 omni install
-pm2 list                            # pgserve + omni-api + omni-nats
+pm2 list                            # autopg-server + autopg-ui + omni-api + omni-nats
 omni doctor                         # all green; connection-string-canonical=ok
 
 # Existing machine (with embedded pgserve)
 omni install                        # detects legacy, runs migration
 omni events list --limit 100        # data preserved post-migration
-pm2 list                            # pgserve + omni-api + omni-nats (no embedded pgserve)
+pm2 list                            # autopg-server + autopg-ui + omni-api + omni-nats (no embedded pgserve)
 ```
 
-**PR:** `automagik-dev/omni#???` — `feat(install): canonical pgserve + migration from embedded`.
+**PR:** `automagik-dev/omni#???` — `feat(install): canonical autopg + migration from embedded pgserve`.
 
 ### Wave 4 — Brain ingestion (depends on Waves 1–3 merging)
 
@@ -196,17 +211,140 @@ pm2 list                            # pgserve + omni-api + omni-nats (no embedde
 - Group 4.2 — `brain/Runbooks/recover-pm2-stack.md`: diagnose/restart any of the 4 services; `pm2 resurrect` after reboot; rollback to embedded pgserve (if migration goes wrong).
 - Group 4.3 — `brain/_decisions/2026-04-30-canonical-pgserve.md`: ADR; alternatives considered (vanilla postgres, systemd-user, embedded-everywhere); consequences.
 
-**PR:** `namastexlabs/genie-configure#???` — `chore(brain): canonical pgserve + pm2 supervision`.
+**PR:** `namastexlabs/genie-configure#???` — `chore(brain): canonical autopg + pm2 supervision`.
+
+## Execution Groups
+
+### Group 1: autopg pm2 lifecycle (Wave 1)
+
+**Goal:** autopg owns Tier A pm2 lifecycle. New CLI subcommands (`install`, `serve`, `status`, `url`, `port`, `uninstall`) plus `~/.autopg/admin.json` writer/reader. Hardened pm2 defaults extracted into `src/lib/pm2-args.ts`.
+
+**Deliverables:**
+1. `src/commands/install.ts` — pm2 register `autopg-server` + `autopg-ui` with hardened defaults. Refuses if `admin.json.supervisor` ∈ {`systemd-user`, `launchd`}.
+2. `src/commands/serve.ts` — wrapper postmaster invocation (postmaster details in `pgserve-singleton-no-proxy` G1).
+3. `src/commands/status.ts` / `url.ts` / `port.ts` — JSON-shape discovery API.
+4. `src/commands/uninstall.ts` — pm2 delete + clear admin.json.
+5. `src/lib/pm2-args.ts` — `PM2_HARDENED_DEFAULTS` (maxRestarts=10, restartDelayMs=5000, maxMemoryRestart by service, killTimeoutMs=20000, log paths, `--interpreter none`).
+6. `src/lib/admin-json.ts` — atomic writer + reader; supervisor-refusal helper.
+7. `__tests__/install.test.ts`, `__tests__/url.test.ts`, `__tests__/admin-json.test.ts`.
+
+**Acceptance Criteria:**
+- [ ] `autopg install` is idempotent; second run exits 0 with "already installed".
+- [ ] `pm2 list` shows `autopg-server` + `autopg-ui` post-install.
+- [ ] `~/.autopg/admin.json` contains `{ supervisor: "pm2", socketDir, port: 5432, installedAt }`.
+- [ ] `autopg url` / `autopg port` / `autopg status --json` return canonical values.
+- [ ] `autopg install` refuses with non-zero exit when `admin.json.supervisor == "systemd-user"`.
+
+**Validation:**
+```bash
+autopg install && autopg install
+pm2 jlist | jq -e '.[] | select(.name=="autopg-server")' >/dev/null
+jq -e '.supervisor == "pm2"' ~/.autopg/admin.json
+autopg port | grep -q 5432
+```
+
+**depends-on:** none (cross-wish dependency on `pgserve#pgserve-singleton-no-proxy` Group 1 declared in Cross-wish dependencies section)
+
+---
+
+### Group 2: genie install + pm2 supervision (Wave 2)
+
+**Goal:** `genie install` is the rootless symmetric installer for `genie-serve`. Calls `autopg install` first; registers `genie-serve` under pm2; updates `~/.genie/config.json`. `genie doctor` adds `pm2-supervision` + `canonical-autopg` checks.
+
+**Deliverables:**
+1. `src/genie-commands/install.ts` — calls `autopg install`; reads `autopg url`; registers `genie-serve` with hardened defaults (`--interpreter none` + `serve start --headless --no-tui --no-interactive`).
+2. `src/genie-commands/doctor.ts` — adds `pm2-supervision` and `canonical-autopg` checks.
+3. `src/term-commands/serve.ts` — detects pm2 supervision and defers to `pm2 restart genie-serve`.
+4. `src/lib/pm2-args.ts` — copy from autopg's spec (Decision 3: constants duplicated, no shared package).
+5. `install.sh` — route through `autopg install` → `genie install`.
+6. Refusal path: `genie install` refuses non-zero when `admin.json.supervisor == "external"` (operator owns supervision).
+
+**Acceptance Criteria:**
+- [ ] On a fresh host, `genie install` produces `pm2 list` containing `autopg-server`, `autopg-ui`, `genie-serve`.
+- [ ] `genie doctor` is green; `pm2-supervision` and `canonical-autopg` checks pass.
+- [ ] `genie serve` running under pm2 survives shell closure (regression test for original incident).
+- [ ] `genie install` refuses when `admin.json.supervisor == "external"` with remediation hint.
+- [ ] `genie install` succeeds when `admin.json.supervisor == "systemd-user"` (autopg on Tier B; genie still under pm2 — hybrid is allowed).
+
+**Validation:**
+```bash
+genie install && genie doctor
+pm2 list | grep -q genie-serve
+nohup genie install &  # close shell; bridge stays alive
+```
+
+**depends-on:** Group 1
+
+---
+
+### Group 3: omni install reconfig + migration (Wave 3)
+
+**Goal:** Omni installer routes through canonical autopg. Migration handler dumps embedded pgserve → restores into autopg → updates omni-api `DATABASE_URL`.
+
+**Deliverables:**
+1. `packages/cli/src/commands/install.ts` — calls `autopg install`; removes embedded pgserve registration.
+2. `packages/cli/src/lib/migrate-from-embedded-pgserve.ts` — pg_dump from `~/.omni/data/pgserve/` → restore into canonical autopg → pm2-delete embedded pgserve.
+3. `packages/cli/src/commands/doctor.ts` — adds `canonical-connection-string` check.
+4. `install.sh` — `autopg install` → `omni install`.
+5. `--dry-run` migration mode + filesystem snapshot recommendation in docs.
+
+**Acceptance Criteria:**
+- [ ] Fresh machine: `omni install` produces `pm2 list` with `autopg-server`, `autopg-ui`, `omni-api`, `omni-nats`.
+- [ ] Existing-embedded machine: `omni install` migrates without data loss (`omni events list` content preserved).
+- [ ] Post-migration: no embedded pgserve in pm2 list.
+- [ ] `omni doctor` `canonical-connection-string` passes; `DATABASE_URL` points at autopg.
+- [ ] `omni install` refuses when `admin.json.supervisor == "external"`.
+
+**Validation:**
+```bash
+bash tests/integration/omni-fresh-install.sh
+bash tests/integration/omni-migrate-from-embedded.sh
+omni doctor | grep -q "canonical-connection-string: ok"
+```
+
+**depends-on:** Group 1
+
+---
+
+### Group 4: Brain ingestion + ADR (Wave 4)
+
+**Goal:** Document the canonical 5-service layout so future agents inheriting these servers know the pattern from a single file.
+
+**Deliverables:**
+1. `brain/Configuration & Routing/canonical-autopg-pm2.md` — architecture map; 5-service ascii diagram; autopg discovery via `autopg url`; install ordering; Tier A vs Tier B switching.
+2. `brain/Runbooks/recover-pm2-stack.md` — diagnose/restart any of the 5 services; `pm2 resurrect` after reboot; rollback to embedded pgserve (if migration goes wrong); switch from Tier A → Tier B (run `autopg service install`).
+3. `brain/_decisions/2026-04-30-canonical-autopg.md` — ADR; alternatives considered (vanilla postgres, systemd-only, embedded-everywhere); consequences.
+
+**Acceptance Criteria:**
+- [ ] All three files merged in `namastexlabs/genie-configure`.
+- [ ] Architecture map matches the actual end-state pm2 list on a host with all three repos installed.
+
+**Validation:**
+```bash
+test -f brain/Configuration\ \&\ Routing/canonical-autopg-pm2.md
+test -f brain/Runbooks/recover-pm2-stack.md
+test -f brain/_decisions/2026-04-30-canonical-autopg.md
+```
+
+**depends-on:** Group 1, Group 2, Group 3
+
+---
 
 ## Dependencies
 
 ```
-Wave 1 (pgserve)  ──┬──→ Wave 2 (genie)
-                     ├──→ Wave 3 (omni)
-                     └──→ Wave 4 (brain — also depends on Wave 2 & 3)
+Wave 1 (autopg)  ──┬──→ Wave 2 (genie)
+                    ├──→ Wave 3 (omni)
+                    └──→ Wave 4 (brain — also depends on Wave 2 & 3)
 ```
 
-Cross-wish: closes the operator-lockout footgun the canonical-genie-omni-wiring + omni-host-fingerprint-trust wishes paved over with workarounds. Doesn't conflict with `aegis-runtime` (separate daemon, separate supervisor).
+## Cross-wish dependencies
+
+- **paired-with** `pgserve#autopg-distribution-cutover` — v2.4 cohort sibling. Owns the `pgserve` → `autopg` rename, CDN distribution, and `autopg service install` (Tier B G11.6). This wish's downstream installers (`genie install`, `omni install`) must read the `~/.autopg/admin.json.supervisor` field this cohort defines, and refuse when the value is not `pm2`.
+- **paired-with** `pgserve#pgserve-singleton-no-proxy` — v2.4 cohort sibling. Owns the data-plane refactor (`autopg-server` postmaster, dual-transport, `autopg url`/`port` discovery). Decision 7's `~/.autopg/admin.json` schema is co-owned with that wish's Group 1.
+- **builds-on** `omni-lifecycle-hardening` (archived) — established the `PM2_HARDENED_DEFAULTS` shape mirrored here.
+- **closes** the operator-lockout footgun the canonical-genie-omni-wiring + omni-host-fingerprint-trust wishes paved over with workarounds.
+- **does-not-conflict-with** `aegis-runtime` (separate daemon, separate supervisor).
 
 ## QA Criteria
 
@@ -231,14 +369,16 @@ Cross-wish: closes the operator-lockout footgun the canonical-genie-omni-wiring 
 
 ## Files to Create / Modify
 
-### `namastexlabs/pgserve` (Wave 1)
-- `src/commands/install.ts` (new)
-- `src/commands/serve.ts` (new — likely a thin wrapper around the existing wrapper)
+### `automagik/autopg` (Wave 1)
+- `src/commands/install.ts` (new — Tier A pm2 register; respects admin.json.supervisor)
+- `src/commands/serve.ts` (new — thin wrapper; postmaster invocation lives in pgserve-singleton-no-proxy G1)
 - `src/commands/status.ts`, `src/commands/url.ts`, `src/commands/port.ts` (new)
-- `src/lib/pm2-args.ts` (new — shared pm2 launch builder, mirror of omni's)
-- `bin/pgserve-wrapper.cjs` (modify — add subcommand routing)
-- `__tests__/install.test.ts`, `__tests__/url.test.ts` (new)
-- `README.md` (modify)
+- `src/commands/uninstall.ts` (new — pm2 delete autopg-server + autopg-ui; clears admin.json.supervisor)
+- `src/lib/pm2-args.ts` (new — shared pm2 launch builder, mirror of omni's `PM2_HARDENED_DEFAULTS`)
+- `src/lib/admin-json.ts` (new — schema co-owned with pgserve-singleton-no-proxy G1; writer + reader + supervisor-refusal helper)
+- `bin/autopg` (modify — add subcommand routing post-rename)
+- `__tests__/install.test.ts`, `__tests__/url.test.ts`, `__tests__/admin-json.test.ts` (new)
+- `README.md` (modify — Tier A install flow)
 
 ### `automagik-dev/genie` (Wave 2)
 - `src/genie-commands/install.ts` (new)
