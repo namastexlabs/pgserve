@@ -26,8 +26,9 @@
  * `sourcePath` is always the absolute filesystem path (cwd or supplied)
  * — used by gc to detect "directory removed" orphans.
  *
- * Pure function: no postgres I/O, no network, no globals. Safe to call
- * 1000x in a tight loop during tests.
+ * Side effects: synchronous filesystem read of `<cwd>/package.json`
+ * (one open + one read; no recursion). No postgres I/O, no network, no
+ * globals. Hot-loop callers should cache the result themselves.
  */
 
 import fs from 'node:fs';

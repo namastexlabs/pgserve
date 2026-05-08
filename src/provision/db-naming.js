@@ -69,7 +69,7 @@ export function sanitizeSlug(input) {
  * @param {string} args.publisher      e.g. '@automagik/genie' (may be '')
  * @returns {ProvisionedNames}
  */
-export function deriveProvisionedNames({ fingerprint, publisher }) {
+export function deriveProvisionedNames({ fingerprint, publisher } = {}) {
   if (typeof fingerprint !== 'string' || fingerprint.length === 0) {
     throw new TypeError('deriveProvisionedNames: fingerprint must be a non-empty string');
   }

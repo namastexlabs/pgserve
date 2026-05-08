@@ -123,6 +123,15 @@ describe('deriveProvisionedNames — input validation', () => {
     expect(() => deriveProvisionedNames({ fingerprint: null, publisher: 'pkg' })).toThrow(TypeError);
     expect(() => deriveProvisionedNames({ fingerprint: 0, publisher: 'pkg' })).toThrow(TypeError);
   });
+
+  test('called with no argument throws the documented TypeError (PR #89 review fix)', () => {
+    // Without the `= {}` default, destructuring `undefined` throws a
+    // generic "Cannot destructure" error before our explicit
+    // fingerprint check runs. The default makes the failure mode
+    // consistent with the other rejection paths above.
+    expect(() => deriveProvisionedNames()).toThrow(TypeError);
+    expect(() => deriveProvisionedNames()).toThrow(/fingerprint must be a non-empty string/);
+  });
 });
 
 describe('determinism', () => {
