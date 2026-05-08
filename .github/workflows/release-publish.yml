@@ -1,0 +1,162 @@
+# ============================================================================
+# release-publish.yml — GitHub Releases distribution (Felipe directive 2026-05-08).
+#
+# Replaces cutover G9's cdn.automagik.dev publish workflow. GitHub Releases
+# is free, maintained by GitHub, and `gh attestation verify` reads cosign
+# signatures from Sigstore Rekor without any custom verification server.
+#
+# Trigger: tag push `v*` OR manual dispatch.
+#
+# Pipeline (chained from build-tarballs.yml + sign-attest.yml on the same tag):
+#   1. Download per-platform tarballs from build-tarballs.yml artifacts
+#   2. Download cosign signatures + SLSA attestations from sign-attest.yml artifacts
+#   3. Create GitHub Release (draft until manual promotion) with all assets attached
+#   4. Update `latest.json` channel pointer in the repo (committed, served via
+#      raw.githubusercontent.com — install.sh reads this for stable/beta/canary
+#      resolution)
+#
+# Verification by consumers:
+#   gh release download v<version> --repo namastexlabs/pgserve --pattern '*.tar.gz'
+#   gh attestation verify autopg-<platform>.tar.gz --owner namastexlabs
+#   # OR via cosign:
+#   cosign verify-blob --bundle autopg-<platform>.tar.gz.bundle autopg-<platform>.tar.gz
+# ============================================================================
+
+name: release-publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. 2.5.0)'
+        required: true
+      channel:
+        description: 'Release channel'
+        required: true
+        type: choice
+        default: stable
+        options:
+          - stable
+          - beta
+          - canary
+      draft:
+        description: 'Create as draft (require manual promotion)?'
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-publish-${{ github.ref }}
+  cancel-in-progress: false   # never cancel an in-flight publish
+
+permissions:
+  contents: write              # gh release create
+  id-token: write              # cosign keyless OIDC (if re-signing)
+  attestations: write          # actions/attest-build-provenance@v1
+
+jobs:
+  publish:
+    name: Publish to GitHub Releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            # Strip leading `v` from tag ref
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve channel
+        id: ch
+        run: |
+          if [ -n "${{ inputs.channel }}" ]; then
+            echo "channel=${{ inputs.channel }}" >> "$GITHUB_OUTPUT"
+          else
+            # Default tag pushes to stable; manual dispatches override above.
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download tarball artifacts (build-tarballs.yml)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: autopg-*-tarball
+          merge-multiple: true
+          path: dist/
+
+      - name: Download signature artifacts (sign-attest.yml)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: autopg-*-signed
+          merge-multiple: true
+          path: dist/
+        continue-on-error: true   # sign-attest.yml may not have run on dispatch
+
+      - name: List release assets
+        run: |
+          echo "=== dist/ ==="
+          ls -la dist/ || true
+
+      - name: Create GitHub Release with all assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          CHANNEL: ${{ steps.ch.outputs.channel }}
+          DRAFT_FLAG: ${{ inputs.draft && '--draft' || '' }}
+        run: |
+          PRERELEASE_FLAG=""
+          if [ "$CHANNEL" != "stable" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Create release if it doesn't exist; else upload assets to existing.
+          if ! gh release view "v${VERSION}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "v${VERSION}" \
+              --repo "${{ github.repository }}" \
+              --title "v${VERSION}" \
+              --notes "Release v${VERSION} (channel: ${CHANNEL})" \
+              ${DRAFT_FLAG} ${PRERELEASE_FLAG}
+          fi
+
+          # Upload all dist/* assets (--clobber overwrites if re-running)
+          if [ -d dist ] && [ "$(ls -A dist 2>/dev/null)" ]; then
+            gh release upload "v${VERSION}" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              dist/*
+          else
+            echo "::warning::dist/ is empty — no assets to upload"
+          fi
+
+      - name: Update latest.json channel pointer
+        if: ${{ steps.ch.outputs.channel == 'stable' && !inputs.draft }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir -p .well-known
+          cat > .well-known/latest.json <<EOF
+          {
+            "channel": "stable",
+            "version": "${VERSION}",
+            "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "tarball_base": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}",
+            "platforms": ["linux-x64-glibc","linux-x64-musl","linux-arm64","darwin-x64","darwin-arm64"]
+          }
+          EOF
+          # Commit only if changed; CI bot configured globally
+          if ! git diff --quiet .well-known/latest.json; then
+            git config user.name "release-bot"
+            git config user.email "release-bot@namastex.com"
+            git add .well-known/latest.json
+            git commit -m "chore(release): update latest.json → v${VERSION}"
+            git push origin HEAD:main || echo "::warning::push failed (likely permission); update latest.json manually"
+          fi
