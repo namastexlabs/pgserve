@@ -396,21 +396,9 @@ function cmdInstallUi(ctx, options = {}) {
   return 0;
 }
 
-function cmdUninstallUi() {
-  if (!pm2IsAvailable()) return 0;
-  // Always attempt the delete — `pm2 delete <name>` is idempotent and
-  // exits non-zero on a missing process, which is fine to swallow. This
-  // is more robust than a pre-existence check against `pm2 jlist`, which
-  // can lag the actual process state (or, in test stubs, return a
-  // partial registry).
-  const result = spawnSync('pm2', ['delete', UI_PM2_PROCESS_NAME], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  if (result.status === 0) {
-    ok(`UI uninstalled (pm2 process "${UI_PM2_PROCESS_NAME}" removed)`);
-  }
-  return 0;
-}
+// `cmdUninstall` + `cmdUninstallUi` migrated to `src/commands/uninstall.js`
+// as part of canonical-pgserve-pm2-supervision Group 1. The dispatch
+// `case 'uninstall'` above dynamically imports the new module.
 
 // ─── Admin password (Basic Auth for `autopg ui`) ─────────────────────────
 
@@ -714,32 +702,6 @@ function writeSupervisorRecord(adminJson, { supervisor, socketDir, port }) {
 }
 
 /**
- * `pgserve uninstall`
- *
- * Removes pgserve from pm2. Leaves the data directory and config file
- * intact — operator can `rm -rf ~/.pgserve` after they're satisfied no
- * downstream service still depends on the data.
- */
-function cmdUninstall() {
-  // Delete the daemon first — it's the load-bearing process and the order
-  // of "what existed at uninstall start" is determined by the daemon's
-  // pm2 registry, not the UI's. UI cleanup follows; soft-fails if absent.
-  const existing = pm2GetProcess(PM2_PROCESS_NAME);
-  if (!existing) {
-    ok(`not registered under pm2 (nothing to uninstall)`);
-    cmdUninstallUi();
-    return 0;
-  }
-  const result = spawnSync('pm2', ['delete', PM2_PROCESS_NAME], { stdio: 'inherit' });
-  if (result.status !== 0) {
-    fail(`pm2 delete failed (exit ${result.status})`);
-  }
-  ok(`uninstalled (pm2 process removed; data dir preserved at ${getDataDir()})`);
-  cmdUninstallUi();
-  return 0;
-}
-
-/**
  * `pgserve status [--json]`
  *
  * Reports both pm2 state and on-disk config. Exits 0 with status info
@@ -909,7 +871,13 @@ function dispatch(subcommand, args, ctx) {
     case 'install':
       return cmdInstall(args, ctx);
     case 'uninstall':
-      return cmdUninstall();
+      // canonical-pgserve-pm2-supervision Group 1: the uninstall surface
+      // moved to `src/commands/uninstall.js` so the cohort baseline (pm2
+      // teardown + admin.json supervisor clear + audit-log entry) lives
+      // alongside `src/lib/pm2-args.js` instead of inside this legacy
+      // dispatcher. dispatch() returns a Promise here; the wrapper
+      // already handles both numeric and Promise returns.
+      return import('./commands/uninstall.js').then((mod) => mod.runUninstall());
     case 'status':
       return cmdStatus(args);
     case 'url':

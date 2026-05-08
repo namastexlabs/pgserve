@@ -5,6 +5,7 @@
     "bin/postgres-server.js",
     "bin/pgserve-wrapper.cjs",
     "src/upgrade/index.js",
+    "src/commands/**",
     "console/src/main.jsx"
   ],
   "project": [
