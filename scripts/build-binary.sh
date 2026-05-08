@@ -94,7 +94,9 @@ build_one() {
   }
 
   local out_dir="${DIST_DIR}/${platform}/autopg"
-  mkdir -p "$out_dir"
+  # `build_one` runs without `set -e` (called via `|| rc=$?` in main), so
+  # mkdir failures must propagate explicitly (gemini PR #84 HIGH review).
+  mkdir -p "$out_dir" || return 1
   local outfile="${out_dir}/autopg"
 
   echo "==> [${platform}] bun build --compile --target=${target}"

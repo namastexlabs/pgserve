@@ -111,9 +111,14 @@ stage_from_local() {
 stage_from_pkg() {
   local pkg="$1" version="$2" out_dir="$3"
   echo "    -> source: npm @embedded-postgres/${pkg}@${version}"
-  local scratch
-  scratch=$(mktemp -d)
+  # Initialize before installing trap — under `set -u` the RETURN trap fires
+  # on any early-return path, including ones where `mktemp` hasn't run yet.
+  # Referencing an unset `$scratch` from the trap would print
+  # `scratch: unbound variable` and mask the real fetch error
+  # (chatgpt-codex P2 review on PR #84).
+  local scratch=""
   trap 'rm -rf "$scratch"' RETURN
+  scratch=$(mktemp -d) || return 1
 
   pushd "$scratch" >/dev/null
   cat > package.json <<EOF
@@ -174,20 +179,22 @@ stage_from_url() {
 fetch_one() {
   local platform="$1"
   local out_dir="${DIST_DIR}/${platform}/autopg/postgres"
-  rm -rf "$out_dir"
-  mkdir -p "$out_dir"
+  rm -rf "$out_dir" || return 1
+  mkdir -p "$out_dir" || return 1
 
   echo "==> [${platform}] fetch postgres bins"
 
+  # `fetch_one` runs without `set -e` (called via `|| rc=$?` in main), so each
+  # stage_* helper must propagate failures explicitly (gemini PR #84 HIGH).
   if [[ -n "${AUTOPG_POSTGRES_LOCAL_DIR:-}" ]]; then
-    stage_from_local "$AUTOPG_POSTGRES_LOCAL_DIR" "$out_dir"
+    stage_from_local "$AUTOPG_POSTGRES_LOCAL_DIR" "$out_dir" || return 1
   elif [[ -n "$PG_VERSION" ]]; then
     local pkg
     pkg="$(embedded_pkg_for "$platform")" || true
     if [[ -n "$pkg" ]]; then
-      stage_from_pkg "$pkg" "$PG_VERSION" "$out_dir"
+      stage_from_pkg "$pkg" "$PG_VERSION" "$out_dir" || return 1
     elif [[ -n "${AUTOPG_POSTGRES_URL_TEMPLATE:-}" ]]; then
-      stage_from_url "$AUTOPG_POSTGRES_URL_TEMPLATE" "$PG_VERSION" "$platform" "$out_dir"
+      stage_from_url "$AUTOPG_POSTGRES_URL_TEMPLATE" "$PG_VERSION" "$platform" "$out_dir" || return 1
     else
       echo "error: no @embedded-postgres pkg for ${platform}; set AUTOPG_POSTGRES_URL_TEMPLATE or AUTOPG_POSTGRES_LOCAL_DIR" >&2
       return 1

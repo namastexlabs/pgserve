@@ -139,11 +139,15 @@ assemble_one() {
   fi
 
   echo "==> [${platform}] assemble tarball"
-  verify_inputs "$stage" "$platform"
+  # `assemble_one` is invoked from main as `assemble_one ... || rc=$?` which
+  # disables `set -e` for the duration of this function. Each potentially-
+  # failing command needs explicit `|| return 1` to halt early instead of
+  # silently producing a corrupt tarball (gemini bot review HIGH on PR #84).
+  verify_inputs "$stage" "$platform" || return 1
 
   # 1) emit per-file manifest BEFORE the tarball is rolled — manifest is
   #    bundled inside.
-  emit_manifest "$stage" "$platform" "${stage}/autopg/manifest.json"
+  emit_manifest "$stage" "$platform" "${stage}/autopg/manifest.json" || return 1
 
   # 2) ensure binaries are executable inside the tar.
   chmod +x "${stage}/autopg/autopg" || true
@@ -161,11 +165,11 @@ assemble_one() {
     tar_flags+=(--owner=0 --group=0 --numeric-owner)
   fi
 
-  tar -C "$stage" -czf "$tarball" "${tar_flags[@]}" autopg/
+  tar -C "$stage" -czf "$tarball" "${tar_flags[@]}" autopg/ || return 1
   echo "    ✓ tarball: $tarball ($(du -h "$tarball" | cut -f1))"
 
   # 4) outer SHA256 — Group 8 cosign-signs this; Group 9 publishes both.
-  sha256_of "$tarball" > "$outer_sha"
+  sha256_of "$tarball" > "$outer_sha" || return 1
   echo "    ✓ sha256:  $(cat "$outer_sha")  $(basename "$tarball")"
 }
 
