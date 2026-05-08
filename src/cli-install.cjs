@@ -1123,7 +1123,10 @@ function dispatch(subcommand, args, ctx) {
       // pgserve singleton (v2.4) — wish Group 3, second read-only verb.
       // `pgserve trust add/list/remove` manages the user-extensible cosign
       // trust store at ~/.pgserve/trust/identities.json. Pure node.
-      return import('./commands/trust.js').then((mod) => mod.runTrust(args).then((code) => process.exit(code)));
+      // The wrapper handles the numeric-exit-code case; matches the
+      // verify dispatch style so the wrapper, not the verb, owns
+      // process.exit.
+      return import('./commands/trust.js').then((mod) => mod.runTrust(args));
     default:
       throw new Error(`pgserve: dispatch called with unknown subcommand "${subcommand}"`);
   }

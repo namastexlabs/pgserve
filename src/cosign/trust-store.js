@@ -86,6 +86,27 @@ export function readTrustStore({ homeDir = os.homedir() } = {}) {
     e.code = 'ETRUSTSTORE';
     throw e;
   }
+  // Per-entry shape check. Without this, a manually-edited
+  // identities.json containing `{"entries":[{}]}` would slip past the
+  // store-level guard and crash the formatter in `pgserve trust list`
+  // with a generic TypeError on first field access — losing the
+  // documented exit-2 ("malformed store") path. Fail fast here with
+  // the same ETRUSTSTORE code so downstream callers (the CLI command,
+  // `pgserve verify`, future provisioner) can branch on it uniformly.
+  for (let i = 0; i < parsed.entries.length; i++) {
+    const e = parsed.entries[i];
+    if (!e || typeof e !== 'object'
+        || typeof e.id !== 'string' || e.id.length === 0
+        || typeof e.issuer !== 'string' || e.issuer.length === 0
+        || typeof e.identityRegexp !== 'string' || e.identityRegexp.length === 0) {
+      const err = new Error(
+        `pgserve trust store at ${file}: entries[${i}] is missing required fields ` +
+          `(id, issuer, identityRegexp)`,
+      );
+      err.code = 'ETRUSTSTORE';
+      throw err;
+    }
+  }
   return parsed;
 }
 
@@ -130,6 +151,13 @@ export function validateEntry(candidate) {
       `trust entry id "${candidate.id}" must match /^[a-z0-9][a-z0-9._-]{0,63}$/i`,
     );
   }
+  // Normalize id to lowercase. The regex accepts upper-case (/i flag) so
+  // operators can paste pretty identifiers, but storage + lookup are
+  // case-insensitive — otherwise an entry typed "Foo" could shadow a
+  // hardcoded "foo" silently. Normalizing once on write keeps the
+  // hardcoded-shadow check simple and makes `trust remove FOO` idempotent
+  // with `trust add foo`.
+  const normalizedId = candidate.id.toLowerCase();
   // Validate the identityRegexp parses as JS regex (cosign uses a similar
   // RE2-ish dialect; this catches the obvious garbage while letting valid
   // sigstore patterns through).
@@ -139,7 +167,7 @@ export function validateEntry(candidate) {
     throw new Error(`trust entry identityRegexp is not a valid regex: ${err.message}`);
   }
   return {
-    id: candidate.id,
+    id: normalizedId,
     publisher: typeof candidate.publisher === 'string' ? candidate.publisher : '',
     issuer: candidate.issuer,
     identityRegexp: candidate.identityRegexp,
@@ -151,7 +179,13 @@ export function validateEntry(candidate) {
 }
 
 function isHardcodedId(id) {
-  return TRUSTED_IDENTITIES.some((e) => e.id === id);
+  // Compare lowercase-against-lowercase. validateEntry normalizes new
+  // user entries to lowercase; hardcoded ids in TRUSTED_IDENTITIES
+  // already use lowercase by convention, but we lowercase both sides to
+  // make the predicate symmetric and immune to a typo in the hardcoded
+  // table from leaking through.
+  const needle = id.toLowerCase();
+  return TRUSTED_IDENTITIES.some((e) => e.id.toLowerCase() === needle);
 }
 
 /**
@@ -186,14 +220,17 @@ export function removeUserTrust(id, opts = {}) {
   if (typeof id !== 'string' || id.length === 0) {
     throw new Error('removeUserTrust: id must be a non-empty string');
   }
-  if (isHardcodedId(id)) {
-    const e = new Error(`cannot remove "${id}" — hardcoded trust roots are not removable`);
+  // Lowercase normalization mirrors validateEntry — `trust remove FOO`
+  // must find the entry that `trust add foo` (or `trust add Foo`) wrote.
+  const normalizedId = id.toLowerCase();
+  if (isHardcodedId(normalizedId)) {
+    const e = new Error(`cannot remove "${normalizedId}" — hardcoded trust roots are not removable`);
     e.code = 'ETRUSTHARDCODED';
     throw e;
   }
   const store = readTrustStore(opts);
   const before = store.entries.length;
-  store.entries = store.entries.filter((x) => x.id !== id);
+  store.entries = store.entries.filter((x) => x.id !== normalizedId);
   if (store.entries.length === before) return false;
   writeTrustStore(store, opts);
   return true;

@@ -189,6 +189,90 @@ describe('removeUserTrust', () => {
   });
 });
 
+describe('readTrustStore — per-entry validation (PR #87 review fix)', () => {
+  test('throws ETRUSTSTORE when an entry is missing required fields', () => {
+    fs.mkdirSync(path.join(homeDir, '.pgserve', 'trust'), { recursive: true });
+    fs.writeFileSync(
+      getTrustFilePath(homeDir),
+      JSON.stringify({ schemaVersion: 1, entries: [{}] }),
+    );
+    let caught;
+    try {
+      readTrustStore({ homeDir });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.code).toBe('ETRUSTSTORE');
+    expect(caught.message).toMatch(/entries\[0\]/);
+  });
+
+  test('throws ETRUSTSTORE when an entry has an empty id', () => {
+    fs.mkdirSync(path.join(homeDir, '.pgserve', 'trust'), { recursive: true });
+    fs.writeFileSync(
+      getTrustFilePath(homeDir),
+      JSON.stringify({
+        schemaVersion: 1,
+        entries: [{ id: '', issuer: 'x', identityRegexp: '.+' }],
+      }),
+    );
+    expect(() => readTrustStore({ homeDir })).toThrow(/entries\[0\]/);
+  });
+
+  test('accepts a valid populated entry', () => {
+    fs.mkdirSync(path.join(homeDir, '.pgserve', 'trust'), { recursive: true });
+    fs.writeFileSync(
+      getTrustFilePath(homeDir),
+      JSON.stringify({
+        schemaVersion: 1,
+        entries: [
+          { id: 'fork', issuer: 'https://i', identityRegexp: '.+', publisher: '' },
+        ],
+      }),
+    );
+    const store = readTrustStore({ homeDir });
+    expect(store.entries.length).toBe(1);
+  });
+});
+
+describe('case-insensitive id (PR #87 review fix)', () => {
+  test('validateEntry lowercases the id', () => {
+    const e = validateEntry({
+      id: 'FORK-Build',
+      issuer: 'https://i',
+      identityRegexp: '.+',
+    });
+    expect(e.id).toBe('fork-build');
+  });
+
+  test('addUserTrust refuses to shadow a hardcoded id with mixed case', () => {
+    let caught;
+    try {
+      addUserTrust(
+        {
+          id: 'AUTOMAGIK-genie-RELEASE',
+          issuer: 'https://i',
+          identityRegexp: '.+',
+        },
+        { homeDir },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    expect(caught.code).toBe('ETRUSTSHADOW');
+  });
+
+  test('removeUserTrust honors mixed-case input', () => {
+    addUserTrust(
+      { id: 'fork', issuer: 'https://i', identityRegexp: '.+' },
+      { homeDir },
+    );
+    expect(removeUserTrust('FORK', { homeDir })).toBe(true);
+    expect(readTrustStore({ homeDir }).entries.length).toBe(0);
+  });
+});
+
 describe('listAllTrust', () => {
   test('hardcoded entries appear first, all marked source/removable', () => {
     const list = listAllTrust({ homeDir });
