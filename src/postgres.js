@@ -918,6 +918,33 @@ export class PostgresManager extends EventEmitter {
         ...gucArgs,
       ];
 
+      // pgserve singleton (v2.4): the bun-side audit-log writer is gone.
+      // Audit moves to postgres-native logging — `pgaudit` if the .so is
+      // bundled with the embedded postgres distribution, `log_statement`
+      // as a portable fallback otherwise. The wish ships the contract;
+      // shipping the pgaudit binary is a separate cohort task. Either way
+      // pm2 captures stderr to `<configDir>/logs/autopg-server-error.log`
+      // and `logrotate.d/pgserve` rotates it.
+      const pgauditPath = path.join(this.binaries.libDir, '..', 'lib', 'postgresql', 'pgaudit.so');
+      if (fs.existsSync(pgauditPath)) {
+        pgArgs.push('-c', 'shared_preload_libraries=pgaudit');
+        pgArgs.push('-c', 'pgaudit.log=all');
+        pgArgs.push('-c', 'pgaudit.log_catalog=off');
+        appliedGucs.shared_preload_libraries = 'pgaudit';
+        appliedGucs['pgaudit.log'] = 'all';
+      } else {
+        // Fallback: postgres-native log_statement='all' captures every
+        // query without the pgaudit-specific class taxonomy. Operators
+        // get an audit trail today; the cohort can swap to pgaudit later
+        // by dropping the .so into the embedded-postgres bundle.
+        pgArgs.push('-c', 'log_statement=all');
+        appliedGucs.log_statement = 'all';
+        this.logger?.warn(
+          { pgauditPath },
+          'pgaudit.so not found in embedded postgres lib dir; falling back to log_statement=all for audit',
+        );
+      }
+
       // Enable Unix socket for faster local connections (Linux/macOS)
       // Windows falls back to TCP only
       if (this.socketDir) {

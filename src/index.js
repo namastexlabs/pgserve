@@ -1,49 +1,16 @@
 /**
- * pgserve - Embedded PostgreSQL Server
+ * pgserve — Embedded PostgreSQL Server (singleton, v2.4+)
  *
- * True concurrent connections, zero config, auto-provision databases.
- * Uses embedded-postgres (real PostgreSQL binaries).
+ * Public surface after the `pgserve-singleton-no-proxy` Group 2 deletion:
+ * the bun proxy data plane, daemon control socket, libpq protocol
+ * rewriting, and SO_PEERCRED handshake are gone. Operators interact with
+ * pgserve through the CLI (`bin/pgserve-wrapper.cjs`), the postmaster
+ * subcommand (`bin/postgres-server.js postmaster`), and the cohort-shared
+ * helpers under `src/lib/`.
+ *
+ * `PostgresManager` is exported for tests and integrators that want to
+ * embed a postgres instance programmatically — it is the same class the
+ * postmaster subcommand instantiates.
  */
 
-// Main exports
-export { MultiTenantRouter, startMultiTenantServer } from './router.js';
 export { PostgresManager } from './postgres.js';
-export { SyncManager } from './sync.js';
-export { RestoreManager } from './restore.js';
-export { Dashboard } from './dashboard.js';
-export { StatsCollector } from './stats-collector.js';
-export { StatsDashboard } from './stats-dashboard.js';
-export {
-  PgserveDaemon,
-  startDaemon,
-  stopDaemon,
-  resolveControlSocketDir,
-  resolveControlSocketPath,
-  resolvePidLockPath,
-  resolveLibpqCompatPath,
-  acquirePidLock,
-  isProcessAlive,
-} from './daemon.js';
-export {
-  buildDaemonArgs,
-  daemonClientOptions,
-  ensureDaemon,
-  probeDaemon,
-  resolveBundledCliBin,
-} from './sdk.js';
-export {
-  derivePackageFingerprint,
-  deriveScriptFingerprint,
-  fingerprintFromCred,
-  findNearestPackageJson,
-  readPackageName,
-  readPersistFlag,
-} from './fingerprint.js';
-export {
-  hashToken,
-  mintToken,
-  parseTcpAuth,
-} from './tokens.js';
-
-// Default export
-export { startMultiTenantServer as default } from './router.js';

@@ -11,6 +11,7 @@
   "files": [
     "bin/",
     "src/",
+    "config/",
     "console/dist/",
     "README.md",
     "CHANGELOG.md",
@@ -19,7 +20,6 @@
     "scripts/"
   ],
   "scripts": {
-    "bench": "bun tests/benchmarks/runner.js",
     "test": "bun test tests/**/*.test.js",
     "test:watch": "bun test --watch tests/**/*.test.js",
     "dev": "bun --watch bin/postgres-server.js",

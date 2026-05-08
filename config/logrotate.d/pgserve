@@ -1,0 +1,47 @@
+# pgserve singleton (v2.4) — logrotate config for the pm2 / systemd-user
+# / launchd-supervised postmaster.
+#
+# Postgres' stderr (where pgaudit's audit log lands when the .so is
+# present, and `log_statement=all` lands in the fallback path) is captured
+# by the supervisor and written to:
+#
+#   ~/.autopg/logs/autopg-server-out.log
+#   ~/.autopg/logs/autopg-server-error.log
+#
+# Symbolic ~/ resolves under each operator's HOME — logrotate runs the
+# rules per-user when invoked with `--state ~/.config/logrotate.state`
+# (see the autopg installer hint). The `su` directive is intentionally
+# absent: this config ships as a USER-context drop-in, not a system one.
+# System-wide rotation under a dedicated `autopg` UNIX user is delivered
+# by the separate `autopg-service-install-system` wish (out of scope for
+# v2.4).
+#
+# Copy or symlink to:   /etc/logrotate.d/pgserve  (system-wide)
+# Or use per-user:      ~/.config/logrotate.d/pgserve
+
+~/.autopg/logs/autopg-server-out.log
+~/.autopg/logs/autopg-server-error.log
+~/.pgserve/audit.log
+{
+    # Daily rotation keeps audit/forensic events queryable for ~2 weeks
+    # without burning disk on a long-running dev host.
+    daily
+    rotate 14
+    # Compress yesterday's log on tomorrow's rotation so today's log stays
+    # uncompressed for tail/grep.
+    compress
+    delaycompress
+    # Don't fail when a log file has not been created yet (e.g. fresh
+    # `autopg install` before the postmaster has emitted any output).
+    missingok
+    # Don't fail when a log file is empty.
+    notifempty
+    # Truncate-in-place so pm2 / systemd / launchd's open file handles
+    # keep writing to the rotated file. Avoids the "send SIGHUP and
+    # postgres re-opens" dance which we don't want to trigger from a
+    # supervisor-agnostic rule.
+    copytruncate
+    # File mode 0600: audit lines may include literal SQL (parameter
+    # values, error contexts) — operator-only on a multi-user host.
+    create 0600
+}

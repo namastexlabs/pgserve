@@ -457,12 +457,13 @@ describe('pgserve singleton (v2.4) — socket dir + admin.json supervisor record
 });
 
 describe('serve alias', () => {
-  test('pgserve serve --help re-routes to daemon (which postgres-server.js handles)', () => {
-    // We can't fully exercise `serve` without starting a real daemon.
-    // Instead, verify the wrapper's argv-rewrite happens by passing
-    // `serve --bogus-flag` and asserting the wrapper proceeded past the
-    // install short-circuit (i.e. stderr mentions bun, not "pgserve: ...").
-    // Note: bun probe might fail in tests; we don't assert exit code.
+  test('pgserve serve --bogus-flag re-routes to postmaster (singleton v2.4)', () => {
+    // pgserve singleton (v2.4): the bun-proxy daemon is gone. `serve` now
+    // aliases to `postmaster` via bin/pgserve-wrapper.cjs. We can't fully
+    // exercise the postmaster without postgres binaries on PATH, so we
+    // just verify the wrapper proceeded past the install short-circuit
+    // (stderr will be a bun probe error or a postmaster-mode error, never
+    // an install-module error).
     const result = spawnSync('node', [BIN, 'serve', '--bogus-flag'], {
       encoding: 'utf8',
       env: {
@@ -471,10 +472,6 @@ describe('serve alias', () => {
         PATH: `${stubBin.dir}:${process.env.PATH}`,
       },
     });
-    // Must NOT have hit the install dispatcher (would print
-    // "pgserve: not installed" or similar). Because serve passes through
-    // to the bun + postgres-server.js path, we expect EITHER a bun error
-    // OR a daemon-mode error — never an install-module error.
     expect(result.stderr).not.toContain('pgserve: not installed');
     expect(result.stderr).not.toContain('pm2 not found');
   });
