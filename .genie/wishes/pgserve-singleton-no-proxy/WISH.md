@@ -1,23 +1,32 @@
-# Wish: pgserve singleton — kill proxy, add cosign, new CLI verbs (v2.3)
+# Wish: pgserve singleton — kill proxy, add cosign, new CLI verbs (v2.4)
 
 | Field | Value |
 |-------|-------|
-| **Status** | DRAFT |
+| **Status** | DRAFT (one of three peer wishes that together ship v2.4; each gets its own branch + PR + `/dream` slot) |
 | **Slug** | `pgserve-singleton-no-proxy` |
-| **Date** | 2026-05-06 |
+| **Date** | 2026-05-06 (relabeled v2.3 → v2.4 on 2026-05-08; v2.3.0 already shipped as docs-only placeholder release) |
 | **Author** | Felipe Rosa <felipe@namastex.ai> |
 | **Appetite** | large (~3-4 weeks) |
 | **Branch** | `wish/pgserve-singleton-no-proxy` |
 | **Repos touched** | `automagik/pgserve` |
 | **Design** | [SHARED-DESIGN.md](./SHARED-DESIGN.md) |
+| **v2.4 cohort** | peer wishes, separate branches/PRs: `autopg-distribution-cutover`, `canonical-pgserve-pm2-supervision`, this wish |
 
 > **Companion wishes** (byte-identical SHARED-DESIGN.md): `automagik-dev/genie#pgserve-singleton-no-proxy`, `automagik/omni#pgserve-singleton-no-proxy`. All three ship in parallel against their respective integration branches.
 
 ## Summary
 
-Major bump to pgserve **2.3.0**. Kill the bun bridge from the data plane: postgres backend listens directly on Unix socket (`$XDG_RUNTIME_DIR/pgserve/.s.PGSQL.5432`) AND TCP 5432, no proxy. Replace the always-on bun daemon with on-demand CLI verbs (`pgserve provision`, `pgserve verify`, `pgserve gc`, `pgserve trust`, `pgserve doctor`). Add cosign-keyless-OIDC publisher attestation as Tier 2 on top of the existing host_signed identity (Tier 1) and path-based default (Tier 0). Bake a hardcoded blocklist of known-bad versions. Wire self-healing semantics into `pgserve update` (auto-migrate old layout, pm2 restart, doctor --fix tiered). See `SHARED-DESIGN.md` §1-§9 for full design context.
+Major bump to pgserve **2.4.0**. Kill the bun bridge from the data plane: postgres backend listens directly on Unix socket (`$XDG_RUNTIME_DIR/pgserve/.s.PGSQL.5432`) AND TCP 5432, no proxy. Replace the always-on bun daemon with on-demand CLI verbs (`pgserve provision`, `pgserve verify`, `pgserve gc`, `pgserve trust`, `pgserve doctor`). Add cosign-keyless-OIDC publisher attestation as Tier 2 on top of the existing host_signed identity (Tier 1) and path-based default (Tier 0). Bake a hardcoded blocklist of known-bad versions. Wire self-healing semantics into `pgserve update` (auto-migrate old layout, pm2 restart, doctor --fix tiered). See `SHARED-DESIGN.md` §1-§9 for full design context.
 
-> **⚠ BREAKING — accept-downtime contract**: TCP port `8432` dies in this release. Out-of-trio consumers that hardcode `localhost:8432` (brain, rlmx, hapvida-eugenia, email, any third-party app) **WILL break silently** when `pgserve update` runs. This is intentional: pgserve 2.3 is a major bump and the cutover is the right moment to take that hit once. CHANGELOG must warn explicitly. QA Criteria adds a consumer-fan-out test (verify all known consumers connect post-cutover). **No socat shim. No port-redirect. No backwards-compat layer.** Operators update connection strings to Unix socket (preferred) or TCP 5432.
+> **🛡 TWO-TIER SUPERVISOR MODEL (Felipe constraint, 2026-05-08)**: removing the bun bridge does NOT mean removing the supervisor.
+>
+> - **Tier A — `autopg install` (default, rootless)**: writes a pm2 ecosystem entry that supervises the postgres postmaster directly. Works for the majority of devs who have no root and cannot install systemd units. Keeps the existing `autopg-server` + `autopg-ui` two-process pm2 layout from the cutover wish.
+> - **Tier B — `autopg service install` (`--user` only in v2.4, privileged opt-in)**: dedicated subcommand that installs a systemd user-unit on Linux (or launchd plist on macOS) for operators who want OS-native supervision. **Hard contract**: `autopg service install` MUST migrate from pm2 (`pm2 delete autopg-server` BEFORE writing the unit) — never both supervisors active simultaneously. `autopg doctor` reports the active mode passively (no auto-swap prompts).
+> - **System-wide systemd (`--system` mode, dedicated `autopg` UNIX user, selinux/apparmor)** is **OUT OF SCOPE for v2.4** — separate dedicated wish on the next-version `/dream` queue (`autopg-service-install-system`).
+>
+> Postmaster is the long-running process under either tier; the new CLI verbs (`provision`/`verify`/`gc`/`trust`/`doctor`) are short-lived helpers, not replacements for supervision. `autopg doctor` reads `~/.autopg/admin.json` (records active supervisor: `pm2` | `systemd-user` | `launchd`) and reports it; nothing else.
+
+> **⚠ BREAKING — accept-downtime contract**: TCP port `8432` dies in this release. Out-of-trio consumers that hardcode `localhost:8432` (brain, rlmx, hapvida-eugenia, email, any third-party app) **WILL break silently** when `pgserve update` runs. This is intentional: pgserve 2.4 is a major bump and the cutover is the right moment to take that hit once. CHANGELOG must warn explicitly. QA Criteria adds a consumer-fan-out test (verify all known consumers connect post-cutover). **No socat shim. No port-redirect. No backwards-compat layer.** Operators update connection strings to Unix socket (preferred) or TCP 5432.
 
 ## Scope
 
@@ -76,7 +85,7 @@ Major bump to pgserve **2.3.0**. Kill the bun bridge from the data plane: postgr
 
 **Group 9 — Tests + docs + CHANGELOG**
 - Tests for every new CLI verb.
-- Migration test from synthetic v2.2.x state to v2.3.x.
+- Migration test from synthetic v2.2.x state to v2.4.x.
 - Cosign verify tests.
 - CHANGELOG entry naming the contracts.
 
@@ -124,7 +133,7 @@ See `SHARED-DESIGN.md` §6 for the cross-repo decision table. pgserve-specific:
 - [ ] Cross-DB grants: `pgserve grant` works only between cosign-verified publishers.
 - [ ] All existing pgserve tests pass byte-identically.
 - [ ] CHANGELOG entry naming: socket path canonical-ization, blocklist, tiered doctor, cosign tier.
-- [ ] Migration test: synthetic v2.2.x state → run `pgserve update` → assert v2.3.x state.
+- [ ] Migration test: synthetic v2.2.x state → run `pgserve update` → assert v2.4.x state.
 - [ ] `bun run lint` and `bun run typecheck` clean.
 
 ## Execution Strategy

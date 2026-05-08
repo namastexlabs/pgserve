@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | DRAFT |
+| **Status** | SHIPPED (v2.2.0, 2026-05-03) |
 | **Slug** | `autopg-console-settings` |
 | **Date** | 2026-04-30 |
 | **Author** | felipe@namastex.ai |

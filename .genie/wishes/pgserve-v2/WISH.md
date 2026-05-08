@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | DRAFT |
+| **Status** | SHIPPED (v2.0.0, 2026-04-29) |
 | **Slug** | `pgserve-v2` |
 | **Date** | 2026-04-26 |
 | **Author** | Felipe Rosa (via genie-pgserve agent) |
