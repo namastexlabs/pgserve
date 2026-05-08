@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | DRAFT |
+| **Status** | SHIPPED (v2.2.2, 2026-05-04) |
 | **Slug** | `autopg-console-dist` |
 | **Date** | 2026-05-03 |
 | **Author** | Felipe Rosa (via genie-pgserve agent) |

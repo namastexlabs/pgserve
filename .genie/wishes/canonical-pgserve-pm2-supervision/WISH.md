@@ -91,7 +91,7 @@ Same session also revealed: **multiple pgserve instances running in parallel** (
 - **No port migration tooling for third-party consumers.** If someone else's app talks to omni's old pgserve port directly, they update on their own.
 - **No automatic uninstall of legacy embedded pgserve data dirs.** Migration copies forward; the old data stays on disk until operator removes it (avoids accidental data loss).
 - **No multi-host pgserve cluster.** Single host only. Multi-host pgserve is a separate, much larger wish.
-- **No systemd / launchd path.** pm2 is the single supervisor for this iteration. Aegis-runtime wish covers a future systemd-user variant.
+- **No systemd / launchd as the DEFAULT path.** pm2 is the rootless default supervisor that ships with `autopg install` (Tier A). Systemd / launchd ships in the same v2.4 release as `autopg service install` (Tier B, privileged opt-in) — see the singleton-no-proxy wish's two-tier supervisor model. This wish (when it lands) only specifies the pm2 tier.
 
 ## Decisions
 
