@@ -35,14 +35,32 @@ const path = require('node:path');
 const _adminJsonModuleP = import('./lib/admin-json.js');
 const _socketDirModuleP = import('./lib/socket-dir.js');
 const _runtimeJsonModuleP = import('./lib/runtime-json.js');
+const _blockedVersionsModuleP = import('./security/blocked-versions.js');
 
 async function loadCohortModules() {
-  const [adminJson, socketDirMod, runtimeJson] = await Promise.all([
+  const [adminJson, socketDirMod, runtimeJson, blockedVersions] = await Promise.all([
     _adminJsonModuleP,
     _socketDirModuleP,
     _runtimeJsonModuleP,
+    _blockedVersionsModuleP,
   ]);
-  return { adminJson, socketDirMod, runtimeJson };
+  return { adminJson, socketDirMod, runtimeJson, blockedVersions };
+}
+
+// pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 5.
+//
+// Resolves the running pgserve version from package.json so `assertNotBlocked`
+// can compare against the compile-time BLOCKED_VERSIONS list before any
+// install/update mutation. We intentionally use the package.json shipped
+// with this binary (`require.resolve` from inside cli-install.cjs) rather
+// than the version on the host filesystem — we want to refuse THIS binary
+// running, not a different binary that might happen to live next door.
+function getCurrentVersion() {
+  try {
+    return require('../package.json').version;
+  } catch (_e) {
+    return undefined;
+  }
 }
 
 // pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 1.
@@ -675,7 +693,25 @@ function cmdAuthDispatch(args) {
  * wrapper before this module is required (avoids re-resolving here).
  */
 async function cmdInstall(args, ctx) {
-  const { adminJson, socketDirMod } = await loadCohortModules();
+  const { adminJson, socketDirMod, blockedVersions } = await loadCohortModules();
+
+  // pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 5.
+  // Refuse to install if THIS binary's version appears in the compile-time
+  // blocklist. Runs first (before any host-touching work) so the operator
+  // sees a clear `EBLOCKEDVERSION:` diagnostic with the locked reason +
+  // remediation hint, exit code 4 (distinct from generic install failures).
+  const currentVersion = getCurrentVersion();
+  if (currentVersion) {
+    try {
+      blockedVersions.assertNotBlocked(currentVersion);
+    } catch (err) {
+      if (err.code === 'EBLOCKEDVERSION') {
+        process.stderr.write(`${err.message}\n`);
+        process.exit(4);
+      }
+      throw err;
+    }
+  }
 
   // pgserve singleton (v2.4): refuse to install if a different supervisor
   // (Tier B systemd-user / launchd) already owns the host. The cohort
