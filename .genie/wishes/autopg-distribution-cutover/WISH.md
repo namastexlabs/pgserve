@@ -2,14 +2,15 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | DRAFT |
+| **Status** | DRAFT (one of three peer wishes that together ship v2.4; each gets its own branch + PR + `/dream` slot) |
 | **Slug** | `autopg-distribution-cutover` |
-| **Date** | 2026-05-03 |
+| **Date** | 2026-05-03 (refined 2026-05-08 with Tier B G19/G20 + v2.4 cohort framing) |
 | **Author** | Felipe Rosa <felipe@namastex.ai> (drafted via felipe-personal-agent) |
 | **Appetite** | XL (~4–5 weeks parallel; ~6–8 sequential) |
-| **Branch** | `wish/autopg-distribution-cutover` |
+| **Branch** | `wish/autopg-distribution-cutover` (active WIP branch: `wish/autopg-cutover-transport-absorb`) |
 | **Repos touched** | `namastexlabs/pgserve` (renames to `automagik-dev/autopg`) |
 | **Design** | _No brainstorm — direct wish_ |
+| **v2.4 cohort** | peer wishes, separate branches/PRs: this wish (rename + CDN + Tier A G11 + Tier B G20), `pgserve-singleton-no-proxy` (data plane + admin.json), `canonical-pgserve-pm2-supervision` (cross-repo pm2 reuse — Tier A only) |
 | **Supersedes** | `pgserve/autopg-v22` (DRAFT, never started); `pgserve/autopg-pairing` (DRAFT, abandoned post-council 2026-05-01) |
 | **Absorbs** | the never-drafted `pgserve/add-update-command` sibling (referenced in SHARED-DESIGN.md but never written) |
 | **Council** | `council-1777663000` (autopg-pairing pressure-test, 2026-05-01) |
@@ -46,7 +47,7 @@ Cut **autopg `2.260503.1`** as the rename + distribution-cutover ship line. Rena
 - Cleanup-registry entries for autopg's `cleanupLegacyArtifacts()`: legacy embedded pgserve dirs (`~/.pgserve/data/*` after rename), stale postmaster ports, orphan `postmaster.pid`, legacy `~/.pgserve` config dir (after symlink-compat window).
 - Diagnostics JSON `~/.autopg/logs/update-diagnostics-<iso>.json` `schemaVersion: 1` (autopg's first; asymmetric per SHARED-DESIGN.md §4.4).
 - Back-compat alias: `pgserve update` works for one milestone, prints stderr deprecation hint pointing to `autopg update`.
-- Genie consumer migration: ships `autopg.json` at root, signed by namastex publisher key in CI; `_buildConnection` reads **credentials** (per-app role + SCRAM password) from `~/.autopg/genie.env`. **Transport** (UDS canonical path vs TCP fallback) is discovered independently via genie's `resolvePgserveTransport()` — the env file no longer carries `host:port`. UDS-first / TCP-fallback already shipped in `automagik-dev/genie #1667` and is forward-compatible with autopg-server's canonical UDS path written by Group 11.5.
+- Genie consumer migration: ships `autopg.json` at root, signed by namastex publisher key in CI; `_buildConnection` reads **credentials** (per-app role + SCRAM password) from `~/.autopg/genie.env`. **Transport** (UDS canonical path vs TCP fallback) is discovered independently via genie's `resolvePgserveTransport()` — the env file no longer carries `host:port`. UDS-first / TCP-fallback already shipped in `automagik-dev/genie #1667` and is forward-compatible with autopg-server's canonical UDS path written by Group 19.
 - Omni consumer migration: ships `packages/api/autopg.json`, same pattern + chains existing `legacy-data-migration.ts` pattern (FK trigger bypass via `SET session_replication_role = replica` + per-table COPY + schema-drift abort) for data-preservation when post-rename canonical detected empty.
 - Genie + omni release pipeline extension: cosign-sign the published `autopg.json` (LOCK 1 source-of-trust). Without this, `autopg create-app`'s verify side has nothing to verify against.
 - Final `pgserve@2.260503.0` npm advisory release: `console.error("npm publishing discontinued — install via curl https://get.automagik.dev/autopg | bash"); process.exit(2);`.
@@ -144,8 +145,8 @@ This wish ships in six waves. Wave 1 is sequential (auth foundation must land co
 | 9 | engineer | CDN publish (`cdn.automagik.dev/autopg/<channel>/<version>/<platform>/`). |
 | 10 | engineer | `install.sh` ≤80 lines: `ensure_bun` + `ensure_pm2` + `ensure_curl` + download + verify + handoff. |
 | 11 | engineer | `autopg install` (binary subcommand) — Tier A: pm2 register as `autopg-server` + paths + rc-file edit (rootless default). |
-| 11.5 | engineer | `autopg serve` — dual-transport binding (UDS canonical + TCP) + `admin.json` discovery file. |
-| 11.6 | engineer | `autopg service install` — Tier B: systemd user-unit (Linux) / launchd plist (macOS), privileged opt-in supervisor. Replaces pm2 entry on the host when invoked. |
+| 19 | engineer | `autopg serve` — dual-transport binding (UDS canonical + TCP) + `admin.json` discovery file. (Sequence: ships between G11 and G12; numbered 19 to preserve G1-G18 commit-history audit trail per Felipe directive — depends-on graph drives execution order, not group numbers.) |
+| 20 | engineer | `autopg service install` — Tier B: systemd user-unit (Linux) / launchd plist (macOS), privileged opt-in supervisor. Replaces pm2 entry on the host when invoked. (Sequence: ships after G11; numbered 20 for the same audit-trail reason.) |
 
 ### Wave 4 — Update pipeline (depends on Wave 3 + sibling SHARED-DESIGN.md)
 
@@ -444,7 +445,7 @@ shellcheck install.sh && wc -l install.sh && bash test/integration/install-sh-fr
 
 ### Group 11: autopg install (binary subcommand) — Tier A pm2 (rootless default)
 
-**Goal:** Pick up where `install.sh` hands off — register the daemon under pm2, install the symlink + completions, edit rc-files for PATH. This is the **rootless default** supervisor tier; the privileged systemd/launchd sibling is delivered by Group 11.6 (`autopg service install`).
+**Goal:** Pick up where `install.sh` hands off — register the daemon under pm2, install the symlink + completions, edit rc-files for PATH. This is the **rootless default** supervisor tier; the privileged systemd/launchd sibling is delivered by Group 20 (`autopg service install`).
 
 **Deliverables:**
 1. `src/cli/install.js` implementing `autopg install [--non-interactive]`:
@@ -474,7 +475,7 @@ bun test test/cli/install.test.js && bash test/integration/install-binary.sh
 
 ---
 
-### Group 11.5: `autopg serve` — dual-transport binding + canonical UDS discovery
+### Group 19: `autopg serve` — dual-transport binding + canonical UDS discovery
 
 **Goal:** Specify what the pm2-supervised `autopg serve` command actually does at the transport level. Bind BOTH a Unix domain socket at a stable canonical path AND TCP at the configured port from a single supervised process, and write a `admin.json` discovery file so consumers' UDS-first probes find the live socket without globbing ephemeral pid-stamped dirs. This closes the contract gap between `pgserve install` (foreground TCP-only, embedded postgres also binds an ephemeral UDS at `/tmp/pgserve-sock-<pid>-<ts>/`) and downstream consumers like genie + omni who want UDS performance with TCP fallback.
 
@@ -509,7 +510,7 @@ bun test test/cli/serve.test.js && bash test/integration/serve-dual-transport.sh
 
 ---
 
-### Group 11.6: `autopg service install` — Tier B systemd-user / launchd (privileged opt-in, **migrates from pm2**)
+### Group 20: `autopg service install` — Tier B systemd-user / launchd (privileged opt-in, **migrates from pm2**)
 
 **Goal:** Add the privileged-supervisor sibling to Group 11. `autopg install` defaults to pm2 (rootless); `autopg service install` is the explicit opt-in for operators who want OS-native supervision via **systemd user-unit** (Linux) or **launchd LaunchAgent** (macOS). v2.4 ships **`--user` scope only**. System-wide `--system` mode (sudo, dedicated UNIX user, selinux/apparmor) is OUT OF SCOPE — covered by a separate dedicated wish on the next-version `/dream` queue.
 
@@ -606,7 +607,7 @@ bash test/integration/service-install-launchd.sh             # macOS dev laptop 
 bun test test/cli/update.test.js test/cli/legacy-cleanup.test.js test/cli/pgserve-alias.test.js
 ```
 
-**depends-on:** Group 11, Group 11.5
+**depends-on:** Group 11, Group 19
 
 ---
 
@@ -616,7 +617,7 @@ bun test test/cli/update.test.js test/cli/legacy-cleanup.test.js test/cli/pgserv
 
 **Contract — credentials vs. transport are split:**
 - `~/.autopg/genie.env` carries the **credentials**: per-app SCRAM role + password (`PGUSER=app_genie`, `PGPASSWORD=<scram-secret>`, `PGDATABASE=genie`).
-- **Transport** (UDS canonical path vs TCP fallback) is discovered by genie's `resolvePgserveTransport()` independently — it probes `<canonical-socket-dir>/.s.PGSQL.<port>` first (autopg-server's Group 11.5 admin.json discovery), falls back to TCP via `autopg port`. The env file no longer carries `host:port` — that data is in autopg-server's published discovery, not duplicated.
+- **Transport** (UDS canonical path vs TCP fallback) is discovered by genie's `resolvePgserveTransport()` independently — it probes `<canonical-socket-dir>/.s.PGSQL.<port>` first (autopg-server's Group 19 admin.json discovery), falls back to TCP via `autopg port`. The env file no longer carries `host:port` — that data is in autopg-server's published discovery, not duplicated.
 - Rationale: env files are static, daemons restart and rotate ports; coupling transport into the env file recreates the lockfile-drift problem the cutover is trying to kill.
 
 **Deliverables:**
@@ -640,7 +641,7 @@ bun test test/cli/update.test.js test/cli/legacy-cleanup.test.js test/cli/pgserv
 bun test src/db/__tests__/build-connection.test.ts && bash test/integration/genie-autopg-handoff.sh
 ```
 
-**depends-on:** Group 5, Group 11.5, Group 12
+**depends-on:** Group 5, Group 19, Group 12
 
 ---
 
@@ -786,14 +787,19 @@ bash scripts/cutover-validation.sh --host felipe && autopg doctor --json | jq '.
 
 ```yaml
 depends-on:
-  - genie/genie-supply-chain-signing  # cosign + SLSA infra MUST ship first
-  - genie/distribution-exodus          # CDN infra MUST ship first; autopg becomes second consumer
-  - genie/update-unify-stages          # sibling — ships in parallel; pipeline contract
-  - omni/update-unify-stages           # sibling — ships in parallel; pipeline contract
+  - genie/genie-supply-chain-signing      # cosign + SLSA infra MUST ship first
+  - genie/distribution-exodus             # CDN infra MUST ship first; autopg becomes second consumer
+  - genie/update-unify-stages             # sibling — ships in parallel; pipeline contract
+  - omni/update-unify-stages              # sibling — ships in parallel; pipeline contract
+
+paired-with:
+  - pgserve/pgserve-singleton-no-proxy        # v2.4 cohort sibling — owns data plane (postmaster + dual-transport) and `~/.autopg/admin.json` schema. Group 11 (Tier A pm2) and Group 20 (Tier B systemd-user) both write admin.json using that schema.
+  - pgserve/canonical-pgserve-pm2-supervision # v2.4 cohort sibling — specifies cross-repo pm2 reuse (genie install / omni install consume admin.json contract from this wish's Group 11). Tier A only.
 
 blocks:
-  - genie/autopg-consumer-migration    # implied by Group 13
-  - omni/autopg-consumer-migration     # implied by Group 14
+  - genie/autopg-consumer-migration       # implied by Group 13
+  - omni/autopg-consumer-migration        # implied by Group 14
+  - pgserve/autopg-service-install-system # `--system` mode parked for next-version /dream queue; depends on Group 20 shipping first.
 ```
 
 ## QA Criteria
