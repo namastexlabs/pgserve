@@ -476,6 +476,8 @@ bun test test/cli/install.test.js && bash test/integration/install-binary.sh
 
 **depends-on:** Group 10
 
+**cross-wish depends-on:** `pgserve-singleton-no-proxy` Group 1 (provides `src/lib/admin-json.js` writer + supervisor enum + socketDir resolver). Singleton G1 must ship before this group — paired-with declaration in Cross-wish dependencies section is co-shipping; this is the explicit ordering edge.
+
 ---
 
 ### Group 19: `autopg serve` — dual-transport binding + canonical UDS discovery
@@ -512,6 +514,8 @@ bun test test/cli/serve.test.js && bash test/integration/serve-dual-transport.sh
 ```
 
 **depends-on:** Group 11
+
+**cross-wish depends-on:** `pgserve-singleton-no-proxy` Group 1 (postmaster `-k <socketDir> -p 5432` + dual-transport binding + admin.json writer module). Singleton G1 owns the postmaster behavior this group's wrapper invokes.
 
 ---
 
@@ -563,6 +567,8 @@ bash test/integration/service-install-launchd.sh             # macOS dev laptop 
 ```
 
 **depends-on:** Group 11
+
+**cross-wish depends-on:** `pgserve-singleton-no-proxy` Group 1 (`src/lib/admin-json.js` writer module — Tier B path mutates `admin.json.supervisor` from `pm2` → `systemd-user` / `launchd`); cohort-shared MIGRATE contract.
 
 **out-of-scope (next-version dedicated wish):**
 - `--system` mode (sudo + system unit + dedicated `autopg` user)
