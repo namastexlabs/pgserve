@@ -65,10 +65,11 @@ if (__subcommand && __installSubcommands.has(__subcommand)) {
   process.exit(typeof result === 'number' ? result : 0);
 }
 if (__subcommand === 'serve') {
-  // Alias `serve` → `daemon` so the wish's canonical command name maps
-  // cleanly to the existing long-lived process. Replacing argv preserves
-  // any flags the operator (or pm2) passed after `serve`.
-  process.argv[2] = 'daemon';
+  // pgserve singleton (v2.4): the bun-proxy daemon mode is gone. `serve`
+  // now aliases to `postmaster` — the direct postgres-supervision entry
+  // point. Replacing argv preserves any flags the operator (or pm2) passed
+  // after `serve`.
+  process.argv[2] = 'postmaster';
 }
 
 // Detect platform

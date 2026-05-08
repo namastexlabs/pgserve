@@ -26,7 +26,8 @@
   "ignoreDependencies": [
     "bun",
     "react",
-    "react-dom"
+    "react-dom",
+    "pg"
   ],
   "ignoreExportsUsedInFile": true
 }
