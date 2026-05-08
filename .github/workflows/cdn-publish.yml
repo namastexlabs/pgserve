@@ -1,0 +1,184 @@
+name: CDN Publish (autopg)
+
+# Group 9 of autopg-distribution-cutover — pushes the signed bundle from
+# Group 8 (sign-attest.yml) to the channel-keyed CDN layout consumed by
+# install.sh + autopg update.
+#
+# Trigger:
+#   workflow_run     — fires automatically when sign-attest.yml completes
+#                      successfully on a tag push.
+#   workflow_dispatch — manual repair / re-promote runs (with overwrite
+#                       escape hatch).
+#
+# Channel resolution:
+#   tag prefix      autopg-canary-vX → canary
+#                   autopg-beta-vX   → beta
+#                   anything else    → stable      (production default)
+#   workflow_dispatch.channel overrides.
+#
+# Required GitHub Actions secrets:
+#   AWS_ACCESS_KEY_ID         IAM principal scoped to PutObject on the bucket.
+#   AWS_SECRET_ACCESS_KEY     ditto.
+#   AUTOPG_CDN_BUCKET         bucket name (e.g. cdn.automagik.dev).
+#   AUTOPG_CDN_REGION         AWS region (e.g. us-east-1).
+#
+# distribution-exodus dependency:
+#   The bucket / CloudFront pair is provisioned by the distribution-exodus
+#   wish (G2). This workflow assumes that infra exists and only owns the
+#   PutObject + cache-control side.
+
+on:
+  workflow_run:
+    workflows: ["Sign + Attest Tarballs (autopg)"]
+    types: [completed]
+    branches:
+      - main
+      - 'wish/**'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (matches signed bundle artifacts)'
+        required: true
+        type: string
+      run_id:
+        description: 'sign-attest.yml run id to download artifacts from'
+        required: false
+        type: string
+      channel:
+        description: 'Channel: stable | beta | canary'
+        required: false
+        type: choice
+        default: stable
+        options:
+          - stable
+          - beta
+          - canary
+      publish_key:
+        description: 'Also publish keys/cosign.pub'
+        required: false
+        type: boolean
+        default: false
+      allow_overwrite_versioned:
+        description: 'Allow re-publishing at the same version (REPAIR ONLY)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  # Serialize per (channel, version) — never let two runs race on latest.json.
+  group: cdn-publish-${{ inputs.channel || 'stable' }}-${{ inputs.version || github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to CDN
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production-cdn
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version + channel
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Version: prefer dispatch input, otherwise package.json on the
+          # checked-out ref. workflow_run shares the same head SHA as the
+          # upstream sign-attest, so package.json is the right source.
+          if [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+
+          # Channel: explicit input wins. Otherwise infer from tag.
+          if [[ -n "${{ inputs.channel }}" ]]; then
+            CHANNEL="${{ inputs.channel }}"
+          else
+            REF="${{ github.event.workflow_run.head_branch || github.ref_name }}"
+            case "$REF" in
+              autopg-canary-v*|*-canary) CHANNEL="canary" ;;
+              autopg-beta-v*|*-beta)     CHANNEL="beta" ;;
+              *)                          CHANNEL="stable" ;;
+            esac
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=${VERSION} channel=${CHANNEL}"
+
+      - name: Download signed bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: autopg-signed-bundle-${{ steps.ver.outputs.version }}
+          path: dist
+          run-id: ${{ github.event.workflow_run.id || inputs.run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sanity check bundle contents
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          [[ -f "dist/manifest.json" ]] || { echo "::error::dist/manifest.json missing"; exit 1; }
+          COUNT=$(find dist -maxdepth 1 -name "autopg-${VERSION}-*.tar.gz" -type f | wc -l)
+          if [[ "$COUNT" -lt 5 ]]; then
+            echo "::error::expected 5 platform tarballs, found ${COUNT}"
+            exit 1
+          fi
+          echo "found ${COUNT} platform tarballs + manifest.json"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:    ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:           ${{ secrets.AUTOPG_CDN_REGION }}
+
+      - name: Publish to CDN
+        shell: bash
+        env:
+          BUCKET:    ${{ secrets.AUTOPG_CDN_BUCKET }}
+          VERSION:   ${{ steps.ver.outputs.version }}
+          CHANNEL:   ${{ steps.ver.outputs.channel }}
+          PUB_KEY:   ${{ inputs.publish_key && '--publish-key' || '' }}
+          ALLOW_OW:  ${{ inputs.allow_overwrite_versioned && '--allow-overwrite-versioned' || '' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # PUB_KEY / ALLOW_OW are intentionally word-split flags.
+          bash scripts/cdn-publish.sh \
+            --bundle  dist \
+            --channel "${CHANNEL}" \
+            --version "${VERSION}" \
+            --backend s3 \
+            --bucket  "${BUCKET}" \
+            --base-prefix autopg \
+            ${PUB_KEY} \
+            ${ALLOW_OW}
+
+      - name: Smoke check published latest.json
+        shell: bash
+        env:
+          BUCKET:  ${{ secrets.AUTOPG_CDN_BUCKET }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          CHANNEL: ${{ steps.ver.outputs.channel }}
+        run: |
+          set -euo pipefail
+          # The bucket name is hosting the CDN origin; the public hostname
+          # may be the bucket name (Vercel/CF in front), or a CNAME — in
+          # either case the s3 path layout is canonical and we can probe
+          # via the AWS CLI without depending on DNS propagation.
+          aws s3api head-object --bucket "$BUCKET" \
+            --key "autopg/${CHANNEL}/${VERSION}/manifest.json" >/dev/null
+          aws s3api head-object --bucket "$BUCKET" \
+            --key "autopg/${CHANNEL}/latest.json" >/dev/null
+          aws s3 cp "s3://${BUCKET}/autopg/${CHANNEL}/latest.json" - | \
+            grep -q "\"version\": \"${VERSION}\""
+          echo "::notice::published autopg ${VERSION} on channel ${CHANNEL}"
