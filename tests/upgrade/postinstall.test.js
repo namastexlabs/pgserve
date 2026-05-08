@@ -36,10 +36,12 @@ test('postinstall: fresh install (no data dir) exits 0 silently', () => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-test('upgrade orchestrator: dry-run lists 6 steps without executing', async () => {
+test('upgrade orchestrator: dry-run lists 7 steps without executing', async () => {
   const { upgrade, STEPS } = await import(path.join(__dirname, '..', '..', 'src', 'upgrade', 'index.js'));
-  expect(STEPS.length).toBe(6);
+  // 7 steps after pgserve singleton (v2.4) added cosign-meta-migration.
+  expect(STEPS.length).toBe(7);
+  expect(STEPS.map((s) => s.name)).toContain('cosign-meta-migration');
   const r = await upgrade({ dryRun: true, quiet: true });
-  expect(r.results.length).toBe(6);
+  expect(r.results.length).toBe(7);
   expect(r.results.every((x) => x.status === 'DRY-RUN')).toBe(true);
 });
