@@ -83,6 +83,8 @@ jobs:
             scripts/build-binary.sh \
             scripts/fetch-postgres-bins.sh \
             scripts/assemble-tarball.sh \
+            scripts/aggregate-manifest.sh \
+            scripts/verify-published-artifacts.sh \
             tests/integration/tarball-smoke.sh \
             tests/integration/sign-attest-smoke.sh
 
