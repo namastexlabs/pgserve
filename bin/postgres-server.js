@@ -167,6 +167,22 @@ function parseDaemonArgs(daemonArgs) {
       case '--no-provision':
         opts.autoProvision = false;
         break;
+      case '--port':
+      case '-p': {
+        // Cutover G11 fix: pm2 entry registered by `autopg install` invokes
+        // `serve --port <N>`, which is rewritten to `daemon --port <N>`.
+        // Without this case, parseDaemonArgs hits the default branch and
+        // throws `unknown flag`, preventing pm2 from ever bringing the
+        // daemon online. Accept --port and feed it into PgserveDaemon as
+        // pgPort so the postmaster binds the operator-specified port.
+        const raw = daemonArgs[++i];
+        const parsed = parseInt(raw, 10);
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+          throw new Error(`pgserve daemon: --port requires an integer in [1, 65535], got '${raw}'`);
+        }
+        opts.pgPort = parsed;
+        break;
+      }
       case '--listen':
         // Deprecated post-cutover — TCP gateway was deleted with the
         // wrapper-proxy modules. Consume the argument to preserve flag
