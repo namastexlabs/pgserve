@@ -14,9 +14,13 @@
  *   3. Append `export PATH="$HOME/.local/bin:$PATH"` to ~/.bashrc + ~/.zshrc
  *      when the line isn't already present (idempotent grep-then-append).
  *   4. Install bash + zsh completions to ~/.local/share/autopg/completions/.
- *   5. Register the daemon under pm2: name=autopg, script=<binary>,
+ *   5. Register the daemon under pm2: name=autopg-server (paired with
+ *      autopg-ui in the v2.4 two-process model), script=<binary>,
  *      args='serve', cwd=~/.autopg, autorestart=true. Idempotent — second
- *      call sees the existing pm2 entry and short-circuits.
+ *      call sees the existing pm2 entry and short-circuits. Before the
+ *      register step, any legacy pm2 entry named `pgserve` (v2.0/v2.2
+ *      router-era) or `autopg` (early-cutover variant) is `pm2 delete`d
+ *      so partial migrations re-converge cleanly.
  *   6. First-run hooks (defensive double-fire per D12):
  *        - admin SCRAM bootstrap (Group 1) — fires automatically inside
  *          the daemon process when it starts; we tolerate its absence here
@@ -40,9 +44,20 @@ import { execFileSync, spawnSync } from 'child_process';
 import { readAdminJson, writeAdminJson } from '../lib/admin-json.js';
 import { resolveSocketDir, ensureSocketDir } from '../lib/socket-dir.js';
 
-export const PM2_PROCESS_NAME = 'autopg';
+export const PM2_PROCESS_NAME = 'autopg-server';
 export const DEFAULT_PORT = 8432;
 export const DEFAULT_CHANNEL = 'stable';
+
+/**
+ * Pre-rename pm2 process names that an idempotent re-install must clear
+ * before registering `autopg-server`. The two flavors:
+ *   - `pgserve`         — the v2.0/v2.2 router-era name.
+ *   - `autopg`          — the early-cutover variant before the wish
+ *                         renamed to `autopg-server` (paired with
+ *                         `autopg-ui`) on 2026-05-08.
+ * Listed in the order an operator's host most likely accumulated them.
+ */
+export const LEGACY_PM2_PROCESS_NAMES = Object.freeze(['pgserve', 'autopg']);
 
 /**
  * Canonical postgres port recorded in `~/.autopg/admin.json` for the
@@ -95,11 +110,13 @@ export function parseArgs(args) {
 export const USAGE = `autopg install [--non-interactive]
 
 Pick up after install.sh hands off the verified tarball:
-  - register the daemon under pm2 (name: ${PM2_PROCESS_NAME})
+  - migrate any legacy pm2 entry (${LEGACY_PM2_PROCESS_NAMES.join(', ')}) → ${PM2_PROCESS_NAME}
+  - register the daemon under pm2 (name: ${PM2_PROCESS_NAME}, paired with autopg-ui)
   - symlink ~/.local/bin/autopg → <install-dir>/autopg/autopg
   - add ~/.local/bin to PATH in ~/.bashrc and ~/.zshrc
   - install shell completions to ~/.local/share/autopg/completions/
   - write canonical ~/.autopg/config.json
+  - record cohort supervisor in ~/.autopg/admin.json (supervisor=pm2)
   - run first-run upgrade migrations (best-effort)
 
 Idempotent — re-running picks up where the previous run left off.
@@ -280,6 +297,19 @@ function defaultPm2IsAvailable() {
   }
 }
 
+function defaultPm2Delete(name) {
+  const result = spawnSync('pm2', ['delete', name], {
+    encoding: 'utf8',
+    timeout: 10000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return {
+    status: result.status ?? 1,
+    stderr: String(result.stderr || ''),
+    stdout: String(result.stdout || ''),
+  };
+}
+
 function defaultPm2Start({ binaryPath, cwd, port, dataDir, logsDir }) {
   ensureDir(logsDir, 0o755);
   const args = [
@@ -373,6 +403,7 @@ export async function install(args, ctx = {}) {
   const pm2IsAvailable = ctx.pm2IsAvailable || defaultPm2IsAvailable;
   const pm2GetProcess = ctx.pm2GetProcess || defaultPm2GetProcess;
   const pm2Start = ctx.pm2Start || defaultPm2Start;
+  const pm2Delete = ctx.pm2Delete || defaultPm2Delete;
   const runUpgrade = ctx.runUpgrade || defaultRunUpgrade;
   const readAdminJsonFn = ctx.readAdminJson || readAdminJson;
   const writeAdminJsonFn = ctx.writeAdminJson || writeAdminJson;
@@ -434,6 +465,24 @@ export async function install(args, ctx = {}) {
   if (!pm2IsAvailable()) {
     warn('pm2 not found in PATH — install with: bun add -g pm2  (skipping daemon registration)');
   } else {
+    // 5a. Legacy migration — wish §G11 deliverable 1. Detect a pre-rename
+    // pm2 entry (`pgserve` v2.0/v2.2 or `autopg` early-cutover) and
+    // pm2-delete it before creating `autopg-server`. Without this step,
+    // re-running `autopg install` after a partial migration leaves the
+    // legacy entry online, which would race the new entry on port 5432.
+    for (const legacyName of LEGACY_PM2_PROCESS_NAMES) {
+      if (legacyName === PM2_PROCESS_NAME) continue;
+      const legacy = pm2GetProcess(legacyName);
+      if (!legacy) continue;
+      log(`detected legacy pm2 entry "${legacyName}" (pid=${legacy.pid ?? '?'}); deleting before registering "${PM2_PROCESS_NAME}"`);
+      const del = pm2Delete(legacyName);
+      if (del.status !== 0) {
+        warn(`pm2 delete "${legacyName}" failed (exit ${del.status}): ${String(del.stderr || '').trim()}`);
+        return 1;
+      }
+      log(`pm2 process "${legacyName}" deleted`);
+    }
+
     const existing = pm2GetProcess(PM2_PROCESS_NAME);
     if (existing) {
       log(`pm2 process "${PM2_PROCESS_NAME}" already registered (status=${existing.pm2_env?.status ?? 'unknown'})`);

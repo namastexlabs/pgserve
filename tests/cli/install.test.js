@@ -25,6 +25,7 @@ import {
   getRcFiles,
   getConfigPath,
   PM2_PROCESS_NAME,
+  LEGACY_PM2_PROCESS_NAMES,
   DEFAULT_PORT,
   DEFAULT_CHANNEL,
   USAGE,
@@ -36,6 +37,7 @@ let env;
 let stdout;
 let stderr;
 let pm2Calls;
+let pm2DeleteCalls;
 let upgradeCalls;
 let pm2State;
 
@@ -58,7 +60,16 @@ function makeCtx({ binaryPath, version = '2.260503.1', overrides = {} } = {}) {
     binaryPath: binaryPath || path.join(tmpHome, 'install', '2.260503.1', 'autopg', 'autopg'),
     version,
     pm2IsAvailable: () => true,
-    pm2GetProcess: () => pm2State.process,
+    pm2GetProcess: (name) => {
+      // Multi-name pm2 surface: tests pre-seed pm2State.byName[<name>] to
+      // simulate pre-existing entries (legacy or current). Unknown names
+      // resolve to null. Falls back to pm2State.process for the current
+      // primary entry so legacy tests that only set .process keep passing.
+      if (pm2State.byName && Object.prototype.hasOwnProperty.call(pm2State.byName, name)) {
+        return pm2State.byName[name];
+      }
+      return name === PM2_PROCESS_NAME ? pm2State.process : null;
+    },
     pm2Start: (opts) => {
       pm2Calls.push(opts);
       pm2State.process = {
@@ -66,6 +77,12 @@ function makeCtx({ binaryPath, version = '2.260503.1', overrides = {} } = {}) {
         pm2_env: { status: 'online' },
       };
       return { status: 0, stderr: '' };
+    },
+    pm2Delete: (name) => {
+      pm2DeleteCalls.push(name);
+      if (pm2State.byName) delete pm2State.byName[name];
+      if (pm2State.process?.name === name) pm2State.process = null;
+      return { status: 0, stderr: '', stdout: `[PM2] Deleting process ${name}\n` };
     },
     runUpgrade: async (opts) => {
       upgradeCalls.push(opts);
@@ -96,8 +113,9 @@ beforeEach(() => {
   stdout = captureStream();
   stderr = captureStream();
   pm2Calls = [];
+  pm2DeleteCalls = [];
   upgradeCalls = [];
-  pm2State = { process: null };
+  pm2State = { process: null, byName: {} };
 });
 
 afterEach(() => {
@@ -341,6 +359,92 @@ describe('first-run upgrade hook', () => {
     const code = await install(['--non-interactive'], ctx);
     expect(code).toBe(0);
     expect(stderr.text()).toContain('upgrade migrations reported a failed step');
+  });
+});
+
+describe('pm2 process name + legacy migration', () => {
+  test('PM2_PROCESS_NAME is "autopg-server" (paired with autopg-ui)', () => {
+    expect(PM2_PROCESS_NAME).toBe('autopg-server');
+  });
+
+  test('LEGACY_PM2_PROCESS_NAMES covers v2.0/v2.2 + early-cutover names', () => {
+    expect(LEGACY_PM2_PROCESS_NAMES).toContain('pgserve');
+    expect(LEGACY_PM2_PROCESS_NAMES).toContain('autopg');
+    expect(LEGACY_PM2_PROCESS_NAMES).not.toContain('autopg-server');
+  });
+
+  test('first install spawns pm2 start with name=autopg-server', async () => {
+    const ctx = makeCtx();
+    await install(['--non-interactive'], ctx);
+    expect(stdout.text()).toContain('"autopg-server" registered');
+  });
+
+  test('migrates a pre-existing legacy "pgserve" pm2 entry before registering autopg-server', async () => {
+    pm2State.byName.pgserve = { name: 'pgserve', pid: 99001, pm2_env: { status: 'online' } };
+    const ctx = makeCtx();
+    const code = await install(['--non-interactive'], ctx);
+    expect(code).toBe(0);
+    expect(pm2DeleteCalls).toContain('pgserve');
+    expect(pm2Calls.length).toBe(1);
+    expect(stdout.text()).toContain('detected legacy pm2 entry "pgserve"');
+    expect(stdout.text()).toContain('"pgserve" deleted');
+    expect(stdout.text()).toContain('"autopg-server" registered');
+  });
+
+  test('migrates a pre-existing legacy "autopg" pm2 entry (early-cutover variant)', async () => {
+    pm2State.byName.autopg = { name: 'autopg', pid: 99002, pm2_env: { status: 'online' } };
+    const ctx = makeCtx();
+    const code = await install(['--non-interactive'], ctx);
+    expect(code).toBe(0);
+    expect(pm2DeleteCalls).toContain('autopg');
+    expect(pm2Calls.length).toBe(1);
+    expect(stdout.text()).toContain('detected legacy pm2 entry "autopg"');
+    expect(stdout.text()).toContain('"autopg" deleted');
+  });
+
+  test('migrates BOTH legacy entries when both are present', async () => {
+    pm2State.byName.pgserve = { name: 'pgserve', pid: 99001, pm2_env: { status: 'online' } };
+    pm2State.byName.autopg = { name: 'autopg', pid: 99002, pm2_env: { status: 'online' } };
+    const ctx = makeCtx();
+    const code = await install(['--non-interactive'], ctx);
+    expect(code).toBe(0);
+    expect(pm2DeleteCalls).toContain('pgserve');
+    expect(pm2DeleteCalls).toContain('autopg');
+    expect(pm2DeleteCalls.length).toBe(2);
+  });
+
+  test('skips migration when no legacy entries exist', async () => {
+    const ctx = makeCtx();
+    const code = await install(['--non-interactive'], ctx);
+    expect(code).toBe(0);
+    expect(pm2DeleteCalls.length).toBe(0);
+  });
+
+  test('does not delete the autopg-server entry as if it were legacy', async () => {
+    pm2State.byName['autopg-server'] = { name: 'autopg-server', pid: 99003, pm2_env: { status: 'online' } };
+    pm2State.process = pm2State.byName['autopg-server'];
+    const ctx = makeCtx();
+    const code = await install(['--non-interactive'], ctx);
+    expect(code).toBe(0);
+    expect(pm2DeleteCalls).not.toContain('autopg-server');
+    // Already-registered short-circuit, no fresh pm2 start.
+    expect(pm2Calls.length).toBe(0);
+  });
+
+  test('returns 1 with stderr when pm2 delete of legacy entry fails', async () => {
+    pm2State.byName.pgserve = { name: 'pgserve', pid: 99001, pm2_env: { status: 'online' } };
+    const ctx = makeCtx({
+      overrides: {
+        pm2Delete: (name) => {
+          pm2DeleteCalls.push(name);
+          return { status: 1, stderr: 'pm2 delete: connection refused', stdout: '' };
+        },
+      },
+    });
+    const code = await install(['--non-interactive'], ctx);
+    expect(code).toBe(1);
+    expect(stderr.text()).toContain('pm2 delete "pgserve" failed');
+    expect(pm2Calls.length).toBe(0); // never advanced to pm2 start
   });
 });
 

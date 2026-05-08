@@ -14,9 +14,15 @@
 #   A2. ~/.local/bin/autopg is a symlink → spawned binary.
 #   A3. ~/.bashrc and ~/.zshrc each contain the PATH export marker.
 #   A4. ~/.local/share/autopg/completions/{autopg.bash,_autopg} exist.
-#   A5. pm2 stub recorded a `start` invocation naming process "autopg".
+#   A5. pm2 stub recorded a `start` invocation naming process
+#       "autopg-server" (paired with autopg-ui in the v2.4 two-process
+#       model — wish §G11 deliverable 1).
 #   A6. Re-running `autopg install --non-interactive` is a no-op success
 #       (no second pm2 start).
+#   A7. ~/.autopg/admin.json carries supervisor=pm2 + port=5432 (cohort
+#       supervisor record — wish §G11 deliverable 2).
+#   A8. A pre-existing legacy "pgserve" pm2 entry is `pm2 delete`d before
+#       the new "autopg-server" entry registers (wish §G11 migration step).
 #
 # Wish-validation contract:
 #   bash tests/integration/install-binary.sh
@@ -76,23 +82,42 @@ PM2_LOG="${WORK_ROOT}/pm2-calls.log"
 cat > "${PM2_STUB_DIR}/pm2" <<STUB
 #!/usr/bin/env node
 const fs = require('node:fs');
+const path = require('node:path');
 const args = process.argv.slice(2);
-fs.appendFileSync(${PM2_LOG@Q}, JSON.stringify(args) + '\n');
+const workRoot = ${WORK_ROOT@Q};
+const log = ${PM2_LOG@Q};
+const sentinel = path.join(workRoot, 'pm2-registered');
+const legacyDir = path.join(workRoot, 'pm2-legacy');
+fs.appendFileSync(log, JSON.stringify(args) + '\n');
+
+function legacySentinel(name) { return path.join(legacyDir, name); }
+function readLegacy() {
+  try { return fs.readdirSync(legacyDir); } catch { return []; }
+}
+
 if (args[0] === '--version') { process.stdout.write('5.0.0-stub\n'); process.exit(0); }
+
 if (args[0] === 'jlist') {
-  const sentinel = ${WORK_ROOT@Q} + '/pm2-registered';
-  if (fs.existsSync(sentinel)) {
-    process.stdout.write(JSON.stringify([{
-      name: 'autopg', pid: 12345,
-      pm2_env: { status: 'online', pm_uptime: Date.now() - 1000, restart_time: 0 }
-    }]) + '\n');
-  } else {
-    process.stdout.write('[]\n');
+  const list = [];
+  for (const name of readLegacy()) {
+    list.push({ name, pid: 11111, pm2_env: { status: 'online', pm_uptime: Date.now() - 1000, restart_time: 0 } });
   }
+  if (fs.existsSync(sentinel)) {
+    list.push({ name: 'autopg-server', pid: 12345, pm2_env: { status: 'online', pm_uptime: Date.now() - 1000, restart_time: 0 } });
+  }
+  process.stdout.write(JSON.stringify(list) + '\n');
   process.exit(0);
 }
+
+if (args[0] === 'delete') {
+  const name = args[1];
+  try { fs.unlinkSync(legacySentinel(name)); } catch { /* swallow */ }
+  process.stdout.write('[PM2] Deleting process ' + name + '\n');
+  process.exit(0);
+}
+
 if (args[0] === 'start') {
-  fs.writeFileSync(${WORK_ROOT@Q} + '/pm2-registered', '');
+  fs.writeFileSync(sentinel, '');
   process.exit(0);
 }
 process.exit(0);
@@ -151,11 +176,23 @@ else
   bad "A4: completions missing"
 fi
 
-if grep -q '"start"' "$PM2_LOG" && grep -q '"autopg"' "$PM2_LOG"; then
-  ok "A5: pm2 start invoked with name=autopg"
+if grep -q '"start"' "$PM2_LOG" && grep -q '"autopg-server"' "$PM2_LOG"; then
+  ok "A5: pm2 start invoked with name=autopg-server"
 else
-  bad "A5: pm2 start not recorded"
+  bad "A5: pm2 start not recorded with name=autopg-server"
   [[ -f "$PM2_LOG" ]] && cat "$PM2_LOG" >&2
+fi
+
+ADMIN_JSON="${FAKE_HOME}/.autopg/admin.json"
+if [[ -f "$ADMIN_JSON" ]] \
+   && grep -q '"supervisor": "pm2"' "$ADMIN_JSON" \
+   && grep -q '"port": 5432' "$ADMIN_JSON" \
+   && grep -q '"socketDir":' "$ADMIN_JSON" \
+   && grep -q '"installedAt":' "$ADMIN_JSON"; then
+  ok "A7: ~/.autopg/admin.json carries supervisor=pm2 + port=5432 + socketDir + installedAt"
+else
+  bad "A7: ~/.autopg/admin.json missing or malformed"
+  [[ -f "$ADMIN_JSON" ]] && cat "$ADMIN_JSON" >&2
 fi
 
 # ─── Run #2: re-install is idempotent ─────────────────────────────────
@@ -172,6 +209,44 @@ if grep -q '"start"' "$PM2_LOG"; then
   cat "$PM2_LOG" >&2
 else
   ok "A6: second install did NOT re-invoke pm2 start (idempotent)"
+fi
+
+# ─── Run #3: legacy pm2 entry migration ───────────────────────────────
+# Reset HOME state to a fresh fixture, pre-seed a legacy "pgserve" pm2
+# entry, run install, and verify the install pm2-deletes the legacy
+# entry before registering "autopg-server".
+note "running: autopg install --non-interactive (run #3, legacy migration)"
+
+FAKE_HOME_3="${WORK_ROOT}/home3"
+INSTALL_DIR_3="${FAKE_HOME_3}/.autopg/install/2.260503.1-fixture/autopg"
+mkdir -p "$FAKE_HOME_3" "$INSTALL_DIR_3"
+SYNTH_BIN_3="${INSTALL_DIR_3}/autopg"
+cp "$SYNTH_BIN" "$SYNTH_BIN_3"
+
+LEGACY_DIR="${WORK_ROOT}/pm2-legacy"
+mkdir -p "$LEGACY_DIR"
+: > "${LEGACY_DIR}/pgserve"   # pre-seed a legacy "pgserve" pm2 entry
+
+> "$PM2_LOG"  # truncate
+rm -f "${WORK_ROOT}/pm2-registered"  # reset register sentinel
+
+HOME="$FAKE_HOME_3" \
+  AUTOPG_CONFIG_DIR="${FAKE_HOME_3}/.autopg" \
+  AUTOPG_VERSION="2.260503.1-fixture" \
+  PATH="$PATH_WITH_STUBS" \
+  bun run "$ENTRY_POINT" install --non-interactive >"${WORK_ROOT}/run3.out" 2>"${WORK_ROOT}/run3.err"
+
+if grep -q '\["delete","pgserve"\]' "$PM2_LOG"; then
+  ok "A8: legacy pgserve pm2 entry was deleted before autopg-server registered"
+else
+  bad "A8: legacy pgserve pm2 delete was not recorded"
+  cat "$PM2_LOG" >&2
+fi
+
+if grep -q '"start"' "$PM2_LOG" && grep -q '"autopg-server"' "$PM2_LOG"; then
+  ok "A8b: autopg-server registered after legacy migration"
+else
+  bad "A8b: autopg-server start not recorded after migration"
 fi
 
 # ─── Summary ──────────────────────────────────────────────────────────
