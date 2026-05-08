@@ -1,10 +1,15 @@
 #!/bin/bash
 # Test that the package works with npx (simulates fresh user install)
-# This catches path resolution issues that static analysis can't detect
+# This catches path resolution issues that static analysis can't detect.
+#
+# v2.4 contract change (2026-05-08): `pgserve` (no args) now prints help and
+# exits cleanly. The long-running entry is `pgserve postmaster` (or its
+# `pgserve serve` alias). This test invokes the postmaster directly to verify
+# npx-installed bits boot a real PG.
 
 set -e
 
-echo "=== Testing npx compatibility ==="
+echo "=== Testing npx compatibility (v2.4 postmaster entry) ==="
 
 # Create temp directory
 TEST_DIR=$(mktemp -d)
@@ -29,22 +34,39 @@ cd "$TEST_DIR"
 echo '{"name":"test-npx-install","private":true}' > package.json
 npm install "./$PACK_FILE" > /dev/null 2>&1
 
-# Test that it starts (with timeout)
-echo "Testing server startup via npx..."
-timeout 30 npx pgserve --no-cluster --port 15432 > output.log 2>&1 &
+# Verify the bare invocation prints v2.4 help and exits 0 (regression guard
+# for the breaking-cut: pre-v2.4 auto-started a server here).
+echo "Verifying bare 'npx pgserve' prints v2.4 help and exits cleanly..."
+HELP_OUT=$(npx pgserve 2>&1)
+if ! echo "$HELP_OUT" | grep -q "pgserve postmaster"; then
+  echo "✗ Bare 'npx pgserve' output does not match v2.4 help (missing 'pgserve postmaster')"
+  echo "Output:"
+  echo "$HELP_OUT"
+  echo "=== npx test FAILED ==="
+  exit 1
+fi
+echo "✓ Bare invocation prints v2.4 help"
+
+# Test that the postmaster entry starts (with timeout)
+DATA_DIR="$TEST_DIR/data"
+SOCKET_DIR="$TEST_DIR/sock"
+mkdir -p "$DATA_DIR" "$SOCKET_DIR"
+echo "Testing postmaster startup via npx (port 15432)..."
+timeout 30 npx pgserve postmaster --port 15432 --data "$DATA_DIR" --socket-dir "$SOCKET_DIR" > output.log 2>&1 &
 PID=$!
 
-# Wait for ready signal (Server started successfully!)
+# Wait for ready signal — bin/postgres-server.js logs
+# 'pgserve postmaster: ready (Unix socket + TCP)' once both transports are bound.
 for i in {1..60}; do
-  if grep -q "Server started successfully" output.log 2>/dev/null; then
-    echo "✓ Server started successfully via npx"
+  if grep -q "pgserve postmaster: ready" output.log 2>/dev/null; then
+    echo "✓ Postmaster started successfully via npx"
     kill $PID 2>/dev/null || true
     wait $PID 2>/dev/null || true
     echo "=== npx test PASSED ==="
     exit 0
   fi
   if ! kill -0 $PID 2>/dev/null; then
-    echo "✗ Server exited unexpectedly"
+    echo "✗ Postmaster exited unexpectedly"
     cat output.log
     echo "=== npx test FAILED ==="
     exit 1
@@ -54,7 +76,7 @@ done
 
 # Timeout
 kill $PID 2>/dev/null || true
-echo "✗ Server did not start within timeout"
+echo "✗ Postmaster did not start within timeout"
 cat output.log
 echo "=== npx test FAILED ==="
 exit 1
