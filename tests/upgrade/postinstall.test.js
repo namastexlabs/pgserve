@@ -86,21 +86,37 @@ test('postinstall: isCI honors CI=true / CI=1', () => {
   }
 });
 
-test('postinstall: dev-worktree skip emits stderr note and returns 0 (this repo IS a worktree under .genie/)', () => {
-  // The test runs from /home/genie/.genie/worktrees/pgserve/postinstall-guardrail/
-  // → the script's pkgRoot resolution will land inside .genie/worktrees/, triggering
-  // the dev-worktree auto-skip. Verifies the end-to-end script behavior.
-  const env = { ...process.env };
-  delete env.AUTOPG_SKIP_POSTINSTALL;
-  delete env.AUTOPG_CONFIG_DIR;
-  const r = spawnSync(process.execPath, [POSTINSTALL], {
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 5000,
-  });
-  expect(r.status).toBe(0);
-  expect(r.stderr.toString()).toContain('dev worktree detected');
-  expect(r.stderr.toString()).toContain('skipping upgrade');
+test('postinstall: dev-worktree skip emits stderr note and returns 0 (synthetic git-worktree path)', () => {
+  // Build a synthetic git worktree at $tmp: <tmp>/.git is a FILE pointing at
+  // `…/.git/worktrees/feature` so isDevWorktree() returns true. Symlink the
+  // production postinstall.cjs into <tmp>/scripts/ so its `__dirname/..`
+  // pkgRoot resolution lands inside the synthetic worktree. Spawning the
+  // symlinked script exercises the full main() codepath end-to-end without
+  // depending on the host CWD (CI's `actions/checkout` is at
+  // /home/runner/work/pgserve/pgserve, which doesn't match the heuristic).
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'postinstall-e2e-'));
+  try {
+    fs.writeFileSync(path.join(tmp, '.git'), 'gitdir: /home/x/repo/.git/worktrees/feature\n');
+    fs.mkdirSync(path.join(tmp, 'scripts'));
+    fs.mkdirSync(path.join(tmp, 'bin'));
+    fs.symlinkSync(POSTINSTALL, path.join(tmp, 'scripts', 'postinstall.cjs'));
+    fs.symlinkSync(path.join(__dirname, '..', '..', 'bin', 'pgserve-wrapper.cjs'), path.join(tmp, 'bin', 'pgserve-wrapper.cjs'));
+
+    const env = { ...process.env };
+    delete env.AUTOPG_SKIP_POSTINSTALL;
+    delete env.AUTOPG_CONFIG_DIR;
+
+    const r = spawnSync(process.execPath, [path.join(tmp, 'scripts', 'postinstall.cjs')], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5000,
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr.toString()).toContain('dev worktree detected');
+    expect(r.stderr.toString()).toContain('skipping upgrade');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('upgrade orchestrator: dry-run lists 7 steps without executing', async () => {
