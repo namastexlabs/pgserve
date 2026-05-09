@@ -100,7 +100,13 @@ setup() {
 }
 JSON
 
-  initdb -D "$PG_DATA" -U "$USER" --auth-local=trust --auth-host=trust -E UTF8 -A trust >/dev/null 2>&1 \
+  # `-U postgres` forces the bootstrap superuser to literal `postgres`.
+  # initdb's default is `$USER` (the OS user, e.g. `runner` on GitHub
+  # Actions); pgserve provision/gc shellouts use `-U postgres` (the
+  # canonical role from PG_QUERY_DEFAULTS) so without this override the
+  # cluster ships with a non-existent `postgres` role and every shellout
+  # fails with `FATAL: role "postgres" does not exist`.
+  initdb -D "$PG_DATA" -U postgres --auth-local=trust --auth-host=trust -E UTF8 -A trust >/dev/null 2>&1 \
     || { echo "initdb failed; check $PG_LOG" >&2; exit 2; }
 
   # Tighten config so the ephemeral postmaster is small + fast.
@@ -134,9 +140,11 @@ EOF
 # which only knows about `postmaster` / `--help` and exits with help-
 # print on anything else.
 pgserve_run() {
+  # PGUSER is intentionally NOT set here — pgQuery passes `-U postgres`
+  # explicitly via PG_QUERY_DEFAULTS, so an env-level override would
+  # only mask a real bug rather than reflect production semantics.
   HOME="$FAKE_HOME" \
   PGHOST="$SOCKET_DIR" \
-  PGUSER="$USER" \
     node "${REPO_ROOT}/bin/pgserve-wrapper.cjs" "$@"
 }
 
