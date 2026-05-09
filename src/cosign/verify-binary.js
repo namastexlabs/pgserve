@@ -107,6 +107,91 @@ export function resolveBundlePath(binaryPath) {
 }
 
 /**
+ * Detect detached cosign artifacts (`<binary>.sig` + `<binary>.cert`)
+ * for a binary. Returns `{ signature, certificate }` when both
+ * siblings exist; null otherwise.
+ *
+ * WAVE-B-BUNDLE-FORMAT (v2.6.3): cosign supports two output shapes for
+ * `cosign sign-blob`:
+ *
+ *   1. Bundled  — `--bundle <path>` writes a JSON envelope containing
+ *      sig + cert + tlog + bundle metadata. Verified via
+ *      `cosign verify-blob --bundle <path>`.
+ *   2. Detached — `--output-signature <sig> --output-certificate <cert>`
+ *      writes two sidecar files. Verified via
+ *      `cosign verify-blob --signature <sig> --certificate <cert>`.
+ *
+ * `automagik-dev/genie` (and many slsa-github-generator-driven release
+ * pipelines) emit the detached pair as their release-identity-bearing
+ * signature, alongside a separate `provenance.intoto.jsonl` carrying
+ * the SLSA generator's identity. Pre-fix pgserve only consumed bundled
+ * formats and silently failed `pgserve verify` against detached
+ * producers because `provenance.intoto.jsonl`'s cert subject doesn't
+ * match the consumer-side trust regex. This helper closes that gap on
+ * the consumer side per the asymmetric-cohort principle (Postel's Law:
+ * pgserve adapts to producer-side standards-compliant emit shapes).
+ *
+ * Priority semantics (used in verifyBinary):
+ *   - When a caller passes `options.bundlePath` explicitly, that wins.
+ *   - Otherwise, detached takes priority over bundle resolution when
+ *     both shapes' siblings exist for the same binary. Reasoning:
+ *     producer-explicit publishing of `<binary>.sig` + `<binary>.cert`
+ *     is the established cosign convention; preferring bundles
+ *     silently could mask producer-side regressions in a dual-emit
+ *     setup. Operators who specifically want bundle resolution can
+ *     pass `--bundle <path>` to override.
+ */
+export function resolveDetachedCosign(binaryPath) {
+  const signature = `${binaryPath}.sig`;
+  const certificate = `${binaryPath}.cert`;
+  if (fs.existsSync(signature) && fs.existsSync(certificate)) {
+    return { signature, certificate };
+  }
+  return null;
+}
+
+/**
+ * Compute the verification material pgserve will hand to cosign for a
+ * given binary, applying the priority rules documented on
+ * `resolveDetachedCosign`. Returned shapes:
+ *
+ *   { kind: 'bundle',   bundlePath, exists, probed: string[] }
+ *   { kind: 'detached', signature, certificate, exists, probed: string[] }
+ *
+ * `exists` is true iff every required sibling file is on disk. `probed`
+ * lists the paths inspected so the bundle-missing diagnostic can echo
+ * them back to operators.
+ */
+export function resolveVerificationMaterial(binaryPath, { bundlePath } = {}) {
+  if (bundlePath) {
+    return {
+      kind: 'bundle',
+      bundlePath,
+      exists: fs.existsSync(bundlePath),
+      probed: [bundlePath],
+    };
+  }
+  const detached = resolveDetachedCosign(binaryPath);
+  if (detached) {
+    return {
+      kind: 'detached',
+      signature: detached.signature,
+      certificate: detached.certificate,
+      exists: true,
+      probed: [detached.signature, detached.certificate],
+    };
+  }
+  const candidates = resolveBundleCandidates(binaryPath);
+  const found = candidates.find((p) => fs.existsSync(p));
+  return {
+    kind: 'bundle',
+    bundlePath: found ?? candidates[0],
+    exists: !!found,
+    probed: [...candidates, `${binaryPath}.sig`, `${binaryPath}.cert`],
+  };
+}
+
+/**
  * Resolve which `cosign` executable to use. Returns a string path or null
  * if no cosign is available and `allowFetch: false`.
  *
@@ -230,23 +315,23 @@ export function verifyBinary(binaryPath, options = {}) {
     return { ok: false, reason: 'binary-not-a-file', detail: binaryPath };
   }
 
-  const bundlePath = options.bundlePath || resolveBundlePath(binaryPath);
-  if (!fs.existsSync(bundlePath)) {
-    // CV-VERIFY-BUNDLE-NAMING (v2.6.3): when none of the three
-    // candidates exist, surface the full list in the error detail so
-    // operators see exactly which paths pgserve probed. The
+  const material = resolveVerificationMaterial(binaryPath, { bundlePath: options.bundlePath });
+  if (!material.exists) {
+    // CV-VERIFY-BUNDLE-NAMING (v2.6.3) + WAVE-B-BUNDLE-FORMAT (v2.6.3):
+    // when neither bundled siblings nor the detached `.sig`+`.cert` pair
+    // exist, surface the full probed list in the error detail so
+    // operators see exactly which paths pgserve inspected. The
     // bundle-missing reason code is unchanged so any log-grep wired
-    // against it keeps working.
-    const probed = options.bundlePath
-      ? [bundlePath]
-      : resolveBundleCandidates(binaryPath);
+    // against it keeps working; an explicit override via
+    // options.bundlePath narrows the probe list to just that path.
     return {
       ok: false,
       reason: 'bundle-missing',
       detail:
-        `expected sigstore bundle for ${binaryPath} — probed: ${probed.join(', ')}. `
+        `expected cosign verification material for ${binaryPath} — probed: ${material.probed.join(', ')}. `
         + `Pass --bundle <path> to override, or run `
-        + `\`cosign sign-blob --bundle ${binaryPath}.bundle ${binaryPath}\` to attest.`,
+        + `\`cosign sign-blob --bundle ${binaryPath}.bundle ${binaryPath}\` to attest `
+        + `(or use detached \`--output-signature ${binaryPath}.sig --output-certificate ${binaryPath}.cert\`).`,
     };
   }
 
@@ -279,7 +364,7 @@ export function verifyBinary(binaryPath, options = {}) {
     }
     const result = invokeCosign({
       cosignBin,
-      bundlePath,
+      material,
       binaryPath,
       identity,
     });
@@ -292,7 +377,10 @@ export function verifyBinary(binaryPath, options = {}) {
         tier: COSIGN_TIER,
         sha256,
         cosignBin,
-        bundle: bundlePath,
+        // Back-compat: callers reading `.bundle` still get a value
+        // (null when detached, the path when bundled).
+        bundle: material.kind === 'bundle' ? material.bundlePath : null,
+        material,
         identityChain,
       };
     }
@@ -308,10 +396,18 @@ export function verifyBinary(binaryPath, options = {}) {
   };
 }
 
-function invokeCosign({ cosignBin, bundlePath, binaryPath, identity }) {
+function invokeCosign({ cosignBin, material, binaryPath, identity }) {
+  // WAVE-B-BUNDLE-FORMAT (v2.6.3): dispatch on material.kind so cosign
+  // gets the matching argv shape — `--bundle <path>` for bundled
+  // sigstore JSON envelopes; `--signature <sig> --certificate <cert>`
+  // for detached cosign sign-blob output (genie's release-identity-
+  // bearing artifacts ship in this shape).
+  const materialArgs = material.kind === 'detached'
+    ? ['--signature', material.signature, '--certificate', material.certificate]
+    : ['--bundle', material.bundlePath];
   const args = [
     'verify-blob',
-    '--bundle', bundlePath,
+    ...materialArgs,
     '--certificate-identity-regexp', identity.identityRegexp,
     '--certificate-oidc-issuer', identity.issuer,
     binaryPath,

@@ -20,6 +20,8 @@ import path from 'node:path';
 import {
   resolveBundleCandidates,
   resolveBundlePath,
+  resolveDetachedCosign,
+  resolveVerificationMaterial,
   sha256File,
   verifyBinary,
 } from '../../src/cosign/verify-binary.js';
@@ -327,5 +329,181 @@ describe('CV-VERIFY-BUNDLE-NAMING — verifyBinary bundle-missing detail enrichm
     expect(result.detail).toContain(explicit);
     // The auto-discovery probe paths should NOT appear when an override was given.
     expect(result.detail).not.toContain('provenance.intoto.jsonl');
+  });
+});
+
+describe('WAVE-B-BUNDLE-FORMAT — resolveDetachedCosign (v2.6.3)', () => {
+  test('returns null when neither sibling exists', () => {
+    const binary = makeBinary('detached-none.tgz', 'BODY');
+    expect(resolveDetachedCosign(binary)).toBeNull();
+  });
+
+  test('returns null when only .sig exists (cert missing)', () => {
+    const binary = makeBinary('detached-sig-only.tgz', 'BODY');
+    fs.writeFileSync(`${binary}.sig`, 'sig-bytes');
+    expect(resolveDetachedCosign(binary)).toBeNull();
+  });
+
+  test('returns null when only .cert exists (sig missing)', () => {
+    const binary = makeBinary('detached-cert-only.tgz', 'BODY');
+    fs.writeFileSync(`${binary}.cert`, 'cert-bytes');
+    expect(resolveDetachedCosign(binary)).toBeNull();
+  });
+
+  test('returns sig+cert paths when both exist', () => {
+    const binary = makeBinary('detached-both.tgz', 'BODY');
+    fs.writeFileSync(`${binary}.sig`, 'sig-bytes');
+    fs.writeFileSync(`${binary}.cert`, 'cert-bytes');
+    const result = resolveDetachedCosign(binary);
+    expect(result).toEqual({
+      signature: `${binary}.sig`,
+      certificate: `${binary}.cert`,
+    });
+  });
+});
+
+describe('WAVE-B-BUNDLE-FORMAT — resolveVerificationMaterial priority (v2.6.3)', () => {
+  test('explicit options.bundlePath wins over everything', () => {
+    const binary = makeBinary('material-explicit.tgz', 'BODY');
+    fs.writeFileSync(`${binary}.sig`, 'sig');
+    fs.writeFileSync(`${binary}.cert`, 'cert');
+    fs.writeFileSync(`${binary}.bundle`, '{"shape":"bundle"}');
+    const explicit = `${binary}.custom-bundle`;
+    fs.writeFileSync(explicit, '{"shape":"explicit-bundle"}');
+    const m = resolveVerificationMaterial(binary, { bundlePath: explicit });
+    expect(m.kind).toBe('bundle');
+    expect(m.bundlePath).toBe(explicit);
+    expect(m.exists).toBe(true);
+  });
+
+  test('detached pair wins over bundle when both exist (no override)', () => {
+    const binary = makeBinary('material-both-shapes.tgz', 'BODY');
+    fs.writeFileSync(`${binary}.sig`, 'sig');
+    fs.writeFileSync(`${binary}.cert`, 'cert');
+    fs.writeFileSync(`${binary}.bundle`, '{"shape":"bundle"}');
+    const m = resolveVerificationMaterial(binary);
+    expect(m.kind).toBe('detached');
+    expect(m.signature).toBe(`${binary}.sig`);
+    expect(m.certificate).toBe(`${binary}.cert`);
+    expect(m.exists).toBe(true);
+  });
+
+  test('falls back to bundle when only bundle siblings exist', () => {
+    const binary = makeBinary('material-bundle-only.tgz', 'BODY');
+    fs.writeFileSync(`${binary}.bundle`, '{"shape":"bundle"}');
+    const m = resolveVerificationMaterial(binary);
+    expect(m.kind).toBe('bundle');
+    expect(m.bundlePath).toBe(`${binary}.bundle`);
+    expect(m.exists).toBe(true);
+  });
+
+  test('returns kind=bundle with exists=false + full probe list when nothing exists', () => {
+    const binary = makeBinary('material-nothing.tgz', 'BODY');
+    const m = resolveVerificationMaterial(binary);
+    expect(m.kind).toBe('bundle');
+    expect(m.exists).toBe(false);
+    expect(m.bundlePath).toBe(`${binary}.bundle`);
+    // Probed list should include both bundle candidates AND detached siblings
+    // so the bundle-missing diagnostic can echo every place we looked.
+    expect(m.probed).toContain(`${binary}.bundle`);
+    expect(m.probed).toContain(`${binary}.sig`);
+    expect(m.probed).toContain(`${binary}.cert`);
+  });
+});
+
+describe('WAVE-B-BUNDLE-FORMAT — verifyBinary detached-format end-to-end (v2.6.3)', () => {
+  test('verifyBinary auto-detects detached format when sig+cert siblings exist', () => {
+    const binary = makeBinary('detached-e2e-pass.tgz', 'LEGIT_BINARY_v1\nBODY');
+    fs.writeFileSync(`${binary}.sig`, 'sig');
+    fs.writeFileSync(`${binary}.cert`, 'cert');
+    const result = verifyBinary(binary, {
+      cosignBin: path.join(stubBinDir, 'cosign'),
+      trustList: FAKE_TRUST_LIST,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.material.kind).toBe('detached');
+    expect(result.material.signature).toBe(`${binary}.sig`);
+    expect(result.material.certificate).toBe(`${binary}.cert`);
+    // Back-compat: bundle field is null on detached path.
+    expect(result.bundle).toBeNull();
+    // Stub cosign should have been invoked with --signature/--certificate args
+    // (not --bundle).
+    const calls = readCallLog();
+    expect(calls.length).toBeGreaterThan(0);
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall).toContain('--signature');
+    expect(lastCall).toContain('--certificate');
+    expect(lastCall).not.toContain('--bundle');
+  });
+
+  test('verifyBinary prefers detached format over bundle when both present', () => {
+    const binary = makeBinary('detached-priority.tgz', 'LEGIT_BINARY_v1\nBODY');
+    fs.writeFileSync(`${binary}.sig`, 'sig');
+    fs.writeFileSync(`${binary}.cert`, 'cert');
+    fs.writeFileSync(`${binary}.bundle`, '{"shape":"bundle"}');
+    const result = verifyBinary(binary, {
+      cosignBin: path.join(stubBinDir, 'cosign'),
+      trustList: FAKE_TRUST_LIST,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.material.kind).toBe('detached');
+    expect(result.bundle).toBeNull();
+    const calls = readCallLog();
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall).toContain('--signature');
+    expect(lastCall).not.toContain('--bundle');
+  });
+
+  test('verifyBinary falls back to bundle resolution when only bundle siblings exist', () => {
+    const binary = makeBinary('bundle-only.tgz', 'LEGIT_BINARY_v1\nBODY');
+    fs.writeFileSync(`${binary}.bundle`, '{"shape":"bundle"}');
+    const result = verifyBinary(binary, {
+      cosignBin: path.join(stubBinDir, 'cosign'),
+      trustList: FAKE_TRUST_LIST,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.material.kind).toBe('bundle');
+    expect(result.bundle).toBe(`${binary}.bundle`);
+    const calls = readCallLog();
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall).toContain('--bundle');
+    expect(lastCall).not.toContain('--signature');
+  });
+
+  test('verifyBinary correctly fails with bundle-missing when neither detached nor bundle exists', () => {
+    const binary = makeBinary('nothing.tgz', 'BODY');
+    const result = verifyBinary(binary, {
+      cosignBin: path.join(stubBinDir, 'cosign'),
+      trustList: FAKE_TRUST_LIST,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('bundle-missing');
+    // Detail should mention both bundle AND detached probe paths.
+    expect(result.detail).toContain(`${binary}.bundle`);
+    expect(result.detail).toContain(`${binary}.sig`);
+    expect(result.detail).toContain(`${binary}.cert`);
+    expect(result.detail).toContain('--bundle');
+    expect(result.detail).toContain('--output-signature');
+  });
+
+  test('explicit options.bundlePath skips detached detection (operator override)', () => {
+    const binary = makeBinary('detached-override.tgz', 'LEGIT_BINARY_v1\nBODY');
+    fs.writeFileSync(`${binary}.sig`, 'sig');
+    fs.writeFileSync(`${binary}.cert`, 'cert');
+    const explicitBundle = `${binary}.explicit-bundle`;
+    fs.writeFileSync(explicitBundle, '{"shape":"bundle"}');
+    const result = verifyBinary(binary, {
+      cosignBin: path.join(stubBinDir, 'cosign'),
+      trustList: FAKE_TRUST_LIST,
+      bundlePath: explicitBundle,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.material.kind).toBe('bundle');
+    expect(result.material.bundlePath).toBe(explicitBundle);
+    const calls = readCallLog();
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall).toContain('--bundle');
+    expect(lastCall).toContain(explicitBundle);
+    expect(lastCall).not.toContain('--signature');
   });
 });
