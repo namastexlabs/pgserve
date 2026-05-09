@@ -36,6 +36,73 @@ test('postinstall: fresh install (no data dir) exits 0 silently', () => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('postinstall: isDevWorktree detects /.genie/worktrees/ paths', () => {
+  // require() the script — module.exports surfaces the helpers without
+  // running main() (require.main !== module guard).
+  const mod = require(POSTINSTALL);
+  expect(typeof mod.isDevWorktree).toBe('function');
+  expect(mod.isDevWorktree('/home/foo/.genie/worktrees/pgserve/branch-x')).toBe(true);
+  expect(mod.isDevWorktree('/home/foo/projects/pgserve')).toBe(false);
+  expect(mod.isDevWorktree('/srv/.genie/worktrees/repo/feature')).toBe(true);
+});
+
+test('postinstall: isDevWorktree detects git worktrees via .git file with gitdir pointer', () => {
+  const mod = require(POSTINSTALL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'postinstall-gitwt-'));
+  try {
+    // Simulate a git worktree: <root>/.git is a FILE pointing to .git/worktrees/<name>
+    fs.writeFileSync(path.join(tmp, '.git'), 'gitdir: /home/x/repo/.git/worktrees/feature\n');
+    expect(mod.isDevWorktree(tmp)).toBe(true);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('postinstall: isDevWorktree returns false for normal install paths', () => {
+  const mod = require(POSTINSTALL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'postinstall-normal-'));
+  try {
+    // No .git file at all → not a git worktree, not under .genie/worktrees → false
+    expect(mod.isDevWorktree(tmp)).toBe(false);
+    // .git as a directory (regular checkout) → not a worktree
+    fs.mkdirSync(path.join(tmp, '.git'));
+    expect(mod.isDevWorktree(tmp)).toBe(false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('postinstall: isCI honors CI=true / CI=1', () => {
+  const mod = require(POSTINSTALL);
+  const original = process.env.CI;
+  try {
+    process.env.CI = 'true'; expect(mod.isCI()).toBe(true);
+    process.env.CI = '1';    expect(mod.isCI()).toBe(true);
+    process.env.CI = 'false';expect(mod.isCI()).toBe(false);
+    delete process.env.CI;   expect(mod.isCI()).toBe(false);
+  } finally {
+    if (original === undefined) delete process.env.CI;
+    else process.env.CI = original;
+  }
+});
+
+test('postinstall: dev-worktree skip emits stderr note and returns 0 (this repo IS a worktree under .genie/)', () => {
+  // The test runs from /home/genie/.genie/worktrees/pgserve/postinstall-guardrail/
+  // → the script's pkgRoot resolution will land inside .genie/worktrees/, triggering
+  // the dev-worktree auto-skip. Verifies the end-to-end script behavior.
+  const env = { ...process.env };
+  delete env.AUTOPG_SKIP_POSTINSTALL;
+  delete env.AUTOPG_CONFIG_DIR;
+  const r = spawnSync(process.execPath, [POSTINSTALL], {
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 5000,
+  });
+  expect(r.status).toBe(0);
+  expect(r.stderr.toString()).toContain('dev worktree detected');
+  expect(r.stderr.toString()).toContain('skipping upgrade');
+});
+
 test('upgrade orchestrator: dry-run lists 7 steps without executing', async () => {
   const { upgrade, STEPS } = await import(path.join(__dirname, '..', '..', 'src', 'upgrade', 'index.js'));
   // 7 steps after pgserve singleton (v2.4) added cosign-meta-migration.
