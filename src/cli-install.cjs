@@ -1304,6 +1304,13 @@ function dispatch(subcommand, args, ctx) {
       // idempotency-driven serialization (see provision.js header for
       // why no advisory lock). Pure node + psql shellout.
       return import('./commands/provision.js').then((mod) => mod.runProvision(args));
+    case 'create-app':
+      // autopg-distribution-cutover-finalize (v2.6) — wish Group 3.
+      // Registers a consumer slug + writes admin.json/manifest.json,
+      // freezing TRUSTED_IDENTITIES into autopg_meta.locked_roots at
+      // create time. Idempotent: re-runs touch last_updated only and
+      // preserve the original locked_roots snapshot (BRIEF v5 A6).
+      return import('./commands/create-app.js').then((mod) => mod.runCreateApp(args));
     default:
       throw new Error(`pgserve: dispatch called with unknown subcommand "${subcommand}"`);
   }
