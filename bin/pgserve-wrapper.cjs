@@ -55,6 +55,11 @@ const __installSubcommands = new Set([
   // user-extensible cosign trust store at ~/.pgserve/trust/identities.json.
   // Pure node, must skip bun probe.
   'trust',
+  // pgserve singleton (v2.4) — wish Group 3, verb 3. `gc` shells out to
+  // psql to scan pgserve_meta + pg_database, classify orphans, and
+  // (under --apply) DROP DATABASE. Pure node + child_process, must skip
+  // the bun probe.
+  'gc',
 ]);
 if (__subcommand && __installSubcommands.has(__subcommand)) {
   const cli = require(path.join(__dirname, '..', 'src', 'cli-install.cjs'));
