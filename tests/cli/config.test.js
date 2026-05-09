@@ -233,3 +233,53 @@ describe('unknown subcommand', () => {
     expect(result.stderr).toContain('usage:');
   });
 });
+
+describe('B6 — `pgserve config --help` honored as help request (v2.6.3)', () => {
+  test('T1 (load-bearing): --help exits 0 with usage block, no error: prefix', () => {
+    const result = runCli(['config', '--help']);
+    expect(result.status).toBe(0);
+    // Usage block on stdout (the help-success contract — no error: prefix anywhere)
+    expect(result.stdout).toMatch(/autopg config <subcommand>/);
+    expect(result.stdout).toMatch(/Subcommands:/);
+    // Critical: no `error:` line on stderr (the original B6 bug was error+exit-0)
+    expect(result.stderr).not.toMatch(/^error:/m);
+    expect(result.stderr).not.toMatch(/INVALID_KEY/);
+  });
+
+  test('T2: -h short flag exits identically to --help', () => {
+    const long = runCli(['config', '--help']);
+    const short = runCli(['config', '-h']);
+    expect(short.status).toBe(long.status);
+    expect(short.status).toBe(0);
+    expect(short.stdout).toBe(long.stdout);
+  });
+
+  test('T4 (regression-guard): truly unknown subcommand still exits non-zero with error:', () => {
+    const result = runCli(['config', 'nonexistent-xyz123']);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/^error:/m);
+    expect(result.stderr).toContain('unknown config subcommand');
+  });
+
+  test('T6 (Decision #7): autopg and pgserve bins agree on --help behavior', () => {
+    const viaPgserve = spawnSync(
+      'node',
+      [path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'), 'config', '--help'],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, AUTOPG_CONFIG_DIR: tmpHome, AUTOPG_PORT: '', PGSERVE_PORT: '' },
+      },
+    );
+    const viaAutopg = spawnSync(
+      'node',
+      [path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'), 'config', '--help'],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, AUTOPG_CONFIG_DIR: tmpHome, AUTOPG_PORT: '', PGSERVE_PORT: '' },
+      },
+    );
+    expect(viaAutopg.status).toBe(viaPgserve.status);
+    expect(viaAutopg.status).toBe(0);
+    expect(viaAutopg.stdout).toBe(viaPgserve.stdout);
+  });
+});
