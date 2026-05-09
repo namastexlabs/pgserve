@@ -1139,6 +1139,12 @@ function dispatch(subcommand, args, ctx) {
       // performs the actual DROP. Composes the orphan classifier +
       // audit-log writer + psql shellout primitives.
       return import('./commands/gc.js').then((mod) => mod.runGc(args));
+    case 'provision':
+      // pgserve singleton (v2.4) — wish Group 3, verb 4. Idempotent
+      // CREATE ROLE / DATABASE / GRANT + UPSERT pgserve_meta. Honest
+      // idempotency-driven serialization (see provision.js header for
+      // why no advisory lock). Pure node + psql shellout.
+      return import('./commands/provision.js').then((mod) => mod.runProvision(args));
     default:
       throw new Error(`pgserve: dispatch called with unknown subcommand "${subcommand}"`);
   }

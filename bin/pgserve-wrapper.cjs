@@ -60,6 +60,12 @@ const __installSubcommands = new Set([
   // (under --apply) DROP DATABASE. Pure node + child_process, must skip
   // the bun probe.
   'gc',
+  // pgserve singleton (v2.4) — wish Group 3, verb 4. `provision` shells
+  // out to psql to CREATE ROLE / CREATE DATABASE / GRANT / INSERT INTO
+  // pgserve_meta. Idempotency-driven (no advisory lock — see
+  // src/commands/provision.js header for why). Pure node + child_process,
+  // must skip bun probe.
+  'provision',
 ]);
 if (__subcommand && __installSubcommands.has(__subcommand)) {
   const cli = require(path.join(__dirname, '..', 'src', 'cli-install.cjs'));
