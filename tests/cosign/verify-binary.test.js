@@ -17,7 +17,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { resolveBundlePath, sha256File, verifyBinary } from '../../src/cosign/verify-binary.js';
+import {
+  resolveBundleCandidates,
+  resolveBundlePath,
+  sha256File,
+  verifyBinary,
+} from '../../src/cosign/verify-binary.js';
 
 const FAKE_TRUST_LIST = [
   Object.freeze({
@@ -218,5 +223,109 @@ describe('verifyBinary — input validation', () => {
     });
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('empty-trust-list');
+  });
+});
+
+describe('CV-VERIFY-BUNDLE-NAMING — resolveBundleCandidates (v2.6.3)', () => {
+  test('returns three candidates in priority order', () => {
+    const candidates = resolveBundleCandidates('/tmp/foo/bar.tgz');
+    expect(candidates).toHaveLength(3);
+    expect(candidates[0]).toBe('/tmp/foo/bar.tgz.bundle');
+    expect(candidates[1]).toBe('/tmp/foo/bar.intoto.jsonl');
+    expect(candidates[2]).toBe('/tmp/foo/provenance.intoto.jsonl');
+  });
+
+  test('strips trailing .tgz only (preserves other archive shapes verbatim in stem position)', () => {
+    const candidates = resolveBundleCandidates('/tmp/foo/bar.tar.gz');
+    expect(candidates[0]).toBe('/tmp/foo/bar.tar.gz.bundle');
+    // .tar.gz is not stripped (only .tgz is); stem stays as-is
+    expect(candidates[1]).toBe('/tmp/foo/bar.tar.gz.intoto.jsonl');
+    expect(candidates[2]).toBe('/tmp/foo/provenance.intoto.jsonl');
+  });
+
+  test('binary with no extension keeps its full name in candidate slots', () => {
+    const candidates = resolveBundleCandidates('/tmp/foo/postgres');
+    expect(candidates[0]).toBe('/tmp/foo/postgres.bundle');
+    expect(candidates[1]).toBe('/tmp/foo/postgres.intoto.jsonl');
+    expect(candidates[2]).toBe('/tmp/foo/provenance.intoto.jsonl');
+  });
+});
+
+describe('CV-VERIFY-BUNDLE-NAMING — resolveBundlePath fall-through (v2.6.3)', () => {
+  test('candidate 1 (`<binary>.bundle`) wins when present (preserves existing convention)', () => {
+    const binary = makeBinary('artifact-1.tgz', 'BODY');
+    fs.writeFileSync(`${binary}.bundle`, '{"shape":"bundle"}');
+    expect(resolveBundlePath(binary)).toBe(`${binary}.bundle`);
+  });
+
+  test('candidate 2 (`<stem>.intoto.jsonl`) wins when only that exists (per-artifact provenance)', () => {
+    const binary = makeBinary('artifact-2.tgz', 'BODY');
+    const stem = binary.replace(/\.tgz$/, '');
+    fs.writeFileSync(`${stem}.intoto.jsonl`, '{"shape":"intoto-stem"}');
+    expect(resolveBundlePath(binary)).toBe(`${stem}.intoto.jsonl`);
+  });
+
+  test('candidate 3 (`<dirname>/provenance.intoto.jsonl`) wins when only that exists (genie shape)', () => {
+    const binary = makeBinary('artifact-3.tgz', 'BODY');
+    const sibling = path.join(path.dirname(binary), 'provenance.intoto.jsonl');
+    fs.writeFileSync(sibling, '{"shape":"intoto-sibling"}');
+    expect(resolveBundlePath(binary)).toBe(sibling);
+  });
+
+  test('priority order: candidate 1 beats candidate 3 when both exist', () => {
+    const binary = makeBinary('artifact-4.tgz', 'BODY');
+    fs.writeFileSync(`${binary}.bundle`, '{"shape":"bundle"}');
+    const sibling = path.join(path.dirname(binary), 'provenance.intoto.jsonl');
+    fs.writeFileSync(sibling, '{"shape":"intoto-sibling"}');
+    // Candidate 1 (`.bundle`) takes priority — existing convention preserved.
+    expect(resolveBundlePath(binary)).toBe(`${binary}.bundle`);
+  });
+
+  test('priority order: candidate 2 beats candidate 3 when 1 absent and both 2+3 exist', () => {
+    const binary = makeBinary('artifact-5.tgz', 'BODY');
+    const stem = binary.replace(/\.tgz$/, '');
+    fs.writeFileSync(`${stem}.intoto.jsonl`, '{"shape":"intoto-stem"}');
+    const sibling = path.join(path.dirname(binary), 'provenance.intoto.jsonl');
+    fs.writeFileSync(sibling, '{"shape":"intoto-sibling"}');
+    expect(resolveBundlePath(binary)).toBe(`${stem}.intoto.jsonl`);
+  });
+
+  test('all candidates absent → returns candidate 1 (preserves bundle-missing error path)', () => {
+    const binary = makeBinary('artifact-6.tgz', 'BODY');
+    // No bundle/intoto files written.
+    expect(resolveBundlePath(binary)).toBe(`${binary}.bundle`);
+  });
+});
+
+describe('CV-VERIFY-BUNDLE-NAMING — verifyBinary bundle-missing detail enrichment (v2.6.3)', () => {
+  test('bundle-missing error lists all three probed paths when no override is set', () => {
+    const binary = makeBinary('artifact-missing.tgz', 'BODY');
+    // No bundle/intoto files written.
+    const result = verifyBinary(binary, {
+      cosignBin: path.join(stubBinDir, 'cosign'),
+      trustList: FAKE_TRUST_LIST,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('bundle-missing');
+    expect(result.detail).toContain(`${binary}.bundle`);
+    expect(result.detail).toContain(`.intoto.jsonl`);
+    expect(result.detail).toContain(`provenance.intoto.jsonl`);
+    // Hint must reference --bundle override since fall-through couldn't resolve.
+    expect(result.detail).toContain('--bundle');
+  });
+
+  test('bundle-missing error lists ONLY the override path when --bundle was passed', () => {
+    const binary = makeBinary('artifact-with-override.tgz', 'BODY');
+    const explicit = `${binary}.does-not-exist`;
+    const result = verifyBinary(binary, {
+      cosignBin: path.join(stubBinDir, 'cosign'),
+      trustList: FAKE_TRUST_LIST,
+      bundlePath: explicit,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('bundle-missing');
+    expect(result.detail).toContain(explicit);
+    // The auto-discovery probe paths should NOT appear when an override was given.
+    expect(result.detail).not.toContain('provenance.intoto.jsonl');
   });
 });
