@@ -1077,6 +1077,12 @@ function dispatch(subcommand, args, ctx) {
       // dispatcher. dispatch() returns a Promise here; the wrapper
       // already handles both numeric and Promise returns.
       return import('./commands/uninstall.js').then((mod) => mod.runUninstall());
+    case 'doctor':
+      // pgserve-singleton-no-proxy Group 3: read-only V1. Reports the
+      // active supervisor + postmaster reachability + admin.json /
+      // runtime.json health. --fix tiered modes deferred to a follow-up
+      // (SHARED-DESIGN §3.2).
+      return import('./commands/doctor.js').then((mod) => mod.runDoctor(args).then((code) => process.exit(code)));
     case 'status':
       return cmdStatus(args);
     case 'url':
