@@ -125,6 +125,9 @@ bash tests/integration/gc-provision.test.sh
 
 **depends-on:** none (can ship in parallel with G1)
 
+**Implementation history (2026-05-09):**
+PR #94 shipped deliverables 1+2 partially — the dedup work landed but `src/gc/pg-queries.js` was kept as a 200-line re-exporter rather than deleted (spirit of single-source-of-truth met; letter of WISH violated). Deliverables 3 (test rename), 4 (integration scaffold), and 5 (CI matrix wire) deferred. PR #97 (g2-followup) completes deliverables 1–5: drops the re-exporter (gc imports `pgQuery`/`quoteIdent`/`quoteLiteral` directly from `src/lib/pg-query.js`; relocates gc-specific helpers to `src/gc/queries.js`), renames `tests/gc/pg-queries.test.js` → `tests/gc/queries.test.js`, adds `tests/integration/gc-provision.test.sh` (graceful-skip when postgres binaries absent), and wires `test-integration-gc-provision` job in `.github/workflows/ci.yml` (continue-on-error: true until GHA cache is warm). Audit trail: QA-FINDINGS-1-2.md (PR #94 PARTIAL verdict, 5 findings G2-1 through G2-5).
+
 ---
 
 ### Group 3: pgserve create-app + manifest LOCK 1 cosign verifier (Cutover G5)

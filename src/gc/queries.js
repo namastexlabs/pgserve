@@ -9,10 +9,12 @@
  * specific SELECT / DROP queries gc runs against `pgserve_meta` +
  * `pg_database` + `pg_stat_activity`.
  *
- * Earlier shape (PR #91) inlined its own `pgQuery` because the shared
- * lib didn't exist on main yet — PR #92 added `src/lib/pg-query.js`,
- * and the `autopg-distribution-cutover-finalize` G2 dedup (this file's
- * commit) deletes the inline copy and imports the shared one.
+ * History: PR #91 inlined its own `pgQuery`; PR #92 extracted the
+ * canonical primitive to `src/lib/pg-query.js`; the
+ * `autopg-distribution-cutover-finalize` G2 dedup PR (#94) collapsed
+ * the gc-side copy into a re-exporter at `src/gc/pg-queries.js`. This
+ * file is the G2-followup destination — gc-specific helpers only,
+ * primitives consumed via direct imports from `src/lib/pg-query.js`.
  *
  * DROP DATABASE caveat: postgres refuses `DROP DATABASE <db>` when
  * sessions are connected. We `pg_terminate_backend()` everything
@@ -28,11 +30,6 @@ const DEFAULT_PORT = PG_QUERY_DEFAULTS.port;
 const DEFAULT_DB = PG_QUERY_DEFAULTS.db;
 
 const SYSTEM_DBS = new Set(['template0', 'template1', 'postgres']);
-
-// Re-export the shared primitive so existing callers that imported
-// `pgQuery` from `src/gc/pg-queries.js` keep working without churn.
-// Future PRs can switch them to import directly from `src/lib/pg-query.js`.
-export { pgQuery };
 
 /**
  * SELECT every row from `pgserve_meta`. Returns an array of plain
@@ -187,10 +184,6 @@ export function deleteMetaRow({ fingerprint, port = DEFAULT_PORT } = {}) {
     sql: `DELETE FROM public.${PGSERVE_META_TABLE} WHERE fingerprint = ${quoteLiteral(fingerprint)}`,
   });
 }
-
-// quoteIdent + quoteLiteral are imported from `src/lib/pg-query.js` —
-// the dedup keeps gc and provision quoting identical (same primitive,
-// same defensive escapes).
 
 export const __testInternals = Object.freeze({
   quoteIdent,

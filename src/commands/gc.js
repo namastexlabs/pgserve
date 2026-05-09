@@ -6,7 +6,7 @@
  * The 240-orphan-disease fix from the v1.0 mission. Composes:
  *   - src/gc/orphan-detection.js#classifyOrphans  — pure classifier
  *   - src/gc/audit-log.js#writeGcAudit            — JSON-lines audit
- *   - src/gc/pg-queries.js                        — psql shellouts
+ *   - src/gc/queries.js                           — gc-specific psql queries
  *   - src/lib/admin-json.js                       — port discovery
  *
  * Defaults:
@@ -38,7 +38,7 @@ import {
   selectActiveDbs,
   dropDatabase,
   deleteMetaRow,
-} from '../gc/pg-queries.js';
+} from '../gc/queries.js';
 import fs from 'node:fs';
 
 const DEFAULT_STALE_AFTER_DAYS = 30;

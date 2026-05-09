@@ -3,8 +3,8 @@
  *
  * The verb's purity-side (orphan classifier + audit log) is exercised by
  * tests/gc/orphan-detection.test.js + tests/gc/audit-log.test.js.
- * pg-queries.js's psql shellout is exercised by
- * tests/gc/pg-queries.test.js. This file locks the CLI flag-parser +
+ * queries.js's psql shellout is exercised by
+ * tests/gc/queries.test.js. This file locks the CLI flag-parser +
  * resolvePort fallback contract.
  */
 
