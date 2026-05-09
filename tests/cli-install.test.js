@@ -15,6 +15,7 @@
 
 import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -85,6 +86,12 @@ function runCli(args, env = {}) {
       ...process.env,
       PGSERVE_CONFIG_DIR: tmpHome,
       PATH: `${stubBin.dir}:${process.env.PATH}`,
+      // Default test mode: skip the B3 port pre-flight so existing
+      // tests that assert on `port: 5432` literal output don't race
+      // host-level services on the canonical port. B3's port-pre-
+      // flight tests pass `PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '0'` (or
+      // unset) explicitly so the production code path fires.
+      PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '1',
       ...env,
     },
   });
@@ -272,6 +279,166 @@ describe('pgserve install', () => {
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('pm2 not found');
+  });
+});
+
+describe('pgserve install --help (B2 v2.6.1)', () => {
+  test('--help long flag prints usage + exits 0; no install side effects', () => {
+    const result = runCli(['install', '--help']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Usage:');
+    expect(result.stdout).toContain('--port');
+    expect(result.stdout).not.toContain('pgserve: installed');
+    // pm2 stub MUST NOT have been touched
+    const calls = readCallLog(stubBin.calls);
+    expect(calls.find((c) => c[0] === 'start')).toBeUndefined();
+    // admin.json + data dir MUST NOT have been created
+    expect(fs.existsSync(path.join(tmpHome, 'admin.json'))).toBe(false);
+  });
+
+  test('-h short flag is identical to --help', () => {
+    const result = runCli(['install', '-h']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Usage:');
+    const calls = readCallLog(stubBin.calls);
+    expect(calls.find((c) => c[0] === 'start')).toBeUndefined();
+  });
+
+  test('--help interleaved with other flags still preempts', () => {
+    const result = runCli(['install', '--port', '25432', '--help']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Usage:');
+    const calls = readCallLog(stubBin.calls);
+    expect(calls.find((c) => c[0] === 'start')).toBeUndefined();
+  });
+});
+
+describe('pgserve unknown verb (B4 v2.6.1)', () => {
+  test('pgserve <gibberish> exits 64 with "unknown verb" error', () => {
+    const result = runCli(['nonexistent-verb-here']);
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain('unknown verb');
+    expect(result.stderr).toContain('nonexistent-verb-here');
+    expect(result.stderr).toContain('--help');
+  });
+
+  test('pgserve <gibberish-with-flags> still routed to unknown-verb path', () => {
+    const result = runCli(['some-fake-verb-xyz', '--port', '5432']);
+    expect(result.status).toBe(64);
+    expect(result.stderr).toContain('some-fake-verb-xyz');
+  });
+
+  test('top-level flags (--help, --version) are NOT treated as unknown verbs', () => {
+    // These should reach postgres-server.js help path or version path; the
+    // wrapper must not intercept them as unknown verbs. We assert exit
+    // code != 64 (the EX_USAGE we use for unknown verbs).
+    const help = runCli(['--help']);
+    expect(help.status).not.toBe(64);
+    const version = runCli(['--version']);
+    expect(version.status).not.toBe(64);
+  });
+
+  test('real allowlisted verbs still route correctly (status reaches the dispatcher)', () => {
+    // status BEFORE install reports installed=false (per existing test); the
+    // important thing here is the wrapper does NOT short-circuit it as
+    // unknown.
+    const result = runCli(['status']);
+    expect(result.status).not.toBe(64);
+  });
+});
+
+describe('pgserve install port pre-flight (B3 v2.6.1)', () => {
+  test('install fails with EADDRINUSE when chosen port is occupied; no side effects', async () => {
+    // Bind a tcp listener on a high random port; install should refuse it.
+    const occupier = net.createServer();
+    await new Promise((resolve) => occupier.listen(0, '127.0.0.1', resolve));
+    const occupiedPort = occupier.address().port;
+    try {
+      // Override default test-mode skip so the production pre-flight
+      // path runs; this is the test that exercises the B3 contract.
+      const result = runCli(['install', '--port', String(occupiedPort)], {
+        PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '0',
+      });
+      expect(result.status).not.toBe(0);
+      const stderrAll = `${result.stderr}${result.stdout}`;
+      expect(stderrAll).toMatch(/port \d+ is already in use|EADDRINUSE/);
+      expect(stderrAll).toContain('--port');  // recovery hint
+      // pm2 stub MUST NOT have been touched
+      const calls = readCallLog(stubBin.calls);
+      expect(calls.find((c) => c[0] === 'start')).toBeUndefined();
+      // admin.json MUST NOT exist
+      expect(fs.existsSync(path.join(tmpHome, 'admin.json'))).toBe(false);
+    } finally {
+      await new Promise((resolve) => occupier.close(resolve));
+    }
+  });
+
+  test('install --port <occupied> EADDRINUSE produces non-zero exit code (regression: loop-2/2)', async () => {
+    // Loop-2 of /fix budget for PR #103. QA reported detection works,
+    // message prints, but exit code is 0. This locks the exit-code
+    // contract independent of message-detection contract.
+    const occupier = net.createServer();
+    await new Promise((resolve) => occupier.listen(0, '127.0.0.1', resolve));
+    const occupiedPort = occupier.address().port;
+    try {
+      const result = runCli(['install', '--port', String(occupiedPort)], {
+        PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '0',
+      });
+      // Hard exit-code assertion (not just message contains)
+      expect(result.status).not.toBe(0);
+      expect(result.status).toBe(1);
+    } finally {
+      await new Promise((resolve) => occupier.close(resolve));
+    }
+  });
+
+  test('install with NO --port flag refuses when default 5432 is already bound (B3 T1 contract)', async () => {
+    // This mirrors QA-RECIPE-B3 T1: occupy 5432, then `pgserve install` with
+    // no --port should refuse via the pre-flight, not exit 0. The default-
+    // port path is the load-bearing case the recipe targets — explicit-port
+    // tests above can mask it because the pre-flight code path differs.
+    const occupier = net.createServer();
+    await new Promise((resolve, reject) => {
+      occupier.listen(5432, '127.0.0.1', resolve).once('error', (err) => {
+        // Skip if 5432 is bound by something else (CI host conflict)
+        if (err.code === 'EADDRINUSE') reject(new Error('SKIP-host-bound'));
+        else reject(err);
+      });
+    }).catch((err) => {
+      if (err.message === 'SKIP-host-bound') {
+        // 5432 is bound by something we don't own; the install pre-flight
+        // will see it the same as our test-occupier would. Test still
+        // exercises the contract.
+      } else throw err;
+    });
+    try {
+      const result = runCli(['install'], {
+        PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '0',
+      });
+      expect(result.status).not.toBe(0);
+      const stderrAll = `${result.stderr}${result.stdout}`;
+      expect(stderrAll).toMatch(/port \d+ is already in use|EADDRINUSE/);
+    } finally {
+      if (occupier.listening) await new Promise((resolve) => occupier.close(resolve));
+    }
+  });
+
+  test('install on a free port proceeds normally (regression guard)', async () => {
+    // Find a free port without binding it (so install can grab it). We
+    // bind, immediately read the port, then close — small race window
+    // is acceptable in test environments.
+    const probe = net.createServer();
+    await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+    const freePort = probe.address().port;
+    await new Promise((resolve) => probe.close(resolve));
+
+    // Run with the production pre-flight enabled (no skip) so this
+    // test verifies the success-path through the new code.
+    const result = runCli(['install', '--port', String(freePort)], {
+      PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '0',
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/installed/);
   });
 });
 

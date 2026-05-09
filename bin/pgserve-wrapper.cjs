@@ -95,6 +95,35 @@ if (__subcommand === 'serve') {
   process.argv[2] = 'postmaster';
 }
 
+// B4 (v2.6.1): unknown-verb guard. Prior behavior fell through to the
+// bun probe + postgres-server.js which prints help and exits 0 on any
+// argv shape it didn't understand — that masked typos as silent
+// successes (`pgserve doctorr` → exits 0 with help banner; the operator
+// thinks doctor ran). Now we emit a clear `unknown verb` error and
+// exit EX_USAGE (64 per sysexits.h).
+//
+// Allowed shapes that MUST still flow through:
+//   - empty argv (no subcommand) → top-level help via postgres-server.js
+//   - flags starting with `-` (e.g. `--help`, `--version`) → top-level
+//     handlers in postgres-server.js
+//   - `postmaster` (canonical long-running entry) + `serve` (alias,
+//     already rewritten above)
+//   - allowlisted install-subcommands (already dispatched above; if
+//     control reaches here with one in __subcommand it means the
+//     dispatch path returned without exiting — keep the fallthrough).
+if (
+  __subcommand &&
+  !__subcommand.startsWith('-') &&
+  __subcommand !== 'postmaster' &&
+  __subcommand !== 'serve' &&
+  !__installSubcommands.has(__subcommand)
+) {
+  process.stderr.write(
+    `pgserve: unknown verb "${__subcommand}". Run \`pgserve --help\` for the supported verb list.\n`,
+  );
+  process.exit(64); // EX_USAGE per sysexits.h
+}
+
 // Detect platform
 const isWindows = process.platform === 'win32';
 const bunBin = isWindows ? 'bun.exe' : 'bun';
