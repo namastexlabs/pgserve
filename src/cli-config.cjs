@@ -256,12 +256,49 @@ function cmdEdit() {
   return result.status ?? EXIT_OK;
 }
 
+const CONFIG_USAGE = `autopg config <subcommand> [args]
+
+Subcommands:
+  list                 - print every leaf as key|value|source (default with no subverb)
+  get <key>            - print the resolved value (machine-friendly)
+  set <key> <value>    - validate + atomic write
+  path                 - print the absolute path to settings.json
+  init [--force]       - write schema defaults; refuses to clobber unless --force
+  edit                 - open $EDITOR on settings.json
+
+Exit codes:
+  0  success
+  1  unknown subcommand / IO error / EDITOR not set / settings file unreadable
+  2  validation error (stable shape: \`error: <field> — <CODE>: <detail>\`)
+
+Reachable as either \`autopg config\` or \`pgserve config\` (single dispatch
+per Decision #7).`;
+
+function printConfigUsage() {
+  process.stdout.write(`${CONFIG_USAGE}\n`);
+}
+
 /**
  * Subcommand dispatch. Returns the exit code; the parent dispatcher
  * uses the return value as `process.exit(code)` directly.
  */
 function dispatch(subcommand, args = []) {
   switch (subcommand) {
+    // B6 (v2.6.3): honor --help / -h as a verb-level help request, NOT
+    // as an unknown subcommand. Pre-fix, the dispatcher hit the default
+    // branch which emitted `error: --help — INVALID_KEY: unknown config
+    // subcommand "--help"` AND printed the usage block AND returned
+    // EXIT_UNKNOWN. The wrapper at bin/pgserve-wrapper.cjs translated
+    // EXIT_UNKNOWN to a non-zero exit BUT the parent shell saw exit 0
+    // because of a stale process.exit path; either way the message
+    // shape "error:" + exit-code-status disagreed (the exact bug B6
+    // documented). Honoring --help removes the contradiction. Branch
+    // A in the QA recipe; truly unknown subverbs (T4) still hit the
+    // default branch + return EXIT_UNKNOWN.
+    case '--help':
+    case '-h':
+      printConfigUsage();
+      return EXIT_OK;
     case 'list':
       return cmdList();
     case 'get':

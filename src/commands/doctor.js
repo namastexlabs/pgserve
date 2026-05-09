@@ -42,6 +42,7 @@ import { getAdminFilePath, readAdminJson, SUPERVISOR_VALUES } from '../lib/admin
 import { resolveSocketDir } from '../lib/socket-dir.js';
 import { readRuntimeJson, isLiveRuntime } from '../lib/runtime-json.js';
 import { findBlocked } from '../security/blocked-versions.js';
+import { pgQuery } from '../lib/pg-query.js';
 
 const SEVERITY = Object.freeze({ PASS: 'PASS', WARN: 'WARN', FAIL: 'FAIL' });
 
@@ -374,6 +375,68 @@ function checkTcpReachable(admin) {
   });
 }
 
+/**
+ * B7 (v2.6.3): surface the audit posture as a doctor finding so operators
+ * know whether their postmaster is running pgaudit (structured audit
+ * classes) or the log_statement=all fallback (capture-everything via
+ * postgres-native logging). Pre-fix the fallback fired silently — the
+ * WARN appeared once at startup in pm2 logs and was lost to operators
+ * who didn't tail the logs at the right moment.
+ *
+ * PASS  pgaudit shows up in shared_preload_libraries on the live postmaster
+ * WARN  pgaudit absent (fallback active) OR cannot probe (postmaster
+ *       unreachable / psql missing)
+ *
+ * The check fires SQL via the cohort-canonical pgQuery (psql shellout),
+ * so it inherits its env contract (PGPASSWORD literal-postgres fallback
+ * for fresh-install hosts per CV-1) and times out via psql's own
+ * connection timeout. Failure modes are mapped to WARN, never FAIL —
+ * this is a posture diagnostic, not a connectivity gate.
+ */
+function checkPgauditLoaded(admin) {
+  if (!admin || !Number.isInteger(admin.port) || admin.port <= 0) {
+    return check(
+      'pgaudit_loaded',
+      'audit posture not probed',
+      SEVERITY.WARN,
+      'admin.json missing or has no port; cannot connect to postmaster to probe SHOW shared_preload_libraries',
+      'run `pgserve install` (Tier A) or `autopg service install` (Tier B) first',
+    );
+  }
+  let preloadLibs;
+  try {
+    preloadLibs = pgQuery({
+      sql: 'SHOW shared_preload_libraries',
+      port: admin.port,
+      captureStdout: true,
+    });
+  } catch (err) {
+    return check(
+      'pgaudit_loaded',
+      'audit posture probe failed',
+      SEVERITY.WARN,
+      `psql shellout failed: ${err?.stderr?.trim?.() || err?.message || err}`,
+      'verify postmaster is up (`pgserve status`) and psql is on PATH',
+    );
+  }
+  const value = (preloadLibs || '').trim();
+  if (/(^|,)\s*pgaudit\s*(,|$)/i.test(value)) {
+    return check(
+      'pgaudit_loaded',
+      'pgaudit loaded — structured audit posture',
+      SEVERITY.PASS,
+      `shared_preload_libraries=${value || '(empty)'}`,
+    );
+  }
+  return check(
+    'pgaudit_loaded',
+    'pgaudit NOT loaded — fallback to log_statement=all',
+    SEVERITY.WARN,
+    `shared_preload_libraries=${value || '(empty)'}; audit data captured via log_statement=all (postgres-native), not pgaudit's structured classes`,
+    'bundle pgaudit.so with the embedded postgres binaries (Branch A in QA-RECIPE-B7.md) to switch the postmaster onto pgaudit; the current fallback is functional for compliance but noisier than pgaudit',
+  );
+}
+
 // ─── orchestration ────────────────────────────────────────────────────
 
 /**
@@ -392,6 +455,7 @@ export async function runChecks() {
   findings.push(checkSupervisorLiveness(admin));
   findings.push(checkRuntimeJson(admin));
   findings.push(await checkUdsReachable(admin));
+  findings.push(checkPgauditLoaded(admin));
   findings.push(await checkTcpReachable(admin));
 
   return findings;
@@ -460,6 +524,7 @@ export const __testInternals = Object.freeze({
   checkAdminJsonShape,
   checkRuntimeJson,
   checkSupervisorLiveness,
+  checkPgauditLoaded,
   exitCodeFor,
   SEVERITY,
 });
