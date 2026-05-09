@@ -102,10 +102,10 @@ psql postgresql://localhost:8432/myapp
 
 ```bash
 # Signed binary install (recommended for production)
-curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install-autopg.sh | bash
+curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install.sh | bash
 
 # Pinned version
-PGSERVE_VERSION=v2.6.0 curl -fsSL .../install-autopg.sh | bash
+PGSERVE_VERSION=v2.6.0 curl -fsSL .../install.sh | bash
 
 # Zero install (development)
 npx pgserve
@@ -117,11 +117,9 @@ npm install -g pgserve
 npm install pgserve
 ```
 
-> The `install-autopg.sh` script fetches the signed tarball from GitHub Releases and verifies it via `gh attestation verify` (Sigstore Rekor public-good). Requires the [`gh` CLI](https://cli.github.com/).
+> `install.sh` fetches the signed tarball from GitHub Releases and verifies it via `gh attestation verify` (Sigstore Rekor public-good). Requires the [`gh` CLI](https://cli.github.com/).
 >
 > PostgreSQL binaries are automatically downloaded on first run (~100MB) when using the npm path.
->
-> The legacy npm + pm2 installer (formerly `install.sh`) is preserved at `install-pgserve-legacy.sh`.
 
 ### Windows
 
