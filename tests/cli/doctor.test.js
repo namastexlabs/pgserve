@@ -93,3 +93,32 @@ describe('individual check shape', () => {
     expect(typeof __testInternals.checkAdminJsonShape).toBe('function');
   });
 });
+
+describe('checkPgauditLoaded (B7 v2.6.3)', () => {
+  test('returns WARN with stable id when admin is null (no postmaster to probe)', () => {
+    const f = __testInternals.checkPgauditLoaded(null);
+    expect(f.id).toBe('pgaudit_loaded');
+    expect(f.severity).toBe(SEVERITY.WARN);
+    expect(f.detail).toMatch(/admin\.json missing/);
+  });
+
+  test('returns WARN when admin has no port', () => {
+    const f = __testInternals.checkPgauditLoaded({ supervisor: 'pm2' });
+    expect(f.id).toBe('pgaudit_loaded');
+    expect(f.severity).toBe(SEVERITY.WARN);
+  });
+
+  test('returns WARN when port is invalid', () => {
+    const f = __testInternals.checkPgauditLoaded({ port: 0 });
+    expect(f.severity).toBe(SEVERITY.WARN);
+  });
+
+  test('returns WARN when psql shellout fails (postmaster unreachable)', () => {
+    // Pick a port nothing is bound to; pgQuery will fail with connection-
+    // refused or similar. The check must NOT throw — it maps the failure
+    // to a WARN finding.
+    const f = __testInternals.checkPgauditLoaded({ port: 1 });
+    expect(f.id).toBe('pgaudit_loaded');
+    expect(f.severity).toBe(SEVERITY.WARN);
+  });
+});
