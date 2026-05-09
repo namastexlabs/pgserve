@@ -7,7 +7,7 @@
  */
 
 import { test, expect, describe } from 'bun:test';
-import { pgQuery, quoteIdent, quoteLiteral, PG_QUERY_DEFAULTS } from '../../src/lib/pg-query.js';
+import { pgQuery, quoteIdent, quoteLiteral, PG_QUERY_DEFAULTS, resolvePgPassword } from '../../src/lib/pg-query.js';
 
 describe('pgQuery — input validation', () => {
   test('rejects empty / non-string sql before shellout', () => {
@@ -15,6 +15,33 @@ describe('pgQuery — input validation', () => {
     expect(() => pgQuery({ sql: null })).toThrow(TypeError);
     expect(() => pgQuery({})).toThrow(TypeError);
     expect(() => pgQuery()).toThrow(TypeError);
+  });
+});
+
+describe('resolvePgPassword — precedence (CV-1 fresh-install fix)', () => {
+  test('caller-supplied password wins over env + literal default', () => {
+    expect(resolvePgPassword({ password: 'caller-secret', envPassword: 'env-set' })).toBe('caller-secret');
+  });
+
+  test('env password used when caller did not supply one', () => {
+    expect(resolvePgPassword({ password: undefined, envPassword: 'env-set' })).toBe('env-set');
+  });
+
+  test("literal 'postgres' default when neither caller nor env supplied (fresh-install path)", () => {
+    expect(resolvePgPassword({ password: undefined, envPassword: undefined })).toBe('postgres');
+  });
+
+  test('default-args invocation reads process.env.PGPASSWORD with literal fallback', () => {
+    const original = process.env.PGPASSWORD;
+    try {
+      delete process.env.PGPASSWORD;
+      expect(resolvePgPassword()).toBe('postgres');
+      process.env.PGPASSWORD = 'from-shell';
+      expect(resolvePgPassword()).toBe('from-shell');
+    } finally {
+      if (original === undefined) delete process.env.PGPASSWORD;
+      else process.env.PGPASSWORD = original;
+    }
   });
 });
 

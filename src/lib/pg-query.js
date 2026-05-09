@@ -27,6 +27,39 @@ export const PG_QUERY_DEFAULTS = Object.freeze({
 });
 
 /**
+ * Resolve the PGPASSWORD value for a psql shell-out. Precedence:
+ *
+ *   1. caller-supplied `password` (explicit override; tests, callers
+ *      that read from a known-secret store)
+ *   2. `process.env.PGPASSWORD` (operator-set env override; this is
+ *      what `.pgpass`-style hosts already use today via shell wrappers)
+ *   3. literal `'postgres'` — matches the bootstrap password
+ *      `pgserve install` configures on the local-loopback postgres.
+ *      Required for fresh-install hosts where the env is unset and
+ *      no `.pgpass` file exists yet (CV-1, 2026-05-09).
+ *
+ * Hardcoding the literal `'postgres'` fallback was deliberately AVOIDED
+ * in PR #92 (bot-review HIGH) on the reasoning that it would defeat
+ * `.pgpass` / peer-auth integration. CV-1 reframed that tradeoff:
+ *
+ *   - peer-auth hosts use `host=<unix-socket-path>` which postgres
+ *     treats as auth-method `peer` (or `trust` depending on `pg_hba`),
+ *     so the PGPASSWORD value is ignored entirely; the literal default
+ *     does no harm there.
+ *   - `.pgpass`-using hosts can still override with explicit
+ *     `PGPASSWORD=…` shell env, OR pass `password` explicitly through
+ *     the function call. Their upstream wrapping is unchanged.
+ *   - Fresh-install + TCP-loopback (the path CV-1 exercises) gets the
+ *     literal that `pgserve install` already configured, instead of
+ *     a `password authentication failed for user "postgres"` FATAL.
+ */
+export function resolvePgPassword({ password, envPassword = process.env.PGPASSWORD } = {}) {
+  if (password !== undefined) return password;
+  if (envPassword !== undefined) return envPassword;
+  return 'postgres';
+}
+
+/**
  * Run a single SQL statement (or batch) via psql, fed through stdin
  * (no shell expansion). Throws on non-zero exit. Returns stdout
  * (trimmed when `captureStdout`).
@@ -37,9 +70,9 @@ export const PG_QUERY_DEFAULTS = Object.freeze({
  * @param {number} [args.port=5432]              postgres port
  * @param {string} [args.host='127.0.0.1']       postgres host
  * @param {string} [args.user='postgres']        postgres user
- * @param {string} [args.password]               PGPASSWORD; defaults to
- *                                               `process.env.PGPASSWORD`
- *                                               or 'postgres'
+ * @param {string} [args.password]               PGPASSWORD; resolves via
+ *                                               `resolvePgPassword()` —
+ *                                               caller > env > 'postgres'
  * @param {boolean} [args.captureStdout=false]   trim + return stdout
  * @returns {string} stdout (trimmed when `captureStdout`)
  */
@@ -49,18 +82,17 @@ export function pgQuery({
   port = PG_QUERY_DEFAULTS.port,
   host = PG_QUERY_DEFAULTS.host,
   user = PG_QUERY_DEFAULTS.user,
-  password = process.env.PGPASSWORD,
+  password,
   captureStdout = false,
 } = {}) {
   if (typeof sql !== 'string' || sql.length === 0) {
     throw new TypeError('pgQuery: sql must be a non-empty string');
   }
-  // PGPASSWORD is only set when the caller (or environment) provides
-  // one. Hardcoding 'postgres' as a fallback would defeat .pgpass /
-  // peer auth on hosts that use them. (Bot review HIGH on PR #92.)
-  const env = password !== undefined
-    ? { ...process.env, PGPASSWORD: password }
-    : { ...process.env };
+  // PGPASSWORD is always set; defaults to 'postgres' on fresh-install
+  // hosts where neither env nor caller supplied one (CV-1 fix). See
+  // `resolvePgPassword` docstring for the precedence rules + the
+  // updated reasoning about .pgpass / peer-auth host coexistence.
+  const env = { ...process.env, PGPASSWORD: resolvePgPassword({ password }) };
   const result = spawnSync(
     'psql',
     [
