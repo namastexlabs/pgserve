@@ -90,7 +90,7 @@ function checkVersionNotBlocked() {
       `pgserve@${version} is on the hardcoded blocklist`,
       SEVERITY.FAIL,
       hit.reason,
-      'install a different version (run `pgserve update` for the latest)',
+      'install a different version (run `pgserve upgrade` for the latest)',
     );
   }
   return check('version_blocklist', `pgserve@${version} is not blocked`, SEVERITY.PASS);
@@ -182,9 +182,30 @@ function checkAdminJsonShape() {
   );
 }
 
+// Cap every supervisor probe at 5s. Without this, a hung supervisor
+// (stuck pm2 daemon, dbus deadlock on systemctl, launchctl waiting on a
+// lock) would make `pgserve doctor` itself hang forever — defeating the
+// "diagnostic tool the operator runs when something is wrong" use case.
+// 5s is far above any healthy probe (single-digit ms in practice).
+const SUPERVISOR_PROBE_TIMEOUT_MS = 5000;
+
+function spawnHitTimeout(result) {
+  // node's child_process: when spawnSync hits the timeout, it terminates
+  // the child via SIGTERM (configurable), reports `signal: 'SIGTERM'`,
+  // status null, and on some platforms sets error.code === 'ETIMEDOUT'.
+  if (result?.error?.code === 'ETIMEDOUT') return true;
+  if (result?.signal === 'SIGTERM' && result?.status === null) return true;
+  return false;
+}
+
 function pm2EntryOnline(name) {
   try {
-    const result = spawnSync('pm2', ['jlist'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const result = spawnSync('pm2', ['jlist'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: SUPERVISOR_PROBE_TIMEOUT_MS,
+    });
+    if (spawnHitTimeout(result)) return { ok: false, reason: `pm2 jlist timed out after ${SUPERVISOR_PROBE_TIMEOUT_MS}ms` };
     if (result.status !== 0) return { ok: false, reason: 'pm2 jlist failed' };
     const list = JSON.parse(result.stdout || '[]');
     const entry = list.find((p) => p.name === name);
@@ -201,7 +222,12 @@ function pm2EntryOnline(name) {
 function systemdUnitActive(unit, scope) {
   const args = scope === 'user' ? ['--user', 'is-active', unit] : ['is-active', unit];
   try {
-    const result = spawnSync('systemctl', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const result = spawnSync('systemctl', args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: SUPERVISOR_PROBE_TIMEOUT_MS,
+    });
+    if (spawnHitTimeout(result)) return { ok: false, reason: `systemctl is-active timed out after ${SUPERVISOR_PROBE_TIMEOUT_MS}ms` };
     return { ok: result.status === 0, reason: (result.stdout || '').trim() || 'unknown' };
   } catch (e) {
     return { ok: false, reason: e.message };
@@ -210,7 +236,12 @@ function systemdUnitActive(unit, scope) {
 
 function launchdJobLoaded(label) {
   try {
-    const result = spawnSync('launchctl', ['list', label], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const result = spawnSync('launchctl', ['list', label], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: SUPERVISOR_PROBE_TIMEOUT_MS,
+    });
+    if (spawnHitTimeout(result)) return { ok: false, reason: `launchctl list timed out after ${SUPERVISOR_PROBE_TIMEOUT_MS}ms` };
     return { ok: result.status === 0, reason: result.status === 0 ? 'loaded' : 'not loaded' };
   } catch (e) {
     return { ok: false, reason: e.message };
