@@ -3,19 +3,19 @@
  *
  * Deliberately scoped to the SQL-shape + identifier/literal-quoting
  * surface. The actual psql round-trip is exercised by integration tests
- * that spin up a real postgres in CI.
+ * that spin up a real postgres in CI (tests/integration/gc-provision.test.sh).
  */
 
 import { test, expect, describe } from 'bun:test';
 import {
-  pgQuery,
   selectMetaRows,
   selectExistingDbs,
   selectActiveDbs,
   dropDatabase,
   deleteMetaRow,
   __testInternals,
-} from '../../src/gc/pg-queries.js';
+} from '../../src/gc/queries.js';
+import { pgQuery } from '../../src/lib/pg-query.js';
 
 const { quoteIdent, quoteLiteral, SYSTEM_DBS, DEFAULT_PORT } = __testInternals;
 

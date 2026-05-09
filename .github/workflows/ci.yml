@@ -101,6 +101,39 @@ jobs:
           ./dist/pgserve --help
           echo "Build successful!"
 
+  # Optional: integration smoke for `pgserve provision` + `pgserve gc`.
+  # Wired as a non-blocking matrix until the GHA cache for postgres
+  # binaries is warm. The script itself skips gracefully if initdb /
+  # pg_ctl / psql are not on PATH, so this job is also a no-op on hosts
+  # that don't have postgres installed.
+  test-integration-gc-provision:
+    name: Integration (gc + provision round-trip)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install postgres client + server
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql postgresql-client
+          # Make sure initdb / pg_ctl / psql resolve on $PATH for the script.
+          PG_BINDIR="$(pg_config --bindir 2>/dev/null || ls -d /usr/lib/postgresql/*/bin 2>/dev/null | tail -1)"
+          echo "$PG_BINDIR" >> "$GITHUB_PATH"
+
+      - name: Run gc/provision round-trip smoke
+        run: bash tests/integration/gc-provision.test.sh
+
   # Test npx flow (user experience)
   test-npx:
     name: Test npx install
