@@ -11,12 +11,15 @@
  *
  * Composes the merged G3 foundations:
  *   - src/provision/fingerprint.js     → resolveFingerprint
- *   - src/provision/advisory-lock.js   → buildAdvisoryLockSql
  *   - src/provision/db-naming.js       → deriveProvisionedNames
  *   - src/schema/pgserve-meta.js       → bootstrapPgserveMeta
  *   - src/cosign/schema.js             → applyVerifiedColumns
  *   - src/lib/pg-query.js              → pgQuery / quoteIdent / quoteLiteral
  *   - src/lib/admin-json.js            → readAdminJson (port discovery)
+ *
+ * The advisory-lock helpers in src/provision/advisory-lock.js are NOT
+ * called by this CLI verb (see "Concurrency note" below) — they're
+ * kept on main for future single-session callers (e.g. a daemon mode).
  *
  * Idempotency strategy:
  *   1. SELECT existing pgserve_meta row by fingerprint inside the
@@ -29,11 +32,32 @@
  *      converges to current values whether this is a first run or a
  *      replay.
  *
- * Postgres `CREATE DATABASE` cannot run inside a transaction block, so
- * we take the advisory lock with `pg_advisory_xact_lock` in a
- * lightweight transaction (the lock-only step), commit, then run the
- * DDL outside it. The race window between commit and DDL is closed by
- * the second SELECT inside the catch path.
+ * Concurrency note (PR #92 bot-review correction):
+ *   The wish references `pg_advisory_lock`-deduped provisioning, but
+ *   we shell out to psql via `spawnSync` — every pgQuery call starts
+ *   a NEW psql session, so even a session-scoped lock can't survive
+ *   across our calls (xact-scoped is even shorter — releases on the
+ *   transaction's COMMIT). To get a real lock we'd need to bundle the
+ *   whole sequence into a single piped psql script, which collides
+ *   with `CREATE DATABASE`'s "no transaction block" restriction.
+ *
+ *   The honest mechanism here is **idempotency under racing replays**:
+ *     - CREATE ROLE wrapped in a `DO` / `IF NOT EXISTS` block.
+ *     - CREATE DATABASE catches `database "<name>" already exists`
+ *       (psql does NOT emit SQLSTATE codes by default, so we match
+ *       on the human-readable error text in stderr — bot review
+ *       MEDIUM).
+ *     - GRANT is set-style (re-running adds nothing).
+ *     - INSERT INTO pgserve_meta uses `ON CONFLICT (fingerprint) DO
+ *       UPDATE` so the row converges to current values.
+ *
+ *   10 concurrent `provision <fingerprint>` invocations with the same
+ *   fingerprint converge to one (database, role, meta row) trio — the
+ *   serialization is at the postgres level (CREATE DATABASE acquires
+ *   the appropriate locks itself), not at our shellout level. The
+ *   advisory-lock primitives in `src/provision/advisory-lock.js` are
+ *   kept for future single-session callers (e.g. a daemon mode), but
+ *   are NOT acquired by this CLI verb.
  *
  * Exit codes:
  *   0   provisioned (or no-op idempotent replay)
@@ -45,7 +69,6 @@
 
 import { readAdminJson } from '../lib/admin-json.js';
 import { resolveFingerprint } from '../provision/fingerprint.js';
-import { buildAdvisoryLockSql, deriveBigintKey } from '../provision/advisory-lock.js';
 import { deriveProvisionedNames } from '../provision/db-naming.js';
 import { bootstrapPgserveMeta } from '../schema/pgserve-meta.js';
 import { applyVerifiedColumns } from '../cosign/schema.js';
@@ -106,15 +129,6 @@ function resolvePort(opts) {
     /* admin.json absent — fall through */
   }
   return 5432;
-}
-
-/**
- * Build the bigint param string for psql interpolation. We can't use
- * parameter binding through stdin, so we serialize the BigInt to its
- * literal numeric form (postgres accepts it as bigint).
- */
-function bigintLiteral(bigint) {
-  return `${bigint.toString()}::bigint`;
 }
 
 /**
@@ -179,26 +193,15 @@ function touchMetaRow({ port, fingerprint }) {
 }
 
 /**
- * Run the create sequence under an xact-scoped advisory lock keyed on
- * the fingerprint. Returns the names that were provisioned.
+ * Run the create sequence. Idempotency-driven (see file header for
+ * why we don't try to claim a per-process advisory lock).
+ *
+ * Returns the names that were provisioned.
  */
 function runCreateSequence({ port, fingerprint, publisher, sourcePath, names }) {
   const { databaseName, roleName } = names;
-  const { sql: lockSql } = buildAdvisoryLockSql(fingerprint);
-  const lockBigint = bigintLiteral(deriveBigintKey(fingerprint));
 
-  // Step 1 — take the advisory lock. xact-scoped: the lock releases
-  // automatically when this transaction commits.
-  pgQuery({
-    sql: [
-      'BEGIN;',
-      lockSql.replace('$1::bigint', lockBigint) + ';',
-      'COMMIT;',
-    ].join('\n'),
-    port,
-  });
-
-  // Step 2 — CREATE ROLE if missing. We CREATE WITH LOGIN by default;
+  // Step 1 — CREATE ROLE if missing. We CREATE WITH LOGIN by default;
   // pgserve consumers connect as their fingerprint role.
   pgQuery({
     sql: [
@@ -212,9 +215,14 @@ function runCreateSequence({ port, fingerprint, publisher, sourcePath, names }) 
     port,
   });
 
-  // Step 3 — CREATE DATABASE if missing. Cannot run inside a
-  // transaction block. We swallow `42P04` (database_already_exists)
-  // because the wish marks it a non-error.
+  // Step 2 — CREATE DATABASE if missing. Cannot run inside a
+  // transaction block. We swallow the "already exists" race because
+  // the wish marks it a non-error.
+  //
+  // psql does not emit SQLSTATE codes (42P04) by default — only the
+  // human-readable message "ERROR: database "<name>" already exists".
+  // Match against that text rather than the SQLSTATE we don't have.
+  // (Bot review MEDIUM on PR #92.)
   if (!databaseExists({ port, database: databaseName })) {
     try {
       pgQuery({
@@ -222,7 +230,8 @@ function runCreateSequence({ port, fingerprint, publisher, sourcePath, names }) 
         port,
       });
     } catch (err) {
-      if (err.stderr && err.stderr.includes('42P04')) {
+      const msg = (err && err.stderr) ? err.stderr : '';
+      if (msg.includes('already exists')) {
         /* race: another provisioner created it; benign */
       } else {
         throw err;
@@ -230,14 +239,14 @@ function runCreateSequence({ port, fingerprint, publisher, sourcePath, names }) 
     }
   }
 
-  // Step 4 — GRANT CONNECT + CREATE on the DB to the role. Idempotent
+  // Step 3 — GRANT CONNECT + CREATE on the DB to the role. Idempotent
   // (postgres GRANT is set-style, not stack-style).
   pgQuery({
     sql: `GRANT CONNECT, CREATE ON DATABASE ${quoteIdent(databaseName)} TO ${quoteIdent(roleName)}`,
     port,
   });
 
-  // Step 5 — UPSERT the pgserve_meta row. ON CONFLICT keeps replays
+  // Step 4 — UPSERT the pgserve_meta row. ON CONFLICT keeps replays
   // safe (a partial earlier run can be resumed without operator
   // intervention).
   pgQuery({
@@ -384,5 +393,4 @@ export async function runProvision(argv = []) {
 export const __testInternals = Object.freeze({
   parseFlags,
   resolvePort,
-  bigintLiteral,
 });

@@ -17,7 +17,7 @@
 import { test, expect, describe } from 'bun:test';
 import { __testInternals, runProvision } from '../../src/commands/provision.js';
 
-const { parseFlags, resolvePort, bigintLiteral } = __testInternals;
+const { parseFlags, resolvePort } = __testInternals;
 
 describe('parseFlags', () => {
   test('positional fingerprint captured', () => {
@@ -67,20 +67,6 @@ describe('resolvePort', () => {
     expect(Number.isInteger(port)).toBe(true);
     expect(port).toBeGreaterThan(0);
     expect(port).toBeLessThanOrEqual(65535);
-  });
-});
-
-describe('bigintLiteral', () => {
-  test('appends ::bigint cast for psql interpolation', () => {
-    expect(bigintLiteral(123n)).toBe('123::bigint');
-    expect(bigintLiteral(-1n)).toBe('-1::bigint');
-  });
-
-  test('handles full int64 range', () => {
-    const max = (1n << 63n) - 1n;
-    const min = -(1n << 63n);
-    expect(bigintLiteral(max)).toContain('::bigint');
-    expect(bigintLiteral(min)).toContain('::bigint');
   });
 });
 
