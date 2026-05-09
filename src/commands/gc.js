@@ -228,7 +228,7 @@ export async function runGc(argv = []) {
     if (!opts.apply) {
       writeGcAudit({
         action: 'skip',
-        dryRun: 'true',
+        dryRun: true,
         fingerprint: o.row.fingerprint,
         database: o.row.database_name,
         role: o.row.role_name,

@@ -49,16 +49,38 @@ export function pgQuery({
   port = DEFAULT_PORT,
   host = DEFAULT_HOST,
   user = DEFAULT_USER,
-  password = process.env.PGPASSWORD || 'postgres',
+  password = process.env.PGPASSWORD,
   captureStdout = false,
 } = {}) {
   if (typeof sql !== 'string' || sql.length === 0) {
     throw new TypeError('pgQuery: sql must be a non-empty string');
   }
-  const env = { ...process.env, PGPASSWORD: password };
+  // PGPASSWORD is only set when the caller (or environment) provides
+  // one. Hardcoding 'postgres' as a fallback would defeat .pgpass /
+  // peer auth on hosts that use them. (Bot review HIGH on PR #91.)
+  const env = password !== undefined
+    ? { ...process.env, PGPASSWORD: password }
+    : { ...process.env };
   const result = spawnSync(
     'psql',
-    ['-h', host, '-p', String(port), '-U', user, '-d', db, '-At', '-f', '-'],
+    [
+      '-h', host,
+      '-p', String(port),
+      '-U', user,
+      '-d', db,
+      // -At: tuples-only + unaligned. -F: explicit tab field separator
+      // (psql defaults to '|' for unaligned mode; selectMetaRows /
+      // selectActiveDbs / etc. split rows on '\t' so the separator
+      // MUST be '\t'). Bot review CRITICAL on both PR #91 and PR #92.
+      '-At', '-F', '\t',
+      // ON_ERROR_STOP=1: in script mode (-f), psql by default
+      // continues past statement errors and STILL exits 0. Without
+      // this, a failed CREATE DATABASE / GRANT inside the provision
+      // sequence could be invisible to runProvision. Bot review
+      // CRITICAL P1 on PR #92.
+      '-v', 'ON_ERROR_STOP=1',
+      '-f', '-',
+    ],
     { env, input: sql, stdio: ['pipe', 'pipe', 'pipe'] },
   );
   if (result.status !== 0) {
