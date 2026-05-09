@@ -67,7 +67,7 @@ Two outcomes, both persistent (no ephemeral, no TTL). Persistence is universal; 
 
 ### 2.4 Trust list (cosign tier)
 
-- **Hardcoded automagik-dev**: compiled into `pgserve` binary. Identities accepted by default: `https://github.com/automagik-dev/genie/.github/workflows/release.yml@refs/tags/v*`, `https://github.com/automagik/omni/.github/workflows/release.yml@refs/tags/v*`, `https://github.com/automagik/pgserve/.github/workflows/release.yml@refs/tags/v*`. Updates to this list propagate via `pgserve update`.
+- **Hardcoded automagik-dev**: compiled into `pgserve` binary. Identities accepted by default: `https://github.com/automagik-dev/genie/.github/workflows/release.yml@refs/tags/v*`, `https://github.com/automagik-dev/omni/.github/workflows/release.yml@refs/tags/v*`, `https://github.com/namastexlabs/pgserve/.github/workflows/release.yml@refs/tags/v*`. Updates to this list propagate via `pgserve update`.
 - **User self-sign**: `pgserve trust add --identity <issuer> --key <pubkey>` writes to `~/.pgserve/trust/identities.json`. HTTPS-self-signed analog: works locally for the operator, doesn't grant trust globally.
 - **Verification cadence**: HMAC-signed cache token at `$XDG_STATE_HOME/pgserve/verified/<fingerprint>.token` (web-session-style). Sliding expiry (1h idle, 7d max). Re-verify on binary mtime change. Steady-state connections pay 0ms; updates pay re-verify.
 
