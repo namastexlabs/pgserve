@@ -51,6 +51,10 @@ const __installSubcommands = new Set([
   // entirely in node (admin.json + supervisor probes + socket reachability)
   // and must skip the bun probe so it works on any installed binary.
   'doctor',
+  // pgserve singleton (v2.4) — wish Group 3. `trust` manages the
+  // user-extensible cosign trust store at ~/.pgserve/trust/identities.json.
+  // Pure node, must skip bun probe.
+  'trust',
 ]);
 if (__subcommand && __installSubcommands.has(__subcommand)) {
   const cli = require(path.join(__dirname, '..', 'src', 'cli-install.cjs'));

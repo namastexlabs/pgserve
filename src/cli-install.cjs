@@ -1125,6 +1125,14 @@ function dispatch(subcommand, args, ctx) {
       // as `uninstall` so the ESM module isn't eagerly loaded.
       return import('./commands/verify.js').then((mod) => mod.runVerify(args));
     }
+    case 'trust':
+      // pgserve singleton (v2.4) — wish Group 3, second read-only verb.
+      // `pgserve trust add/list/remove` manages the user-extensible cosign
+      // trust store at ~/.pgserve/trust/identities.json. Pure node.
+      // The wrapper handles the numeric-exit-code case; matches the
+      // verify dispatch style so the wrapper, not the verb, owns
+      // process.exit.
+      return import('./commands/trust.js').then((mod) => mod.runTrust(args));
     default:
       throw new Error(`pgserve: dispatch called with unknown subcommand "${subcommand}"`);
   }
