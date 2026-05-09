@@ -1049,8 +1049,23 @@ export class PostgresManager extends EventEmitter {
         if (!expected) {
           this.socketDir = null;
           this.databaseDir = null;
+          // B5 (v2.6.3): include the captured postgres stderr/stdout tail
+          // in the WARN so operators tailing pm2 logs see the actual cause
+          // (e.g. "FATAL: could not bind IPv4 address ... Address already
+          // in use", "FATAL: data directory ... has wrong ownership", etc.)
+          // instead of just "subprocess exited unexpectedly". The tail is
+          // capped at 4 KB so a runaway log spam can't bloat the WARN
+          // payload; the bottom of startupOutput is where the fatal
+          // diagnostic typically lands. Empty string when postgres exited
+          // before producing any output (rare; preserved as 'no postgres
+          // output captured' so the field stays present in structured
+          // logs).
+          const STDERR_TAIL_BUDGET = 4096;
+          const tail = startupOutput.length > STDERR_TAIL_BUDGET
+            ? startupOutput.slice(-STDERR_TAIL_BUDGET)
+            : startupOutput;
           this.logger?.warn(
-            { code },
+            { code, postgresStderrTail: tail.trim() || 'no postgres output captured' },
             'PostgreSQL subprocess exited unexpectedly — socketDir/databaseDir reset'
           );
         }
