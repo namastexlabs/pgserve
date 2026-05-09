@@ -1,24 +1,18 @@
 /**
- * psql shellout helpers for `pgserve gc`.
+ * psql query helpers for `pgserve gc`.
  *
  * pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 3
  * (the `pgserve gc` orchestration layer).
  *
- * Why psql shellout vs. node-postgres:
- *   - matches the existing pattern in
- *     `src/upgrade/steps/cosign-meta-migration.js#pgQuery` (PR #79).
- *   - avoids the runtime cost of loading the `pg` driver in a CLI verb
- *     that runs once and exits.
- *   - no shell expansion: SQL goes through stdin, not a template string,
- *     so postgres-style `$$` blocks survive intact.
+ * This module composes the shared psql primitive (`pgQuery` /
+ * `quoteIdent` / `quoteLiteral` from `src/lib/pg-query.js`) into the
+ * specific SELECT / DROP queries gc runs against `pgserve_meta` +
+ * `pg_database` + `pg_stat_activity`.
  *
- * All queries connect over TCP to 127.0.0.1:<port> as `postgres`. The
- * port comes from `~/.autopg/admin.json` (canonical 5432) and falls
- * back to the postgres default. The connection-discovery layer keeps
- * `<socketDir>/runtime.json` available too — gc could prefer a Unix
- * socket on the supervised host — but the upgrade pipeline already
- * uses TCP loopback, and matching its surface keeps test fixtures
- * single-form.
+ * Earlier shape (PR #91) inlined its own `pgQuery` because the shared
+ * lib didn't exist on main yet — PR #92 added `src/lib/pg-query.js`,
+ * and the `autopg-distribution-cutover-finalize` G2 dedup (this file's
+ * commit) deletes the inline copy and imports the shared one.
  *
  * DROP DATABASE caveat: postgres refuses `DROP DATABASE <db>` when
  * sessions are connected. We `pg_terminate_backend()` everything
@@ -27,72 +21,18 @@
  * exposes the primitives.
  */
 
-import { spawnSync } from 'node:child_process';
-
+import { pgQuery, quoteIdent, quoteLiteral, PG_QUERY_DEFAULTS } from '../lib/pg-query.js';
 import { PGSERVE_META_TABLE } from '../schema/pgserve-meta.js';
 
-const DEFAULT_PORT = 5432;
-const DEFAULT_HOST = '127.0.0.1';
-const DEFAULT_USER = 'postgres';
-const DEFAULT_DB = 'postgres';
+const DEFAULT_PORT = PG_QUERY_DEFAULTS.port;
+const DEFAULT_DB = PG_QUERY_DEFAULTS.db;
 
 const SYSTEM_DBS = new Set(['template0', 'template1', 'postgres']);
 
-/**
- * Run a single SQL statement via psql, fed through stdin (no shell
- * expansion). Throws on non-zero exit. Returns stdout (trimmed when
- * `captureStdout`).
- */
-export function pgQuery({
-  sql,
-  db = DEFAULT_DB,
-  port = DEFAULT_PORT,
-  host = DEFAULT_HOST,
-  user = DEFAULT_USER,
-  password = process.env.PGPASSWORD,
-  captureStdout = false,
-} = {}) {
-  if (typeof sql !== 'string' || sql.length === 0) {
-    throw new TypeError('pgQuery: sql must be a non-empty string');
-  }
-  // PGPASSWORD is only set when the caller (or environment) provides
-  // one. Hardcoding 'postgres' as a fallback would defeat .pgpass /
-  // peer auth on hosts that use them. (Bot review HIGH on PR #91.)
-  const env = password !== undefined
-    ? { ...process.env, PGPASSWORD: password }
-    : { ...process.env };
-  const result = spawnSync(
-    'psql',
-    [
-      '-h', host,
-      '-p', String(port),
-      '-U', user,
-      '-d', db,
-      // -At: tuples-only + unaligned. -F: explicit tab field separator
-      // (psql defaults to '|' for unaligned mode; selectMetaRows /
-      // selectActiveDbs / etc. split rows on '\t' so the separator
-      // MUST be '\t'). Bot review CRITICAL on both PR #91 and PR #92.
-      '-At', '-F', '\t',
-      // ON_ERROR_STOP=1: in script mode (-f), psql by default
-      // continues past statement errors and STILL exits 0. Without
-      // this, a failed CREATE DATABASE / GRANT inside the provision
-      // sequence could be invisible to runProvision. Bot review
-      // CRITICAL P1 on PR #92.
-      '-v', 'ON_ERROR_STOP=1',
-      '-f', '-',
-    ],
-    { env, input: sql, stdio: ['pipe', 'pipe', 'pipe'] },
-  );
-  if (result.status !== 0) {
-    const stderr = (result.stderr || Buffer.from('')).toString();
-    const err = new Error(`psql exited ${result.status}: ${stderr.trim()}`);
-    err.status = result.status;
-    err.stderr = stderr;
-    throw err;
-  }
-  const stdout = (result.stdout || Buffer.from('')).toString();
-  return captureStdout ? stdout.trim() : stdout;
-}
+// Re-export the shared primitive so existing callers that imported
+// `pgQuery` from `src/gc/pg-queries.js` keep working without churn.
+// Future PRs can switch them to import directly from `src/lib/pg-query.js`.
+export { pgQuery };
 
 /**
  * SELECT every row from `pgserve_meta`. Returns an array of plain
@@ -248,27 +188,9 @@ export function deleteMetaRow({ fingerprint, port = DEFAULT_PORT } = {}) {
   });
 }
 
-// ─── identifier / literal quoting ─────────────────────────────────────
-//
-// We do NOT use psql's :'name' substitution because that requires
-// passing args separately, and `pgQuery` uses stdin. The identifiers
-// we interpolate are constrained:
-//   - database_name / role_name come from src/provision/db-naming.js
-//     which produces /[a-z0-9_]+/ slugs ≤63 chars.
-//   - fingerprint is a sha256-hex from src/provision/fingerprint.js
-//     OR an operator-pinned literal that passed validateEntry.
-// Even so, we quote defensively — an admin who manually inserted a
-// row with a quote in it shouldn't crash gc.
-
-function quoteIdent(name) {
-  // Postgres identifier quoting: wrap in "..." and escape internal ".
-  return `"${String(name).replace(/"/g, '""')}"`;
-}
-
-function quoteLiteral(value) {
-  // Postgres literal quoting: wrap in '...' and escape internal '.
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
+// quoteIdent + quoteLiteral are imported from `src/lib/pg-query.js` —
+// the dedup keeps gc and provision quoting identical (same primitive,
+// same defensive escapes).
 
 export const __testInternals = Object.freeze({
   quoteIdent,
