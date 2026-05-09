@@ -282,6 +282,8 @@ nohup genie install &  # close shell; bridge stays alive
 
 **cross-wish depends-on:** `pgserve#autopg-distribution-cutover` Group 11 (autopg install Tier A — provides the binary subcommand this wish's `genie install` shells out to before registering `genie-serve`). Also Group 20 for the Tier-B-refusal acceptance criterion (line 272 — must read `admin.json.supervisor` set by Group 20's MIGRATE flow).
 
+**Implementation history (2026-05-09):** Substantially shipped via `automagik-dev/genie` repo (the wish's PRs #55 + #57). `src/genie-commands/install.ts` self-documents as "Wave 2 of the canonical-pgserve-pm2-supervision wish (PR pgserve#55, Wave 1 = pgserve#57)" and registers the pm2 service as **`Genie`** (capital G), renamed from `genie-serve` at v4.260507.2 — `LEGACY_PM2_PROCESS_NAMES` set + `removeLegacyPm2Entries` drives the in-place migration of operators on the older name. Doctor checks landed under different names than the wish prescribed: `pgserve binary` + `pgserve under pm2` (vs wish-prescribed `pm2-supervision` + `canonical-autopg`); functional intent matches but the literal IDs differ. Decision 3 (`src/lib/pm2-args.js` shared lib duplicated per repo) is **NOT yet landed in genie**: pgserve's `src/lib/pm2-args.js` is canonical but genie has no copy — the constants are likely inlined in genie's install.ts. Tracked as a follow-up gap. Audit trail: `ENGINEER-AUDIT-CANONICAL-G2.md` (7 defects: 1 CRITICAL handoff-drift, 3 HIGH naming + missing pm2-args, 2 MEDIUM unverified deliverables 3/5/6, 1 LOW doc staleness).
+
 ---
 
 ### Group 3: omni install reconfig + migration (Wave 3)
@@ -313,6 +315,8 @@ omni doctor | grep -q "canonical-connection-string: ok"
 **depends-on:** Group 1
 
 **cross-wish depends-on:** `pgserve#autopg-distribution-cutover` Group 11 (autopg install Tier A — `omni install` shells out to it before registering `omni-api` + `omni-nats`). Also Group 20 for the Tier-B-refusal acceptance criterion (line 302).
+
+**Implementation history (2026-05-09):** Partially shipped via `automagik-dev/omni` repo. `packages/cli/src/lib/canonical-pgserve.ts` exposes `resolveCanonicalPgservePreference` (canonical helper), imported by `packages/cli/src/commands/install.ts`. The migration helper file (deliverable 2) is **not present under the wish-prescribed name** `migrate-from-embedded-pgserve.ts` — actual migration logic location/name is TBD pending deeper audit (may be in `canonical-pgserve.ts` under a different export, or pending implementation). The `canonical-connection-string` doctor check (deliverable 3 + acceptance criterion 4) was **not found by literal grep** of `packages/cli/src/commands/doctor.ts` — either renamed during implementation or still pending. Acceptance criterion 2 ("no data loss") has no defined fixture or comparison script and needs a `tests/integration/omni-migrate-from-embedded.sh` baseline. Audit trail: `ENGINEER-AUDIT-CANONICAL-G3.md` (8 defects: 1 CRITICAL handoff-drift, 3 HIGH file-rename + missing-check + no-fixture, 3 MEDIUM unverified + naming + duplication, 1 LOW doc staleness).
 
 ---
 
