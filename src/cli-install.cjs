@@ -24,8 +24,81 @@
 const { spawnSync, execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+
+// pgserve v2.6.1 — `pgserve install --help` should print usage + exit 0,
+// not run the install (B2 HIGH from QA-RECIPE-B2.md). Single source of
+// truth for the help text so the autopg + pgserve bin invocations show
+// the same surface (Decision #7 of finalize wish).
+const INSTALL_USAGE = `Usage:
+  pgserve install [options]
+  autopg install [options]
+
+Register pgserve under pm2 (Tier A supervisor) with hardened defaults.
+
+Options:
+  --port <N>            TCP port for postgres (default: 5432)
+  --data <path>         Data directory (default: ~/.autopg/data)
+  --socket-dir <path>   Unix socket directory (default: $XDG_RUNTIME_DIR/pgserve)
+  --ui-port <N>         Port for the autopg UI process (default: 8433)
+  --ui-host <host>      Bind host for the UI (default: 127.0.0.1)
+  --no-ui               Skip the autopg-ui pm2 process (headless / CI)
+  --no-pm2              Skip pm2 registration entirely (Tier B / external supervisor)
+  --help, -h            Show this help and exit
+
+Idempotent: re-running with the same args is a no-op when the existing
+admin.json + pm2 state already matches.
+
+See \`pgserve --help\` for the full verb list.
+`;
+
+function printInstallUsage(stream = process.stdout) {
+  stream.write(INSTALL_USAGE);
+}
+
+// pgserve v2.6.1 — `pgserve install` on a host where the chosen port is
+// already in use must fail BEFORE pm2 / admin.json / data-dir side
+// effects (B3 HIGH from QA-RECIPE-B3.md). Pre-flight bind-test on the
+// canonical loopback the postmaster will use; on EADDRINUSE we fail
+// fast with an operator-readable hint pointing at `--port`.
+//
+// Synchronous wrapper around net.createServer().listen() — uses
+// child_process.spawnSync via a self-bind-then-close so the install
+// flow stays synchronous. Returns null on success; throws an Error
+// with `code='EADDRINUSE'` on collision.
+async function assertPortAvailable(port, host = '127.0.0.1') {
+  // Test-only escape hatch. Production never sets this env var. Used by
+  // tests that assert on `port: 5432` literal output where the host
+  // running the test happens to have 5432 bound (dev workstations
+  // running a real pgserve). The port-pre-flight contract itself is
+  // covered end-to-end by the B3-collision test which intentionally
+  // does NOT set this env var so the pre-flight fires.
+  if (process.env.PGSERVE_TEST_SKIP_PORT_PREFLIGHT === '1') return null;
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        const e = new Error(
+          `pgserve install: port ${port} is already in use on ${host} (EADDRINUSE).\n` +
+          `Specify a different port with \`pgserve install --port <free>\`,\n` +
+          `or stop the process bound to ${port} first and retry.`,
+        );
+        e.code = 'EADDRINUSE';
+        reject(e);
+        return;
+      }
+      // Non-EADDRINUSE errors (e.g. EACCES on privileged ports) — fail
+      // closed with the underlying message; no install side effects yet.
+      reject(err);
+    });
+    server.once('listening', () => {
+      server.close(() => resolve(null));
+    });
+    server.listen(port, host);
+  });
+}
 
 // pgserve singleton (v2.4): the cohort-shared admin-json + socket-dir
 // helpers live in `src/lib/*.js` as ESM modules (project convention: new
@@ -693,6 +766,13 @@ function cmdAuthDispatch(args) {
  * wrapper before this module is required (avoids re-resolving here).
  */
 async function cmdInstall(args, ctx) {
+  // B2 (v2.6.1): `--help` / `-h` MUST short-circuit before any side
+  // effects (no pm2 spawn, no admin.json write, no data-dir create).
+  if (args.includes('--help') || args.includes('-h')) {
+    printInstallUsage();
+    process.exit(0);
+  }
+
   const { adminJson, socketDirMod, blockedVersions } = await loadCohortModules();
 
   // pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 5.
@@ -732,6 +812,22 @@ async function cmdInstall(args, ctx) {
   }
 
   const port = parsePort(args) ?? readConfig()?.port ?? DEFAULT_PORT;
+
+  // B3 (v2.6.1): pre-flight bind-test the chosen port BEFORE creating
+  // pm2 entries / admin.json / data dir. Without this, an operator on
+  // a host where 5432 is already occupied gets pm2 reporting `online`
+  // while the postmaster crashes silently — divergence between
+  // supervisor state and data-plane state. Fail fast with a clear hint.
+  try {
+    await assertPortAvailable(port);
+  } catch (err) {
+    if (err.code === 'EADDRINUSE') {
+      process.stderr.write(`${err.message}\n`);
+      process.exit(1);
+    }
+    throw err;
+  }
+
   const dataDir = parseDataDir(args) ?? readConfig()?.dataDir ?? getDataDir();
 
   // Set up the canonical socket directory before pm2 launches the
@@ -1153,6 +1249,11 @@ function dispatch(subcommand, args, ctx) {
 module.exports = {
   // Public API for the wrapper.
   dispatch,
+  // B2 + B3: surfaced so unit tests can drive helpers without the
+  // full install side-effect chain.
+  printInstallUsage,
+  assertPortAvailable,
+  INSTALL_USAGE,
   // Auth surface used by cli-ui.cjs.
   verifyAdminPassword,
   getAdminFilePath,

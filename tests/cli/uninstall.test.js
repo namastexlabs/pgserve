@@ -105,6 +105,11 @@ function runCli(args, env = {}) {
       ...process.env,
       AUTOPG_CONFIG_DIR: tmpHome,
       PATH: `${stubBin.dir}:${process.env.PATH}`,
+      // Skip the B3 port-preflight (v2.6.1) so tests that don't pin a
+      // free `--port` don't race host-level services on 5432. Tests
+      // that exercise the B3 contract live in cli-install.test.js and
+      // unset this explicitly.
+      PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '1',
       ...env,
     },
   });
