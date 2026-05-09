@@ -392,6 +392,63 @@ describe('pgserve install port pre-flight (B3 v2.6.1)', () => {
     }
   });
 
+  test('install --port <occupied> exit code 1 propagates under bash pipefail (CV103-2 R6 regression)', async () => {
+    // CV103-2 (v2.6.2): qa's 9-variant matrix on v2.6.1 isolated a
+    // stdio-pipe race in the EADDRINUSE catch handler. Synchronous
+    // `process.exit(1)` raced the libuv stderr flush under
+    // stdout-piped / stderr-inherited shapes (R6: `pgserve install | cat`),
+    // causing Node to terminate with exit code 0 instead of 1.
+    //
+    // Regression assertion: under bash's `set -o pipefail`, the
+    // pgserve pipeline element's exit code propagates as the overall
+    // pipeline status. With the v2.6.2 fix (drop process.exit(1),
+    // keep process.exitCode + throw), pgserve exits 1 and pipefail
+    // surfaces it.
+    const occupier = net.createServer();
+    await new Promise((resolve) => occupier.listen(0, '127.0.0.1', resolve));
+    const occupiedPort = occupier.address().port;
+    try {
+      const cmd = `set -o pipefail; "${process.execPath}" "${BIN}" install --port ${occupiedPort} | cat`;
+      const result = spawnSync('/bin/bash', ['-c', cmd], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '0',
+          PGSERVE_CONFIG_DIR: tmpHome,
+          PATH: `${stubBin.dir}:${process.env.PATH}`,
+        },
+      });
+      expect(result.status).toBe(1);
+    } finally {
+      await new Promise((resolve) => occupier.close(resolve));
+    }
+  });
+
+  test('install --port <occupied> exit code 1 visible via PIPESTATUS[0] (CV103-2 R6 regression)', async () => {
+    // Companion to the pipefail test above. Bash's PIPESTATUS array
+    // exposes each pipeline element's raw exit code regardless of
+    // pipefail. Asserting PIPESTATUS[0] == 1 tests the pgserve-side
+    // exit code directly, independent of the shell options.
+    const occupier = net.createServer();
+    await new Promise((resolve) => occupier.listen(0, '127.0.0.1', resolve));
+    const occupiedPort = occupier.address().port;
+    try {
+      const cmd = `"${process.execPath}" "${BIN}" install --port ${occupiedPort} | cat; echo "PIPESTATUS=\${PIPESTATUS[0]}"`;
+      const result = spawnSync('/bin/bash', ['-c', cmd], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '0',
+          PGSERVE_CONFIG_DIR: tmpHome,
+          PATH: `${stubBin.dir}:${process.env.PATH}`,
+        },
+      });
+      expect(result.stdout).toContain('PIPESTATUS=1');
+    } finally {
+      await new Promise((resolve) => occupier.close(resolve));
+    }
+  });
+
   test('install with NO --port flag refuses when default 5432 is already bound (B3 T1 contract)', async () => {
     // This mirrors QA-RECIPE-B3 T1: occupy 5432, then `pgserve install` with
     // no --port should refuse via the pre-flight, not exit 0. The default-

@@ -88,8 +88,24 @@ if (__subcommand && __installSubcommands.has(__subcommand)) {
     result.then(
       (code) => process.exit(typeof code === 'number' ? code : 0),
       (err) => {
-        process.stderr.write(`pgserve: ${err?.message ?? err}\n`);
-        process.exit(1);
+        // CV103-2 (v2.6.2): the cli-install.cjs EADDRINUSE catch handler
+        // already wrote the message to stderr AND set process.exitCode = 1
+        // before throwing. If we ALSO write here we'd double-print, AND
+        // if we call process.exit(1) we re-introduce the stdio-pipe race
+        // the catch handler avoided by switching to exitCode + throw.
+        //
+        // Suppress the duplicate stderr write for already-handled error
+        // codes. Don't call process.exit() — Node will exit naturally
+        // once the event loop drains, using process.exitCode (which the
+        // throwing handler already set) so stderr flushes cleanly even
+        // under the piped-stdout / inherited-stderr shape that exposed
+        // the race (qa repro R6: `pgserve install | cat`).
+        if (err && err.code !== 'EADDRINUSE') {
+          process.stderr.write(`pgserve: ${err?.message ?? err}\n`);
+        }
+        if (process.exitCode === undefined || process.exitCode === 0) {
+          process.exitCode = 1;
+        }
       },
     );
     return;
