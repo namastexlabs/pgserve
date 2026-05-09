@@ -87,14 +87,26 @@ export function writeGcAudit(event, opts = {}) {
   const dir = getAuditDir(opts);
   const file = getAuditFilePath(opts);
   fs.mkdirSync(dir, { recursive: true, mode: AUDIT_DIR_MODE });
+  // mkdirSync's `mode` only applies on creation. If the audit dir was
+  // previously created with a looser umask (older gc versions, manual
+  // mkdir -p, restored backup) it stays at whatever mode it had —
+  // tighten it to 0700 to match the file-side belt-and-suspenders.
+  try {
+    fs.chmodSync(dir, AUDIT_DIR_MODE);
+  } catch {
+    /* best-effort on platforms that ignore chmod */
+  }
+  // ts must be the canonical ISO 8601 string unless the caller supplied
+  // a non-empty string (correlation-id use case). The spread MUST come
+  // first so a stray `ts: undefined` / `ts: 0` / `ts: new Date()` from
+  // the caller cannot silently overwrite our generated value — JS
+  // object-spread precedence means later keys win. (Earlier shape had
+  // this inverted with a wrong comment claiming the spread "doesn't
+  // overwrite" — it does.)
   const enriched = {
-    ts: typeof event.ts === 'string' && event.ts ? event.ts : new Date().toISOString(),
     ...event,
+    ts: typeof event.ts === 'string' && event.ts ? event.ts : new Date().toISOString(),
   };
-  // Make sure ts (above) wins even when caller supplied one — we want
-  // the canonical ISO string. The spread doesn't overwrite it because
-  // we put it first; if the caller supplied a non-ISO ts we keep that
-  // verbatim (operators sometimes inject correlation ids in ts).
   const line = JSON.stringify(enriched);
   fs.appendFileSync(file, line + '\n', { mode: AUDIT_FILE_MODE });
   // appendFileSync's `mode` only applies on file creation; chmod the

@@ -43,6 +43,17 @@ describe('paths', () => {
 });
 
 describe('writeGcAudit', () => {
+  test('tightens dir mode to 0700 even when the dir already exists with a looser mode (PR #90 review MEDIUM)', () => {
+    // Pre-create the dir with a loose umask, simulating an older gc
+    // version or a manual `mkdir -p`.
+    const dir = path.join(homeDir, '.pgserve', 'audit');
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+    fs.chmodSync(dir, 0o755);
+    expect((fs.statSync(dir).mode & 0o777)).toBe(0o755);
+    writeGcAudit({ action: 'start' }, { homeDir });
+    expect((fs.statSync(dir).mode & 0o777)).toBe(AUDIT_DIR_MODE);
+  });
+
   test('appends one JSON-line per call and creates the dir 0700 / file 0600', () => {
     writeGcAudit({ action: 'drop', fingerprint: 'fp1', database: 'db1', reason: 'missing_db' }, { homeDir });
     writeGcAudit({ action: 'skip', fingerprint: 'fp2', database: 'db2', reason: 'active' }, { homeDir });
@@ -71,6 +82,21 @@ describe('writeGcAudit', () => {
     writeGcAudit({ ts: 'corr-12345', action: 'drop', database: 'db1' }, { homeDir });
     const events = readGcAuditDay({ homeDir });
     expect(events[0].ts).toBe('corr-12345');
+  });
+
+  test('non-string ts (undefined / number / Date) does NOT silently overwrite the generated ISO ts (PR #90 review HIGH)', () => {
+    writeGcAudit({ action: 'drop', database: 'db_undef', ts: undefined }, { homeDir });
+    writeGcAudit({ action: 'drop', database: 'db_num', ts: 12345 }, { homeDir });
+    writeGcAudit({ action: 'drop', database: 'db_date', ts: new Date('2026-05-08T01:02:03.000Z') }, { homeDir });
+    const events = readGcAuditDay({ homeDir });
+    // Each event must end up with a string ts that parses as an ISO date.
+    for (const e of events) {
+      expect(typeof e.ts).toBe('string');
+      expect(e.ts.length).toBeGreaterThan(0);
+      // Must parse as a valid date — defends against the previous bug
+      // where a number (12345) made it through and broke jq filters.
+      expect(Number.isFinite(Date.parse(e.ts))).toBe(true);
+    }
   });
 
   test('rejects an event without an action', () => {
