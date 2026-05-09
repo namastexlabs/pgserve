@@ -124,7 +124,7 @@ EOF
 
   # CREATE DATABASE postgres if pre-existing initdb's default differs;
   # provision's `db: 'postgres'` baseline assumes it's there.
-  psql -h "$SOCKET_DIR" -p "$PORT" -U "$USER" -d postgres -c "SELECT 1" >/dev/null \
+  psql -h "$SOCKET_DIR" -p "$PORT" -U postgres -d postgres -c "SELECT 1" >/dev/null \
     || { echo "psql connect failed" >&2; exit 2; }
   ok "postgres up on port ${PORT} (data: ${PG_DATA})"
 }
@@ -159,7 +159,7 @@ run_provision_twice() {
   ok "second provision succeeded (idempotent)"
 
   local meta_count
-  meta_count="$(psql -h "$SOCKET_DIR" -p "$PORT" -U "$USER" -d postgres -At -c \
+  meta_count="$(psql -h "$SOCKET_DIR" -p "$PORT" -U postgres -d postgres -At -c \
     'SELECT COUNT(*) FROM public.pgserve_meta' 2>/dev/null || echo 0)"
   if [[ "$meta_count" != "1" ]]; then
     bad "expected exactly 1 pgserve_meta row after idempotent re-provision, got ${meta_count}"
@@ -179,7 +179,7 @@ run_gc_dry_run_clean() {
     note "(non-fatal: summary key may differ; verifying via meta-row count instead)"
   fi
   local db_count
-  db_count="$(psql -h "$SOCKET_DIR" -p "$PORT" -U "$USER" -d postgres -At -c \
+  db_count="$(psql -h "$SOCKET_DIR" -p "$PORT" -U postgres -d postgres -At -c \
     "SELECT COUNT(*) FROM pg_database WHERE datname LIKE 'pgserve_%'" 2>/dev/null || echo 0)"
   if [[ "$db_count" != "1" ]]; then
     bad "gc --dry-run should not have dropped anything; expected 1 pgserve_* DB, got ${db_count}"
@@ -200,9 +200,9 @@ run_gc_apply() {
     || { bad "gc --apply failed (see gc-apply.err)"; cat "${WORK_DIR}/gc-apply.err" >&2; return 1; }
 
   local db_count meta_count
-  db_count="$(psql -h "$SOCKET_DIR" -p "$PORT" -U "$USER" -d postgres -At -c \
+  db_count="$(psql -h "$SOCKET_DIR" -p "$PORT" -U postgres -d postgres -At -c \
     "SELECT COUNT(*) FROM pg_database WHERE datname LIKE 'pgserve_%'" 2>/dev/null || echo 0)"
-  meta_count="$(psql -h "$SOCKET_DIR" -p "$PORT" -U "$USER" -d postgres -At -c \
+  meta_count="$(psql -h "$SOCKET_DIR" -p "$PORT" -U postgres -d postgres -At -c \
     'SELECT COUNT(*) FROM public.pgserve_meta' 2>/dev/null || echo 0)"
 
   if [[ "$db_count" != "0" ]]; then
