@@ -45,6 +45,8 @@ import {
   writeCacheToken,
 } from '../cosign/cache-token.js';
 import { sha256File, verifyBinary } from '../cosign/verify-binary.js';
+import { loadLockedRoots as loadLockedRootsImpl } from '../cosign/locked-roots.js';
+import { readAdminJson } from '../lib/admin-json.js';
 
 const EXIT_OK = 0;
 const EXIT_VERIFY_FAILED = 2;
@@ -110,6 +112,8 @@ function parseArgs(args) {
     cosignBin: null,
     allowFetch: false,
     noCache: false,
+    slug: null,
+    port: null,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -119,6 +123,15 @@ function parseArgs(args) {
     else if (a === '--no-cache') opts.noCache = true;
     else if (a === '--bundle') opts.bundlePath = args[++i];
     else if (a === '--cosign-bin') opts.cosignBin = args[++i];
+    else if (a === '--slug') opts.slug = args[++i];
+    else if (a === '--port' || a === '-p') {
+      const v = Number(args[++i]);
+      if (!Number.isInteger(v) || v <= 0 || v > 65535) {
+        process.stderr.write('pgserve verify: --port requires an integer in [1, 65535]\n');
+        return { exit: EXIT_INVOCATION };
+      }
+      opts.port = v;
+    }
     else if (a === '--help' || a === '-h') {
       printHelp(process.stdout);
       return { exit: EXIT_OK };
@@ -134,6 +147,10 @@ function parseArgs(args) {
   }
   if (!opts.binaryPath) {
     printHelp(process.stderr);
+    return { exit: EXIT_INVOCATION };
+  }
+  if (opts.slug !== null && (typeof opts.slug !== 'string' || opts.slug.trim().length === 0)) {
+    process.stderr.write('pgserve verify: --slug requires a non-empty value\n');
     return { exit: EXIT_INVOCATION };
   }
   return { opts };
@@ -155,12 +172,19 @@ Options:
   --cosign-bin <path>    Override the cosign executable
   --allow-fetch          Allow downloading cosign if missing
   --no-cache             Never read or write the verified-cache token
+  --slug <slug>          Verify against the locked_roots snapshot for
+                         the named consumer slug from public.autopg_meta
+                         (frozen at \`pgserve create-app\` time). When
+                         omitted, the live TRUSTED_IDENTITIES list is used.
+  --port, -p <N>         Override the postgres port for --slug lookups
+                         (default: read ~/.autopg/admin.json or 5432)
   --help, -h             Show this help
 
 Exit codes:
   0  Verified (fresh or cache hit)
-  2  Verification failed
-  3  Invocation problem (missing binary/bundle/cosign/pretrusted key)
+  2  Verification failed (binary's identity not in trust list / locked roots)
+  3  Invocation problem (missing binary/bundle/cosign/pretrusted key,
+     unknown --slug, autopg_meta not bootstrapped)
 `);
 }
 
@@ -183,11 +207,30 @@ function emit({ json }, payload) {
   }
 }
 
+function resolveVerifyPort(opts) {
+  if (typeof opts.port === 'number') return opts.port;
+  try {
+    const admin = readAdminJson();
+    if (admin && Number.isInteger(admin.port) && admin.port > 0) return admin.port;
+  } catch {
+    /* admin.json absent — fall through */
+  }
+  return 5432;
+}
+
 /**
  * Run the verify command. `argv` is the bare argument list AFTER the
- * `verify` token. Returns an integer exit code.
+ * `verify` token.
+ *
+ * @param {string[]} argv
+ * @param {object} [deps]                       dependency injection seam
+ * @param {Function} [deps.loadLockedRoots]     test stub for the
+ *                                              autopg_meta loader; defaults
+ *                                              to the real psql shellout.
+ * @returns {number} exit code
  */
-export function runVerify(argv) {
+export function runVerify(argv, deps = {}) {
+  const loadLockedRoots = deps.loadLockedRoots || loadLockedRootsImpl;
   const parsed = parseArgs(argv);
   if (parsed.exit !== undefined) return parsed.exit;
   const opts = parsed.opts;
@@ -296,10 +339,55 @@ export function runVerify(argv) {
   }
 
   // ── Cosign path ──────────────────────────────────────────────────────
+  // --slug: load the frozen locked_roots from autopg_meta and pass them
+  // through as options.trustList so cosign verification runs against the
+  // create-app-time snapshot, not the live TRUSTED_IDENTITIES (BRIEF v5
+  // deliverable D4b — the manifest LOCK 1 invariant).
+  let slugTrustList;
+  let slugLockedAt;
+  if (opts.slug) {
+    try {
+      const port = resolveVerifyPort(opts);
+      const loaded = loadLockedRoots({ slug: opts.slug, port });
+      slugTrustList = loaded.lockedRoots;
+      slugLockedAt = loaded.createdAt;
+    } catch (err) {
+      // Map structured loader errors → invocation exit code (3). These
+      // are operator/setup problems, not "this binary is wrong" failures
+      // (which are exit code 2 — handled below by verifyBinary's
+      // empty-trust-list / no-matching-identity reasons).
+      if (
+        err.code === 'EAUTOPGMETAMISSING'
+        || err.code === 'EAUTOPGSLUGUNKNOWN'
+        || err.code === 'EAUTOPGLOCKEDPARSE'
+      ) {
+        emit(opts, {
+          ok: false,
+          reason: 'slug-lookup-failed',
+          detail: err.message,
+          slug: opts.slug,
+          loaderCode: err.code,
+        });
+        return EXIT_INVOCATION;
+      }
+      // Anything else (postgres unreachable, psql crash, etc.) is also
+      // an invocation problem — operator hasn't connected pgserve verify
+      // to a reachable postmaster.
+      emit(opts, {
+        ok: false,
+        reason: 'slug-lookup-failed',
+        detail: err.message,
+        slug: opts.slug,
+      });
+      return EXIT_INVOCATION;
+    }
+  }
+
   const result = verifyBinary(binaryPath, {
     cosignBin: opts.cosignBin || process.env.PGSERVE_COSIGN_BIN || undefined,
     bundlePath: opts.bundlePath || undefined,
     allowFetch: opts.allowFetch === true,
+    trustList: slugTrustList,
   });
 
   if (!result.ok) {
@@ -348,6 +436,8 @@ export function runVerify(argv) {
     cacheFile,
     bundle: result.bundle,
     cosignBin: result.cosignBin,
+    slug: opts.slug || undefined,
+    slugLockedAt: slugLockedAt || undefined,
   });
   return EXIT_OK;
 }
