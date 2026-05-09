@@ -23,7 +23,10 @@
  *                       find candidate orphans without scanning every
  *                       postgres DB.
  *   - publisher-slug:   sanitized + truncated package.json name /
- *                       pgserve.publisher; max 41 chars.
+ *                       pgserve.publisher. Effective max ≈ 37 chars
+ *                       (computed from min(dbSlugBudget, roleSlugBudget)
+ *                       so DB and role always share the same slug for
+ *                       operator UX in `\l` / `\du`).
  *   - fingerprint hex:  first 12 hex chars of the fingerprint. Plenty
  *                       of entropy to avoid collisions across consumers
  *                       on the same host.
