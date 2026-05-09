@@ -76,6 +76,30 @@ async function assertPortAvailable(port, host = '127.0.0.1') {
   // covered end-to-end by the B3-collision test which intentionally
   // does NOT set this env var so the pre-flight fires.
   if (process.env.PGSERVE_TEST_SKIP_PORT_PREFLIGHT === '1') return null;
+
+  // Layer 1: connect-probe BOTH IPv4 (127.0.0.1) and IPv6 (::1).
+  // Postgres binds both loopback families on startup; any listener on
+  // either is an EADDRINUSE for the postmaster. A pure listen()-bind
+  // probe can miss this when the conflicting service was started with
+  // SO_REUSEADDR or only-one-family, so connect() is the primary check.
+  // If connect() succeeds → something is listening → port is busy.
+  for (const probeHost of [host, '::1']) {
+    const busy = await probePortListening(port, probeHost);
+    if (busy) {
+      const e = new Error(
+        `pgserve install: port ${port} is already in use on ${probeHost} (something is listening).\n` +
+        `Specify a different port with \`pgserve install --port <free>\`,\n` +
+        `or stop the process bound to ${port} first and retry.`,
+      );
+      e.code = 'EADDRINUSE';
+      throw e;
+    }
+  }
+
+  // Layer 2: bind-probe to confirm we ourselves can bind without
+  // SO_REUSEADDR conflicts. Catches the case where another process
+  // bound the same port with SO_REUSEADDR but isn't currently listening
+  // (rare but possible for transitional services).
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.once('error', (err) => {
@@ -97,6 +121,31 @@ async function assertPortAvailable(port, host = '127.0.0.1') {
       server.close(() => resolve(null));
     });
     server.listen(port, host);
+  });
+}
+
+// Promise that resolves true when something is accepting connections at
+// host:port (port is busy), false on ECONNREFUSED (port is free), and
+// rejects on any other error so callers can fail closed.
+function probePortListening(port, host, timeoutMs = 500) {
+  return new Promise((resolve, reject) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (value, err) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch { /* best-effort */ }
+      if (err) reject(err); else resolve(value);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false)); // treat slow/no-response as free
+    socket.once('error', (err) => {
+      if (err.code === 'ECONNREFUSED') return finish(false);
+      if (err.code === 'EHOSTUNREACH' || err.code === 'EADDRNOTAVAIL') return finish(false); // IPv6 not configured, etc.
+      finish(false, err);
+    });
+    socket.connect(port, host);
   });
 }
 

@@ -373,6 +373,37 @@ describe('pgserve install port pre-flight (B3 v2.6.1)', () => {
     }
   });
 
+  test('install with NO --port flag refuses when default 5432 is already bound (B3 T1 contract)', async () => {
+    // This mirrors QA-RECIPE-B3 T1: occupy 5432, then `pgserve install` with
+    // no --port should refuse via the pre-flight, not exit 0. The default-
+    // port path is the load-bearing case the recipe targets — explicit-port
+    // tests above can mask it because the pre-flight code path differs.
+    const occupier = net.createServer();
+    await new Promise((resolve, reject) => {
+      occupier.listen(5432, '127.0.0.1', resolve).once('error', (err) => {
+        // Skip if 5432 is bound by something else (CI host conflict)
+        if (err.code === 'EADDRINUSE') reject(new Error('SKIP-host-bound'));
+        else reject(err);
+      });
+    }).catch((err) => {
+      if (err.message === 'SKIP-host-bound') {
+        // 5432 is bound by something we don't own; the install pre-flight
+        // will see it the same as our test-occupier would. Test still
+        // exercises the contract.
+      } else throw err;
+    });
+    try {
+      const result = runCli(['install'], {
+        PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '0',
+      });
+      expect(result.status).not.toBe(0);
+      const stderrAll = `${result.stderr}${result.stdout}`;
+      expect(stderrAll).toMatch(/port \d+ is already in use|EADDRINUSE/);
+    } finally {
+      if (occupier.listening) await new Promise((resolve) => occupier.close(resolve));
+    }
+  });
+
   test('install on a free port proceeds normally (regression guard)', async () => {
     // Find a free port without binding it (so install can grab it). We
     // bind, immediately read the port, then close — small race window
