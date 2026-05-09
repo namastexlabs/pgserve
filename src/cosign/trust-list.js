@@ -49,7 +49,7 @@ export const TRUSTED_IDENTITIES = Object.freeze([
   }),
   Object.freeze({
     id: 'automagik-pgserve-release',
-    publisher: '@automagik/pgserve',
+    publisher: 'pgserve',
     issuer: SIGSTORE_GITHUB_ACTIONS_ISSUER,
     identityRegexp: '^https://github.com/namastexlabs/pgserve/.github/workflows/release.yml@refs/tags/v.*$',
     description: 'Namastex automagik pgserve release workflow (GitHub Actions OIDC)',
