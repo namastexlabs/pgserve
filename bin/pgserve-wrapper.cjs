@@ -66,6 +66,15 @@ const __installSubcommands = new Set([
   // src/commands/provision.js header for why). Pure node + child_process,
   // must skip bun probe.
   'provision',
+  // autopg-distribution-cutover-finalize (v2.6) — wish Group 3.
+  // `create-app` registers a consumer slug in autopg_meta + writes the
+  // per-consumer admin.json + manifest.json under ~/.autopg/<slug>/,
+  // freezing TRUSTED_IDENTITIES into locked_roots at create time. Pure
+  // node + psql shellout — must skip bun probe like the rest of the G3
+  // verbs. Adding here makes BOTH `pgserve create-app` and
+  // `autopg create-app` work via the same dispatcher (autopg-wrapper.cjs
+  // delegates to pgserve-wrapper.cjs per Decision #7).
+  'create-app',
 ]);
 if (__subcommand && __installSubcommands.has(__subcommand)) {
   const cli = require(path.join(__dirname, '..', 'src', 'cli-install.cjs'));
