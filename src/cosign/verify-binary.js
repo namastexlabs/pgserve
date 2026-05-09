@@ -54,13 +54,56 @@ export function sha256File(filePath) {
 }
 
 /**
- * Resolve the sidecar bundle path for a given binary path. Convention:
- * `<binary>.bundle`. Operators that publish detached `.sig` + `.cert` can
- * regenerate a bundle with `cosign sign-blob --bundle <path>.bundle`; we
- * intentionally only support the bundle form to keep the surface narrow.
+ * Candidate sidecar bundle paths for a given binary path, in priority
+ * order. First existing file wins. When none exist, the first candidate
+ * (`<binary>.bundle`) is returned so the caller's existing
+ * `bundle-missing` error path keeps the same operator-facing message
+ * shape.
+ *
+ * Three conventions are accepted:
+ *
+ *   1. `<binary>.bundle` — `cosign sign-blob --bundle` default;
+ *      pgserve's own producer convention.
+ *   2. `<binary-stem>.intoto.jsonl` — slsa-github-generator
+ *      per-artifact provenance (writes `<artifact>.intoto.jsonl` when
+ *      provenance-name interpolates the artifact stem). The stem is
+ *      computed by stripping `.tgz` (the only archive ext used in the
+ *      automagik-cohort cosign trust loop today).
+ *   3. `<dirname>/provenance.intoto.jsonl` — slsa-github-generator
+ *      generic-provenance default (single sibling per release upload).
+ *      This is what `automagik-dev/genie` ships today (verified via
+ *      `gh release view` against v4.260508.3+).
+ *
+ * Why fall-through, not single-shape: CV-VERIFY-BUNDLE-NAMING (qa
+ * Wave-B-live finding 2026-05-09). pgserve's prior single-shape
+ * resolver returned literal `<binary>.bundle` and failed every
+ * `pgserve verify` against producer-side artifacts that ship per the
+ * standards-compliant `intoto.jsonl` conventions. Consumer-side
+ * fall-through preserves the producer's standards conformance instead
+ * of forcing every producer-side wave (A/B/C) into a non-standard
+ * `.bundle` rename.
+ */
+export function resolveBundleCandidates(binaryPath) {
+  const stem = binaryPath.replace(/\.tgz$/, '');
+  return [
+    `${binaryPath}.bundle`,
+    `${stem}.intoto.jsonl`,
+    path.join(path.dirname(binaryPath), 'provenance.intoto.jsonl'),
+  ];
+}
+
+/**
+ * Resolve the sidecar bundle path for a given binary path. Returns the
+ * first existing candidate; when none exist, returns the first
+ * candidate (`<binary>.bundle`) so the existing `bundle-missing` error
+ * path retains its operator-facing message shape.
+ *
+ * Callers that need the full candidate list (e.g. for diagnostics) can
+ * use `resolveBundleCandidates` directly.
  */
 export function resolveBundlePath(binaryPath) {
-  return `${binaryPath}.bundle`;
+  const candidates = resolveBundleCandidates(binaryPath);
+  return candidates.find((p) => fs.existsSync(p)) ?? candidates[0];
 }
 
 /**
@@ -189,10 +232,21 @@ export function verifyBinary(binaryPath, options = {}) {
 
   const bundlePath = options.bundlePath || resolveBundlePath(binaryPath);
   if (!fs.existsSync(bundlePath)) {
+    // CV-VERIFY-BUNDLE-NAMING (v2.6.3): when none of the three
+    // candidates exist, surface the full list in the error detail so
+    // operators see exactly which paths pgserve probed. The
+    // bundle-missing reason code is unchanged so any log-grep wired
+    // against it keeps working.
+    const probed = options.bundlePath
+      ? [bundlePath]
+      : resolveBundleCandidates(binaryPath);
     return {
       ok: false,
       reason: 'bundle-missing',
-      detail: `expected sigstore bundle at ${bundlePath} (run \`cosign sign-blob --bundle ${bundlePath} ${binaryPath}\` to attest)`,
+      detail:
+        `expected sigstore bundle for ${binaryPath} — probed: ${probed.join(', ')}. `
+        + `Pass --bundle <path> to override, or run `
+        + `\`cosign sign-blob --bundle ${binaryPath}.bundle ${binaryPath}\` to attest.`,
     };
   }
 
