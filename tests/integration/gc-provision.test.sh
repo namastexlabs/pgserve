@@ -55,6 +55,17 @@ SOURCE_DIR=""
 FAKE_HOME=""
 PG_RUNNING=0
 
+# Set PGPASSWORD to the conventional bootstrap value used by `pgserve
+# install` on fresh hosts. The CI matrix runs apt-installed postgres +
+# trust auth (per the postgresql.conf written below); when pgserve's
+# psql shellouts inherit our env, they need PGPASSWORD set so the
+# always-set-env contract from src/lib/pg-query.js doesn't pick up an
+# empty value. Mirrors what real fresh-install operators do per the
+# install docs. (Also matches the CV-1 hot-fix landing in PR #101 —
+# this export keeps the integration test independent of #101's merge
+# order so #97 isn't blocked on #101.)
+export PGPASSWORD="${PGPASSWORD:-postgres}"
+
 cleanup() {
   if [[ "$PG_RUNNING" -eq 1 && -n "$PG_DATA" ]]; then
     pg_ctl -D "$PG_DATA" stop -m immediate -s >/dev/null 2>&1 || true
