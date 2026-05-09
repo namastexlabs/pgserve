@@ -338,6 +338,18 @@ test -f brain/_decisions/2026-04-30-canonical-autopg.md
 
 **depends-on:** Group 1, Group 2, Group 3
 
+**Implementation history (2026-05-09):** Fully shipped via `namastexlabs/genie-configure` repo. All three deliverables landed (verified by clone + `ls`):
+
+- Architecture map: `brain/Configuration & Routing/canonical-pgserve-pm2.md` (230 lines, header `Updated: 2026-05-02` — fresher than original 2026-04-30 design).
+- Runbook: `brain/Runbooks/recover-pm2-stack.md` (246 lines, exact filename match).
+- ADR: `brain/_decisions/2026-04-30-canonical-pgserve.md` (112 lines; ADR header reads `Status: ACCEPTED — shipped as 3 PRs across namastexlabs/pgserve, automagik-dev/genie, automagik-dev/omni`; references this wish slug + cites the orthogonal `2026-04-30-fingerprint-trust.md` predecessor).
+
+**Filename rename note:** 2 of 3 deliverables ship under `canonical-pgserve-*` rather than the wish-prescribed `canonical-autopg-*` (only `recover-pm2-stack.md` matches exactly). Rename aligns with Decision #7 of the `autopg-distribution-cutover-finalize` wish (`autopg` and `pgserve` are interchangeable bin names). Side effect: the validation block above (`test -f brain/Configuration\ \&\ Routing/canonical-autopg-pm2.md` + `test -f brain/_decisions/2026-04-30-canonical-autopg.md`) currently FAILS against shipped state because the shipped filenames use `pgserve`. A follow-up cleanup should either retarget the test-f paths or document both names as acceptable.
+
+**Scope clarifications:** (1) Acceptance criterion 2 ("Architecture map matches the actual end-state pm2 list") still has no recorded fixture or diff target — verification today is human-eyeballing the 230-line map against `pm2 list` on a canonical-stack host. (2) "Brain ingestion" was fulfilled by human-authored markdown drops in `genie-configure`, NOT by an automated `@khal-os/brain` ingestion pipeline (none observed in the cloned repo). Future contributors should not expect an automation hook here.
+
+Audit trail: `ENGINEER-AUDIT-CANONICAL-G4.md` (5 defects: 1 CRITICAL status-correction, 1 HIGH filename-drift, 2 MEDIUM carryovers from T9, 1 LOW scope-clarification).
+
 ---
 
 ## Dependencies
