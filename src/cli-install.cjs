@@ -1133,6 +1133,11 @@ function dispatch(subcommand, args, ctx) {
       // verify dispatch style so the wrapper, not the verb, owns
       // process.exit.
       return import('./commands/trust.js').then((mod) => mod.runTrust(args));
+    case 'provision':
+      // pgserve singleton (v2.4) — wish Group 3, verb 4. Idempotent
+      // CREATE ROLE / DATABASE / GRANT + UPSERT pgserve_meta under a
+      // per-fingerprint advisory lock. Pure node + psql shellout.
+      return import('./commands/provision.js').then((mod) => mod.runProvision(args));
     default:
       throw new Error(`pgserve: dispatch called with unknown subcommand "${subcommand}"`);
   }
