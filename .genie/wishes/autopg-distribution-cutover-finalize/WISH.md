@@ -37,7 +37,7 @@ Closes the leftover work from the never-materialized `autopg-distribution-cutove
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 1 | Rename old `install.sh` → `install-pgserve-legacy.sh`; new script lands at the canonical name `install-autopg.sh` (no `install.sh` on main post-merge) | Operators with bookmarked URLs to `install.sh` get a 404 + a clear hint; the new install script gets the canonical name `install-autopg.sh` matching the umbrella tooling concept, not the obsolete `install.sh` (which existed only because pgserve was renamed once before). |
+| 1 | **Replace `install.sh` in-place** with the new GitHub Releases + cosign-verify body. Single .sh file; no legacy file kept; no shim. | Felipe directive (post-/review on PR #95): "don't deprecate, replace, I don't want several .sh". Operators with bookmarked `curl … main/install.sh \| bash` invocations get the new behavior directly — no migration step. The npm + pm2 install path is preserved via the existing `pgserve install` CLI verb (`npm install -g pgserve && pgserve install`); operators who specifically need the old script's behavior still have that path. |
 | 2 | `src/lib/pg-query.js` is the canonical psql shellout primitive | Already shipped via PR #92 with `-F\t` + `ON_ERROR_STOP=1` + the PGPASSWORD-only-when-set fix from the bot reviews. `src/gc/pg-queries.js` is the older copy (PR #91) that still has all those fixes too but lives in the wrong directory; G2 dedupes it. |
 | 3 | Integration tests use a real postgres, not pg-mem or mocks | `pgserve provision` and `pgserve gc` shell out to `psql`; mocking psql defeats the contract under test (parser delimiters, `ON_ERROR_STOP`, error-text matching). The bot reviews on #91/#92 caught real bugs that mocks would not have surfaced; integration tests must mirror real-world. |
 | 4 | Audit log rotation = "delete files >90 days old on the next gc run" | No daemon, no cron — gc runs are operator-triggered. 90-day default matches the wish's 30-day staleness window with a 3x safety margin for forensic review of "why did my DB disappear?" cases. |
@@ -49,7 +49,7 @@ Closes the leftover work from the never-materialized `autopg-distribution-cutove
 
 ## Success Criteria
 
-- [ ] `install.sh` renamed and 404-hint published; new `install-autopg.sh` ≤80 lines fetches from GitHub Releases and verifies via `gh attestation verify`.
+- [ ] `install.sh` ≤80 lines, fetches from GitHub Releases and verifies via `gh attestation verify` (single canonical file; no legacy or shim companions).
 - [ ] `src/gc/pg-queries.js` deleted; gc imports from `src/lib/pg-query.js`; no behavior change (gc tests still pass).
 - [ ] `tests/integration/gc-provision.test.sh` runs against a real postmaster and proves the round-trip (provision creates DB + role; gc dry-run reports zero orphans; remove the source path; gc --apply drops the orphan + cleans the meta row; second provision recreates cleanly).
 - [ ] `pgserve create-app <slug>` produces a per-consumer manifest registered in `autopg_meta`; cosign trust roots locked at create time; subsequent upgrades verified against the locked roots.
@@ -77,23 +77,24 @@ Five waves; G2 (dedup + integration test scaffold) is parallelizable with G1 (in
 **Goal:** Land an ≤80-line `install-autopg.sh` that fetches from GitHub Releases, verifies via `gh attestation verify`, without overwriting the legacy `install.sh`.
 
 **Deliverables:**
-1. Rename main's `install.sh` → `install-pgserve-legacy.sh` and add a top-of-file deprecation comment with the migration link.
-2. Create `install-autopg.sh` (≤80 lines): detect platform → fetch the matching tarball from `github.com/namastexlabs/pgserve/releases/download/v<version>/...` → verify via `gh attestation verify` → extract → `pgserve install`.
-3. **Replace `install.sh` with a tiny shim** that prints a deprecation note + the new URL on stderr and exits 0 (do NOT 404 — operators with bookmarked `curl … | sh` invocations get a clear hint instead of a silent break). The shim is ≤15 lines.
-4. Update `README.md` install instructions to point at the new script.
+1. **Replace** `install.sh` in-place (≤80 lines): detect platform → fetch the matching tarball from `github.com/namastexlabs/pgserve/releases/download/v<version>/...` → verify via `gh attestation verify` → extract → `pgserve install`.
+2. Update `README.md` install instructions: the recommended path is now `curl -fsSL .../install.sh | bash`; npm paths preserved below for development.
+
+The npm + pm2 install path the old `install.sh` provided is preserved via the existing `pgserve install` CLI verb — operators who want it do `npm install -g pgserve && pgserve install`.
 
 **Acceptance Criteria:**
-- [ ] `wc -l install-autopg.sh` returns ≤80.
-- [ ] `bash install-autopg.sh --dry-run` (or equivalent) prints the fetch URL + verify command without executing them, on macOS-arm64 and linux-x64.
-- [ ] Running `install-pgserve-legacy.sh` emits a deprecation note on stderr but still succeeds (doesn't break in-flight scripts).
-- [ ] Running the `install.sh` shim prints "deprecated: use install-autopg.sh — <URL>" on stderr and exits 0 (operators with bookmarked `curl … | sh` get a hint, not a 404 or silent error).
+- [ ] `wc -l install.sh` returns ≤80.
+- [ ] `bash install.sh --dry-run` prints the fetch URL + verify command without executing them, on macOS-arm64 and linux-x64.
+- [ ] `bash install.sh --help` prints a usage block.
 - [ ] The cosign verification step uses `gh attestation verify` (Sigstore Rekor public-good) — no private CDN, no custom verifier.
+- [ ] `shellcheck install.sh` clean.
 
 **Validation:**
 ```bash
-shellcheck install-autopg.sh install-pgserve-legacy.sh
-wc -l install-autopg.sh
-bash install-autopg.sh --help
+shellcheck install.sh
+wc -l install.sh
+bash install.sh --dry-run
+bash install.sh --help
 ```
 
 **depends-on:** none

@@ -101,17 +101,14 @@ psql postgresql://localhost:8432/myapp
 ## Installation
 
 ```bash
-# Zero install (recommended)
-npx pgserve
+# Canonical install — signed binary from GitHub Releases
+curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install.sh | bash
 
-# Global install
-npm install -g pgserve
-
-# Project dependency
-npm install pgserve
+# Pinned version
+PGSERVE_VERSION=v2.6.0 curl -fsSL .../install.sh | bash
 ```
 
-> PostgreSQL binaries are automatically downloaded on first run (~100MB).
+> `install.sh` fetches the signed tarball from GitHub Releases and verifies it via `gh attestation verify` (Sigstore Rekor public-good). Requires the [`gh` CLI](https://cli.github.com/). pgserve no longer depends on npm — the install + upgrade path is binary tarballs all the way down.
 
 ### Windows
 

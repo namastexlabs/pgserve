@@ -1,123 +1,74 @@
 #!/usr/bin/env bash
-# ============================================================================
-# pgserve — Canonical PostgreSQL backbone installer
-#
-# Bootstraps a single shared pgserve instance under pm2 supervision. Used as
-# a prerequisite by `omni/install.sh` and `genie/install.sh` so every
-# automagik service on a host points at the same Postgres.
-#
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install.sh | bash
-#
-# With pinned version:
-#   PGSERVE_VERSION=^2.1.1 curl -fsSL .../install.sh | bash
-#
-# Local checkout:
-#   bash install.sh
-#
-# Idempotent — re-running is a no-op success when pgserve is already
-# registered under pm2 with a healthy entry.
-# ============================================================================
+# pgserve canonical installer (v2.6+).
+# Fetches the signed binary tarball from GitHub Releases, verifies via
+# `gh attestation verify` (Sigstore Rekor), and runs `pgserve install`.
+# Usage:   curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install.sh | bash
+# Pin:     PGSERVE_VERSION=v2.6.0 curl -fsSL .../install.sh | bash
+# Dry-run: bash install.sh --dry-run
+# Wish: .genie/wishes/autopg-distribution-cutover-finalize/WISH.md G1
 set -euo pipefail
 
-PGSERVE_VERSION="${PGSERVE_VERSION:-^2.1.0}"
+REPO="namastexlabs/pgserve"
+VERSION="${PGSERVE_VERSION:-latest}"
+DRY_RUN=0
+case "${1:-}" in
+  --dry-run) DRY_RUN=1 ;;
+  -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
 
-# Colors (no-op when stdout isn't a tty)
-if [[ -t 1 ]]; then
-  RED='\033[0;31m'
-  GREEN='\033[0;32m'
-  YELLOW='\033[1;33m'
-  BLUE='\033[0;34m'
-  CYAN='\033[0;36m'
-  BOLD='\033[1m'
-  NC='\033[0m'
-else
-  RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' NC=''
+# Resolve "latest" tag without an authenticated gh call (works on any host
+# that can reach api.github.com).
+if [ "$VERSION" = "latest" ]; then
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+  [ -z "$VERSION" ] && { echo "[pgserve] could not resolve latest version" >&2; exit 1; }
 fi
 
-info() { printf "${BLUE}ℹ${NC}  %s\n" "$*"; }
-ok()   { printf "${GREEN}✓${NC}  %s\n" "$*"; }
-warn() { printf "${YELLOW}⚠${NC}  %s\n" "$*"; }
-fail() { printf "${RED}✗${NC}  %s\n" "$*" >&2; exit 1; }
-step() { printf "\n${BOLD}${CYAN}▸ %s${NC}\n" "$*"; }
+# Detect platform → tarball name. Matches release-publish.yml's matrix.
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64)   PLATFORM="linux-x64" ;;
+  Linux-aarch64)  PLATFORM="linux-arm64" ;;
+  Darwin-arm64)   PLATFORM="darwin-arm64" ;;
+  Darwin-x86_64)  PLATFORM="darwin-x64" ;;
+  *)              echo "[pgserve] unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
 
-has_cmd() { command -v "$1" >/dev/null 2>&1; }
+TARBALL="pgserve-${VERSION#v}-${PLATFORM}.tar.gz"
+URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
 
-# ============================================================================
-# Prerequisites: bun + pm2
-# ============================================================================
+if [ "$DRY_RUN" = "1" ]; then
+  echo "[pgserve] would fetch:  $URL"
+  echo "[pgserve] would verify: gh attestation verify <tarball> --repo ${REPO}"
+  echo "[pgserve] would extract + run: pgserve install"
+  exit 0
+fi
 
-ensure_bun() {
-  if has_cmd bun; then
-    ok "bun $(bun --version 2>/dev/null || echo '?')"
-    return 0
-  fi
-  info "Installing bun (https://bun.sh)..."
-  curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || fail "bun install failed — see https://bun.sh"
-  # Make bun available to the rest of this script without requiring a re-login.
-  export PATH="$HOME/.bun/bin:$PATH"
-  has_cmd bun || fail "bun installed but not on PATH — restart your shell and re-run."
-  ok "bun $(bun --version)"
+# Require gh for verification (Sigstore Rekor public-good attestation).
+command -v gh >/dev/null 2>&1 || {
+  echo "[pgserve] requires the 'gh' CLI for cosign attestation verification." >&2
+  echo "[pgserve] install: https://cli.github.com/" >&2
+  exit 1
 }
 
-ensure_pm2() {
-  if has_cmd pm2; then
-    ok "pm2 $(pm2 --version 2>/dev/null || echo '?')"
-    return 0
-  fi
-  info "Installing pm2 (process supervisor)..."
-  bun add -g pm2 >/dev/null 2>&1 || fail "pm2 install failed — try: bun add -g pm2"
-  has_cmd pm2 || fail "pm2 installed but not on PATH — restart your shell and re-run."
-  ok "pm2 installed"
-}
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 
-# ============================================================================
-# pgserve binary + pm2 registration
-# ============================================================================
+echo "[pgserve] fetching $URL"
+curl -fsSL --output "$TMP/$TARBALL" "$URL"
 
-ensure_pgserve_binary() {
-  # Probe via `pgserve port` (real subcommand). `pgserve --version` doesn't
-  # exist in 2.1.x — using it would false-negative and trigger a redundant
-  # reinstall every time install.sh runs.
-  if has_cmd pgserve && pgserve port >/dev/null 2>&1; then
-    ok "pgserve binary present (port $(pgserve port 2>/dev/null))"
-    return 0
-  fi
-  info "Installing pgserve@${PGSERVE_VERSION} globally..."
-  bun add -g "pgserve@${PGSERVE_VERSION}" >/dev/null 2>&1 \
-    || fail "pgserve install failed — try: bun add -g pgserve@${PGSERVE_VERSION}"
-  has_cmd pgserve || fail "pgserve installed but not on PATH — restart your shell and re-run."
-  ok "pgserve $(pgserve port 2>/dev/null || echo '?')"
-}
+echo "[pgserve] verifying cosign attestation via gh"
+gh attestation verify "$TMP/$TARBALL" --repo "$REPO"
 
-register_pgserve_pm2() {
-  info "Registering pgserve under pm2 (idempotent)..."
-  # `pgserve install` prints its own success/already-installed line and exits
-  # 0 in both cases. We pipe stderr through so any pm2 errors surface to the
-  # operator (the pm2-6.x --min-uptime breakage we hit on 2026-04-30 was
-  # invisible because stderr was being captured).
-  pgserve install || fail "pgserve install failed — see ~/.pgserve/logs/pgserve-error.log"
-}
+echo "[pgserve] extracting"
+tar -xzf "$TMP/$TARBALL" -C "$TMP"
 
-# ============================================================================
-# Main
-# ============================================================================
+# Tarball ships a `bin/pgserve` (or wrapper) at the root of the
+# extracted dir. The release-publish workflow lays it out so that
+# `pgserve install` Just Works after extract.
+INSTALL_DIR="$HOME/.local/share/pgserve/${VERSION}"
+mkdir -p "$INSTALL_DIR"
+cp -r "$TMP"/* "$INSTALL_DIR/"
 
-main() {
-  step "Installing canonical pgserve"
-  ensure_bun
-  ensure_pm2
-  ensure_pgserve_binary
-  register_pgserve_pm2
+echo "[pgserve] installing pm2 supervisor"
+"$INSTALL_DIR/bin/pgserve" install
 
-  echo ""
-  ok "Canonical pgserve ready"
-  info "URL:  $(pgserve url 2>/dev/null || echo '<run: pgserve url>')"
-  info "Port: $(pgserve port 2>/dev/null || echo '?')"
-  info "Logs: ~/.pgserve/logs/"
-  echo ""
-  info "Other automagik services on this host (omni, genie, ...) will share this pgserve."
-  echo ""
-}
-
-main "$@"
+echo "[pgserve] done — pgserve@${VERSION} installed under pm2"
