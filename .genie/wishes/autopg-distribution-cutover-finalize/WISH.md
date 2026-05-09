@@ -43,8 +43,9 @@ Closes the leftover work from the never-materialized `autopg-distribution-cutove
 | 4 | Audit log rotation = "delete files >90 days old on the next gc run" | No daemon, no cron — gc runs are operator-triggered. 90-day default matches the wish's 30-day staleness window with a 3x safety margin for forensic review of "why did my DB disappear?" cases. |
 | 5 | G3 (pgserve create-app) is gated on the `autopg_meta` schema landing first | Per HANDOFF audit notes: G3 needs `admin-bootstrap.js` + `autopg_meta` schema infrastructure that doesn't exist on main. G3's first deliverable is that schema; the create-app verb is the second deliverable in the same group so they ship atomically. |
 | 6 | `provision` advisory-lock helpers stay on main as foundation | `src/provision/advisory-lock.js` is correct and reusable for a future single-session caller (daemon mode, batch provisioner). Removing it now would force a re-implementation later. The CLI verb just doesn't call it (documented in `src/commands/provision.js` header). |
-| 7 | **Binary name = `pgserve`; `autopg` is the umbrella concept name only** | The npm package + `bin/pgserve-wrapper.cjs` are unchanged. All new CLI verbs invoke as `pgserve <verb>` (matches what shipped in PRs #86–#92: `pgserve doctor` / `trust` / `gc` / `provision`). `autopg` appears in directory paths (`~/.autopg/`), pm2 process names (`autopg-server`, `autopg-ui`), wish slugs, and umbrella-concept references — but never as a CLI verb. **G3's create-app verb is `pgserve create-app`**, not `autopg create-app`. |
+| 7 | **`autopg` and `pgserve` are interchangeable CLI bins; new verbs land as both** | `package.json` ships both `bin/autopg-wrapper.cjs` and `bin/pgserve-wrapper.cjs` (already the case on main); README + CHANGELOG state they're interchangeable. Every new verb in this wish (G3's `create-app`) gets dispatched through both wrappers — same allowlist, same case in `cli-install.cjs`. Examples in WISH and docs use `pgserve <verb>` for consistency with what shipped in PRs #86–#92, but `autopg <verb>` is equivalent at runtime. **No CLI rename, no bin removal in this wish.** |
 | 8 | **Cohort lands as v2.6.0** (title says "v2.4" for historical scope-naming only) | v2.5 already shipped on main between the singleton-G3 sprint design and this finalize wish. The cohort's _content_ is the original v2.4 plan; the _release tag_ this wish ships under is v2.6.0. Title kept as-is (refers to scope name) but G5 acceptance + release prep target v2.6.0. |
+| 9 | **Two home-dir roots coexist: `~/.pgserve/` and `~/.autopg/`** — this wish does NOT migrate either | Reality on main today: `~/.autopg/admin.json` + `~/.autopg/settings.json` live under autopg (newer cohort schema, supervisor state, settings); `~/.pgserve/trust/identities.json` + `~/.pgserve/audit/gc-<DATE>.log` live under pgserve (authored in PRs #87 + #90 before the split was rationalized). Migrating either is a separate hardening wish — out of scope here. **G3's per-consumer state lives under `~/.autopg/<sanitized-slug>/admin.json`** to match the autopg cohort posture; the trust + audit paths in G2/G5 references stay at `~/.pgserve/...` to match the code that already shipped. |
 
 ## Success Criteria
 
@@ -76,15 +77,16 @@ Five waves; G2 (dedup + integration test scaffold) is parallelizable with G1 (in
 **Goal:** Land an ≤80-line `install-autopg.sh` that fetches from GitHub Releases, verifies via `gh attestation verify`, without overwriting the legacy `install.sh`.
 
 **Deliverables:**
-1. Rename `install.sh` → `install-pgserve-legacy.sh` and add a top-of-file deprecation comment with the migration link.
+1. Rename main's `install.sh` → `install-pgserve-legacy.sh` and add a top-of-file deprecation comment with the migration link.
 2. Create `install-autopg.sh` (≤80 lines): detect platform → fetch the matching tarball from `github.com/namastexlabs/pgserve/releases/download/v<version>/...` → verify via `gh attestation verify` → extract → `pgserve install`.
-3. Update `README.md` install instructions to point at the new script.
-4. Optional: small redirect note at the top of `install-pgserve-legacy.sh` so operators running it get a clear "use install-autopg.sh instead" message.
+3. **Replace `install.sh` with a tiny shim** that prints a deprecation note + the new URL on stderr and exits 0 (do NOT 404 — operators with bookmarked `curl … | sh` invocations get a clear hint instead of a silent break). The shim is ≤15 lines.
+4. Update `README.md` install instructions to point at the new script.
 
 **Acceptance Criteria:**
 - [ ] `wc -l install-autopg.sh` returns ≤80.
 - [ ] `bash install-autopg.sh --dry-run` (or equivalent) prints the fetch URL + verify command without executing them, on macOS-arm64 and linux-x64.
 - [ ] Running `install-pgserve-legacy.sh` emits a deprecation note on stderr but still succeeds (doesn't break in-flight scripts).
+- [ ] Running the `install.sh` shim prints "deprecated: use install-autopg.sh — <URL>" on stderr and exits 0 (operators with bookmarked `curl … | sh` get a hint, not a 404 or silent error).
 - [ ] The cosign verification step uses `gh attestation verify` (Sigstore Rekor public-good) — no private CDN, no custom verifier.
 
 **Validation:**
@@ -128,8 +130,11 @@ bash tests/integration/gc-provision.test.sh
 **Goal:** Per-consumer manifest registration with locked-at-create-time cosign trust roots; cosign verifier checks every upgrade against those roots.
 
 **Deliverables:**
-1. `admin-bootstrap.js` — the missing piece per HANDOFF: writes the per-consumer state file at `~/.autopg/<scope>/admin.json`. Schema: `{ slug, manifestPath, lockedRoots: [...], createdAt }`. **Path is per-consumer + scoped under `<scope>/`** — orthogonal to the host-level `~/.autopg/admin.json` owned by `canonical-pgserve-pm2-supervision` G1 (which records supervisor mode for the whole host). The two files never collide.
+1. `admin-bootstrap.js` — the missing piece per HANDOFF: writes the per-consumer state file at `~/.autopg/<sanitized-slug>/admin.json`. Schema: `{ slug, manifestPath, lockedRoots: [...], createdAt }`.
+   **Sanitization rule (matches `src/provision/db-naming.js#sanitizeSlug`):** `slug.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')`. So `@demo/app` becomes `demo_app` (one flat dir under `~/.autopg/`, never nested). Reuses the existing helper — no new sanitizer.
+   **Orthogonality:** `~/.autopg/<sanitized-slug>/admin.json` is per-consumer; the host-level `~/.autopg/admin.json` (owned by `canonical-pgserve-pm2-supervision` G1) records supervisor mode for the whole host. The two paths never collide because the per-consumer one lives one directory level deeper.
 2. `autopg_meta` schema (table + indexes), CREATE-TABLE module shaped like `src/schema/pgserve-meta.js`. Lives in a SEPARATE postgres table from `pgserve_meta` because the rows have different lifecycle (per-consumer-app vs per-fingerprint-database).
+   **Source-of-truth split** (addresses bot review on state redundancy): `autopg_meta` is the **authoritative** source for "which apps exist + what trust roots are locked at create time". The per-consumer `admin.json` + manifest file are **derived caches** — written at create-app time for fast reads from CLI verbs that don't want a postgres connection (`pgserve doctor`, `pgserve upgrade`'s pre-flight). On any divergence, `autopg_meta` wins; the next `pgserve doctor` run reports the divergence as a FAIL and `pgserve doctor --fix` regenerates the cache files from the table. Documented in the verifier's docstring.
 3. `pgserve create-app <slug>` CLI verb that writes the manifest + registers in `autopg_meta` + locks the cosign trust roots from `src/cosign/trust-list.js` at the moment of creation.
 4. Manifest LOCK 1 verifier: a function called by `pgserve upgrade` (the existing verb) that verifies the new binary's cosign attestation matches one of the locked roots (not the current `TRUSTED_IDENTITIES` — operators control upgrade trust at create time, not at upgrade time). The trust-rotation primitive itself lives in `pgserve-singleton-no-proxy` G4 / `src/cosign/trust-list.js`; this group exercises the locked-roots path through rotation, NOT the rotation itself.
 5. Tests for each module.
@@ -174,7 +179,7 @@ bun run lint && bun run deadcode
 **Validation:**
 ```bash
 markdownlint docs/ CHANGELOG.md README.md
-grep -E "pgserve (doctor|trust|gc|provision)" CHANGELOG.md docs/
+grep -rE "pgserve (doctor|trust|gc|provision)" CHANGELOG.md docs/  # -r recurses into docs/
 ```
 
 **depends-on:** Group 3
@@ -186,7 +191,7 @@ grep -E "pgserve (doctor|trust|gc|provision)" CHANGELOG.md docs/
 
 **Deliverables:**
 1. Audit rotation in `src/gc/audit-log.js`: at start of every gc run, scan `~/.pgserve/audit/` for `gc-<YYYY-MM-DD>.log` files older than 90 days, delete them, audit each deletion with a `rotate` action.
-2. End-to-end smoke script: `tests/integration/v2.6-cohort-smoke.sh` — fresh `mktemp` HOME → `npx pgserve@latest install` → `pgserve provision @demo/app` → workload → `pgserve gc --dry-run` → `pgserve doctor --json` (no FAIL) → cleanup.
+2. End-to-end smoke script: `tests/integration/v2.6-cohort-smoke.sh` — fresh `mktemp` HOME → install the **local build** (via `npm pack` + `npx <local-tarball>` OR `node bin/pgserve-wrapper.cjs install` against the worktree) → `pgserve provision @demo/app` → workload → `pgserve gc --dry-run` → `pgserve doctor --json` (no FAIL) → cleanup. **Do NOT use `npx pgserve@latest`** — that would test the published version, not the changes about to be released.
 3. Release notes for v2.6.0 capturing the cohort.
 4. Tag + push v2.6.0 (or whatever the next semver is); release workflow handles GitHub Releases artifact upload + cosign signing (already shipped in PR #84).
 
