@@ -872,7 +872,21 @@ async function cmdInstall(args, ctx) {
   } catch (err) {
     if (err.code === 'EADDRINUSE') {
       process.stderr.write(`${err.message}\n`);
+      // Belt-and-suspenders for the QA loop-2/2 finding: in QA's test
+      // environment, the synchronous `process.exit(1)` path was
+      // observed to NOT terminate the process before the install
+      // function continued + resolved the wrapper's promise with
+      // undefined, which the wrapper then mapped to `process.exit(0)`.
+      // Three guarantees here:
+      //   1. process.exitCode = 1  → default exit code becomes 1 even
+      //      if explicit exit is somehow trapped/delayed
+      //   2. process.exit(1)       → force termination (preferred path)
+      //   3. throw err             → if exit is delayed, the async
+      //      function rejects, wrapper's rejection handler does its
+      //      own process.exit(1), guaranteeing non-zero exit
+      process.exitCode = 1;
       process.exit(1);
+      throw err;
     }
     throw err;
   }

@@ -373,6 +373,25 @@ describe('pgserve install port pre-flight (B3 v2.6.1)', () => {
     }
   });
 
+  test('install --port <occupied> EADDRINUSE produces non-zero exit code (regression: loop-2/2)', async () => {
+    // Loop-2 of /fix budget for PR #103. QA reported detection works,
+    // message prints, but exit code is 0. This locks the exit-code
+    // contract independent of message-detection contract.
+    const occupier = net.createServer();
+    await new Promise((resolve) => occupier.listen(0, '127.0.0.1', resolve));
+    const occupiedPort = occupier.address().port;
+    try {
+      const result = runCli(['install', '--port', String(occupiedPort)], {
+        PGSERVE_TEST_SKIP_PORT_PREFLIGHT: '0',
+      });
+      // Hard exit-code assertion (not just message contains)
+      expect(result.status).not.toBe(0);
+      expect(result.status).toBe(1);
+    } finally {
+      await new Promise((resolve) => occupier.close(resolve));
+    }
+  });
+
   test('install with NO --port flag refuses when default 5432 is already bound (B3 T1 contract)', async () => {
     // This mirrors QA-RECIPE-B3 T1: occupy 5432, then `pgserve install` with
     // no --port should refuse via the pre-flight, not exit 0. The default-
