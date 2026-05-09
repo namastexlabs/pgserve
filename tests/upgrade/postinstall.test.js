@@ -86,37 +86,106 @@ test('postinstall: isCI honors CI=true / CI=1', () => {
   }
 });
 
-test('postinstall: dev-worktree skip emits stderr note and returns 0 (synthetic git-worktree path)', () => {
-  // Build a synthetic git worktree at $tmp: <tmp>/.git is a FILE pointing at
-  // `…/.git/worktrees/feature` so isDevWorktree() returns true. Symlink the
-  // production postinstall.cjs into <tmp>/scripts/ so its `__dirname/..`
-  // pkgRoot resolution lands inside the synthetic worktree. Spawning the
-  // symlinked script exercises the full main() codepath end-to-end without
-  // depending on the host CWD (CI's `actions/checkout` is at
-  // /home/runner/work/pgserve/pgserve, which doesn't match the heuristic).
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'postinstall-e2e-'));
-  try {
-    fs.writeFileSync(path.join(tmp, '.git'), 'gitdir: /home/x/repo/.git/worktrees/feature\n');
-    fs.mkdirSync(path.join(tmp, 'scripts'));
-    fs.mkdirSync(path.join(tmp, 'bin'));
-    fs.symlinkSync(POSTINSTALL, path.join(tmp, 'scripts', 'postinstall.cjs'));
-    fs.symlinkSync(path.join(__dirname, '..', '..', 'bin', 'pgserve-wrapper.cjs'), path.join(tmp, 'bin', 'pgserve-wrapper.cjs'));
+// main() now accepts an optional deps object so we can drive each
+// branch without depending on host filesystem layout. Earlier loops
+// tried (a) spawning postinstall in this worktree (broke on CI which
+// isn't a worktree) and (b) symlinking the script into a synthetic
+// worktree dir (broke because Node resolves symlinks before computing
+// __dirname). Dependency injection avoids both classes of fragility.
 
-    const env = { ...process.env };
-    delete env.AUTOPG_SKIP_POSTINSTALL;
-    delete env.AUTOPG_CONFIG_DIR;
+test('main: emits dev-worktree skip note when isDevWorktree returns true', () => {
+  let stderrContent = '';
+  const stderr = { write: (s) => { stderrContent += s; } };
+  const mod = require(POSTINSTALL);
 
-    const r = spawnSync(process.execPath, [path.join(tmp, 'scripts', 'postinstall.cjs')], {
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 5000,
-    });
-    expect(r.status).toBe(0);
-    expect(r.stderr.toString()).toContain('dev worktree detected');
-    expect(r.stderr.toString()).toContain('skipping upgrade');
-  } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
+  mod.main({
+    env: {},
+    isDevWorktree: () => true,
+    pkgRoot: '/synthetic/worktrees/pgserve/branch-x',
+    stderr,
+  });
+
+  expect(stderrContent).toContain('dev worktree detected');
+  expect(stderrContent).toContain('skipping upgrade');
+  expect(stderrContent).toContain('/synthetic/worktrees/pgserve/branch-x');
+});
+
+test('main: AUTOPG_SKIP_POSTINSTALL=1 short-circuits before isDevWorktree check', () => {
+  let stderrContent = '';
+  let isDevCalled = false;
+  const mod = require(POSTINSTALL);
+
+  mod.main({
+    env: { AUTOPG_SKIP_POSTINSTALL: '1' },
+    isDevWorktree: () => { isDevCalled = true; return true; },
+    pkgRoot: '/synthetic/worktrees/pgserve/branch-x',
+    stderr: { write: (s) => { stderrContent += s; } },
+  });
+
+  expect(stderrContent).toBe('');
+  expect(isDevCalled).toBe(false);
+});
+
+test('main: fresh install (no data dir) exits silently when not a worktree', () => {
+  let stderrContent = '';
+  let spawnCalled = false;
+  const mod = require(POSTINSTALL);
+
+  mod.main({
+    env: {},
+    isDevWorktree: () => false,
+    pkgRoot: '/normal/install',
+    fs: { existsSync: () => false },              // data dir does not exist
+    stderr: { write: (s) => { stderrContent += s; } },
+    spawnSync: () => { spawnCalled = true; return { status: 0 }; },
+    getAutopgRoot: () => '/tmp/fake-autopg-root',
+  });
+
+  expect(stderrContent).toBe('');
+  expect(spawnCalled).toBe(false);
+});
+
+test('main: invokes upgrade when not worktree + data dir exists + wrapper exists + non-CI', () => {
+  let stderrContent = '';
+  let spawnArgs = null;
+  const mod = require(POSTINSTALL);
+
+  mod.main({
+    env: {},
+    isDevWorktree: () => false,
+    isCI: () => false,
+    pkgRoot: '/normal/install',
+    fs: { existsSync: () => true },               // data dir + wrapper both exist
+    stderr: { write: (s) => { stderrContent += s; } },
+    spawnSync: (...args) => { spawnArgs = args; return { status: 0 }; },
+    getAutopgRoot: () => '/tmp/fake-autopg-root',
+  });
+
+  // Non-CI pre-warning emitted
+  expect(stderrContent).toContain('About to run');
+  expect(stderrContent).toContain('AUTOPG_SKIP_POSTINSTALL=1');
+  // Upgrade was invoked
+  expect(spawnArgs).not.toBeNull();
+  expect(spawnArgs[1]).toContain('upgrade');
+  expect(spawnArgs[1]).toContain('--quiet');
+});
+
+test('main: CI=true suppresses pre-warning when invoking upgrade', () => {
+  let stderrContent = '';
+  const mod = require(POSTINSTALL);
+
+  mod.main({
+    env: {},
+    isDevWorktree: () => false,
+    isCI: () => true,
+    pkgRoot: '/normal/install',
+    fs: { existsSync: () => true },
+    stderr: { write: (s) => { stderrContent += s; } },
+    spawnSync: () => ({ status: 0 }),
+    getAutopgRoot: () => '/tmp/fake-autopg-root',
+  });
+
+  expect(stderrContent).not.toContain('About to run');
 });
 
 test('upgrade orchestrator: dry-run lists 7 steps without executing', async () => {
