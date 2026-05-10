@@ -165,6 +165,38 @@ jobs:
       - name: Run create-app + verify --slug rotation smoke
         run: bash tests/integration/verify-slug-rotation.test.sh
 
+  # autopg-distribution-cutover-finalize G5 / Wave A PR-A3 D9 — build → sign
+  # → verify round-trip smoke for the keyless cosign trust loop. Catches
+  # regressions in:
+  #   - sign-attest.yml's keyless cosign flag set (sign-blob shape)
+  #   - trust-list.js's pgserve regex anchor (sign-attest.yml @ refs/tags/v.*)
+  #   - cosign verify-blob's keyless flag compatibility
+  # Skips gracefully when cosign isn't on PATH OR when the runner can't mint
+  # an OIDC token (cosign keyless needs id-token:write OR interactive auth).
+  test-integration-wave-a-e2e:
+    name: Integration (Wave A — build→sign→verify keyless loop)
+    runs-on: ubuntu-latest
+    # `id-token: write` is the minimum permission for cosign keyless OIDC.
+    # The job is continue-on-error so a runtime regression in the signing
+    # pipeline surfaces as a non-blocking notification rather than a red CI
+    # gate — same posture as the other integration jobs above.
+    permissions:
+      id-token: write
+      contents: read
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Run Wave A build→sign→verify smoke
+        run: bash tests/integration/wave-a-e2e.test.sh
+
   # Test npx flow (user experience)
   test-npx:
     name: Test npx install
