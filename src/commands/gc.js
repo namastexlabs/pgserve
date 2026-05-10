@@ -31,7 +31,7 @@
 
 import { readAdminJson } from '../lib/admin-json.js';
 import { classifyOrphans } from '../gc/orphan-detection.js';
-import { writeGcAudit } from '../gc/audit-log.js';
+import { writeGcAudit, rotateGcAuditLogs } from '../gc/audit-log.js';
 import {
   selectMetaRows,
   selectExistingDbs,
@@ -163,6 +163,21 @@ export async function runGc(argv = []) {
     action: 'start',
     detail: `mode=${opts.apply ? 'apply' : 'dry-run'} port=${port} staleAfterDays=${opts.staleAfterDays}`,
   });
+
+  // Rotate audit logs older than 90 days — runs on every gc invocation
+  // (dry-run or apply). Boundary guard preserves the current day's log.
+  // Errors are surfaced via the audit log itself; never aborts the gc run.
+  try {
+    const rotation = rotateGcAuditLogs();
+    if (rotation.deleted.length > 0 || rotation.errors.length > 0) {
+      writeGcAudit({
+        action: 'rotate-summary',
+        detail: `deleted=${rotation.deleted.length} kept=${rotation.kept.length} errors=${rotation.errors.length}`,
+      });
+    }
+  } catch (err) {
+    writeGcAudit({ action: 'error', reason: 'rotate_failed', detail: err.message });
+  }
 
   let metaRows;
   try {

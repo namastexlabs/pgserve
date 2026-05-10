@@ -10,10 +10,12 @@ import path from 'node:path';
 import {
   writeGcAudit,
   readGcAuditDay,
+  rotateGcAuditLogs,
   getAuditDir,
   getAuditFilePath,
   AUDIT_FILE_MODE,
   AUDIT_DIR_MODE,
+  AUDIT_DEFAULT_RETENTION_DAYS,
   __testInternals,
 } from '../../src/gc/audit-log.js';
 
@@ -154,5 +156,117 @@ describe('formatUtcDate', () => {
   test('rejects a non-Date input', () => {
     expect(() => __testInternals.formatUtcDate('2026-05-08')).toThrow(TypeError);
     expect(() => __testInternals.formatUtcDate(new Date('not-a-date'))).toThrow(TypeError);
+  });
+});
+
+describe('rotateGcAuditLogs', () => {
+  // Helper: synthesize a gc-<date>.log file in the audit dir.
+  function makeLog(dir, dateStr, contents = '{"action":"start"}\n') {
+    fs.mkdirSync(dir, { recursive: true, mode: AUDIT_DIR_MODE });
+    fs.writeFileSync(path.join(dir, `gc-${dateStr}.log`), contents, { mode: AUDIT_FILE_MODE });
+  }
+
+  test('default constant is 90 days', () => {
+    expect(AUDIT_DEFAULT_RETENTION_DAYS).toBe(90);
+  });
+
+  test('returns empty result when audit dir does not exist', () => {
+    const r = rotateGcAuditLogs({ homeDir, today: new Date('2026-05-10T00:00:00Z') });
+    expect(r.deleted).toEqual([]);
+    expect(r.kept).toEqual([]);
+    expect(r.errors).toEqual([]);
+  });
+
+  test('deletes a 91-day-old log; keeps an 89-day-old one', () => {
+    const dir = getAuditDir({ homeDir });
+    const today = new Date('2026-05-10T00:00:00Z');
+    makeLog(dir, '2026-02-08'); // 91 days old
+    makeLog(dir, '2026-02-10'); // 89 days old
+    const r = rotateGcAuditLogs({ homeDir, today });
+    expect(r.deleted).toContain('gc-2026-02-08.log');
+    expect(r.kept).toContain('gc-2026-02-10.log');
+    expect(fs.existsSync(path.join(dir, 'gc-2026-02-08.log'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'gc-2026-02-10.log'))).toBe(true);
+  });
+
+  test('NEVER deletes the current day, even if retention math would include it', () => {
+    const dir = getAuditDir({ homeDir });
+    const today = new Date('2026-05-10T00:00:00Z');
+    makeLog(dir, '2026-05-10'); // today
+    // Force-pathological retention that would delete *everything* if not for the guard.
+    const r = rotateGcAuditLogs({ homeDir, today, retentionDays: 0 });
+    expect(r.deleted).not.toContain('gc-2026-05-10.log');
+    expect(r.kept).toContain('gc-2026-05-10.log');
+    expect(fs.existsSync(path.join(dir, 'gc-2026-05-10.log'))).toBe(true);
+  });
+
+  test('rotation event is itself audited (writes a rotate line to today\'s log)', () => {
+    const dir = getAuditDir({ homeDir });
+    const today = new Date('2026-05-10T12:00:00Z');
+    makeLog(dir, '2026-02-01'); // 98 days old — well past 90
+    rotateGcAuditLogs({ homeDir, today });
+    const todayEvents = readGcAuditDay({ homeDir, date: today });
+    const rotateEvents = todayEvents.filter((e) => e.action === 'rotate');
+    expect(rotateEvents.length).toBe(1);
+    expect(rotateEvents[0].detail).toContain('gc-2026-02-01.log');
+    expect(rotateEvents[0].detail).toContain('>90 days');
+  });
+
+  test('skips files that do not match the gc-<YYYY-MM-DD>.log pattern', () => {
+    const dir = getAuditDir({ homeDir });
+    fs.mkdirSync(dir, { recursive: true, mode: AUDIT_DIR_MODE });
+    fs.writeFileSync(path.join(dir, 'README.md'), '# audit\n');
+    fs.writeFileSync(path.join(dir, 'gc-2025-not-a-date.log'), '');
+    fs.writeFileSync(path.join(dir, 'gc-other.log'), '');
+    const r = rotateGcAuditLogs({ homeDir, today: new Date('2026-05-10T00:00:00Z') });
+    expect(r.deleted).toEqual([]);
+    expect(fs.existsSync(path.join(dir, 'README.md'))).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'gc-2025-not-a-date.log'))).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'gc-other.log'))).toBe(true);
+  });
+
+  test('respects a custom retentionDays', () => {
+    const dir = getAuditDir({ homeDir });
+    const today = new Date('2026-05-10T00:00:00Z');
+    makeLog(dir, '2026-04-09'); // 31 days old
+    makeLog(dir, '2026-05-09'); // 1 day old
+    const r = rotateGcAuditLogs({ homeDir, today, retentionDays: 30 });
+    expect(r.deleted).toContain('gc-2026-04-09.log');
+    expect(r.kept).toContain('gc-2026-05-09.log');
+  });
+
+  test('rejects negative or non-finite retentionDays', () => {
+    expect(() => rotateGcAuditLogs({ homeDir, retentionDays: -1 })).toThrow(TypeError);
+    expect(() => rotateGcAuditLogs({ homeDir, retentionDays: NaN })).toThrow(TypeError);
+  });
+
+  test('rejects an invalid Date for today', () => {
+    expect(() => rotateGcAuditLogs({ homeDir, today: 'not-a-date' })).toThrow(TypeError);
+    expect(() => rotateGcAuditLogs({ homeDir, today: new Date('not-a-date') })).toThrow(TypeError);
+  });
+
+  test('failed deletion writes a rotate-error audit event with the file name', () => {
+    const dir = getAuditDir({ homeDir });
+    const today = new Date('2026-05-10T12:00:00Z');
+    makeLog(dir, '2026-02-01'); // 98 days old
+    // Make the file undeletable on platforms that honor it: chmod the
+    // parent dir to read-only. Skip the assertion on platforms where
+    // unlink succeeds anyway (e.g. running as root, certain CI sandboxes).
+    fs.chmodSync(dir, 0o500);
+    let r;
+    try {
+      r = rotateGcAuditLogs({ homeDir, today });
+    } finally {
+      fs.chmodSync(dir, AUDIT_DIR_MODE);
+    }
+    if (r.errors.length === 0) {
+      // Running as root or on a filesystem that ignores chmod — skip assertion.
+      return;
+    }
+    expect(r.errors[0].file).toBe('gc-2026-02-01.log');
+    const todayEvents = readGcAuditDay({ homeDir, date: today });
+    const errEvents = todayEvents.filter((e) => e.action === 'rotate-error');
+    expect(errEvents.length).toBe(1);
+    expect(errEvents[0].detail).toContain('gc-2026-02-01.log');
   });
 });

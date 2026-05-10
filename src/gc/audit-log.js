@@ -29,6 +29,8 @@ export const AUDIT_DIR_NAME = 'audit';
 export const AUDIT_FILE_PREFIX = 'gc-';
 export const AUDIT_FILE_MODE = 0o600;
 export const AUDIT_DIR_MODE = 0o700;
+export const AUDIT_DEFAULT_RETENTION_DAYS = 90;
+const AUDIT_FILENAME_RE = /^gc-(\d{4})-(\d{2})-(\d{2})\.log$/;
 
 /**
  * @typedef {Object} GcAuditEvent
@@ -145,6 +147,96 @@ export function readGcAuditDay({ homeDir = os.homedir(), date = new Date() } = {
     }
   }
   return out;
+}
+
+/**
+ * Rotate audit logs by deleting `gc-<YYYY-MM-DD>.log` files older than
+ * `retentionDays` (default 90). Each deletion writes a `rotate` audit event
+ * to today's log so the rotation itself is auditable.
+ *
+ * Boundary guard: NEVER deletes the current day's log file, even if the
+ * retention math would otherwise include it (clock skew, manual mtime edits,
+ * timezone-confusion regressions). The current day is determined from
+ * `today` (UTC) — the same date the next `writeGcAudit` call would use.
+ *
+ * Files whose names do not match `gc-<YYYY-MM-DD>.log` are skipped — the
+ * rotator only touches its own log files.
+ *
+ * Returns `{ deleted: string[], kept: string[], errors: Array<{file,error}> }`
+ * so callers can surface a summary line without re-walking the directory.
+ */
+export function rotateGcAuditLogs({
+  homeDir = os.homedir(),
+  retentionDays = AUDIT_DEFAULT_RETENTION_DAYS,
+  today = new Date(),
+} = {}) {
+  if (!Number.isFinite(retentionDays) || retentionDays < 0) {
+    throw new TypeError('rotateGcAuditLogs: retentionDays must be a non-negative number');
+  }
+  if (!(today instanceof Date) || Number.isNaN(today.getTime())) {
+    throw new TypeError('rotateGcAuditLogs: today must be a valid Date');
+  }
+  const dir = getAuditDir({ homeDir });
+  const result = { deleted: [], kept: [], errors: [] };
+  let entries;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return result;
+    throw err;
+  }
+  const todayStr = formatUtcDate(today);
+  const cutoffMs = Date.UTC(
+    today.getUTCFullYear(),
+    today.getUTCMonth(),
+    today.getUTCDate(),
+  ) - retentionDays * 24 * 60 * 60 * 1000;
+  for (const name of entries) {
+    const match = AUDIT_FILENAME_RE.exec(name);
+    if (!match) continue;
+    const [, yyyy, mm, dd] = match;
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+    if (dateStr === todayStr) {
+      // Boundary guard — the current day's log is always retained.
+      result.kept.push(name);
+      continue;
+    }
+    const fileMs = Date.UTC(Number(yyyy), Number(mm) - 1, Number(dd));
+    if (fileMs >= cutoffMs) {
+      result.kept.push(name);
+      continue;
+    }
+    const full = path.join(dir, name);
+    try {
+      fs.unlinkSync(full);
+      result.deleted.push(name);
+      writeGcAudit(
+        {
+          action: 'rotate',
+          detail: `deleted ${name} (>${retentionDays} days old)`,
+        },
+        { homeDir, date: today },
+      );
+    } catch (err) {
+      result.errors.push({ file: name, error: err.message });
+      // Record the per-file failure in today's audit log so an operator
+      // investigating "why is gc-2026-01-01.log still here?" can find the
+      // exact reason (permission denied / file in use / etc.) instead of
+      // only seeing the rotate-summary count.
+      try {
+        writeGcAudit(
+          {
+            action: 'rotate-error',
+            detail: `failed to delete ${name}: ${err.message}`,
+          },
+          { homeDir, date: today },
+        );
+      } catch {
+        /* best-effort — never let audit-write failure abort the rotation pass */
+      }
+    }
+  }
+  return result;
 }
 
 export const __testInternals = Object.freeze({ formatUtcDate });
