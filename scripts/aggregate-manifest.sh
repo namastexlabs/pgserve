@@ -29,7 +29,7 @@ DIST_DIR="${AUTOPG_DIST_DIR:-${REPO_ROOT}/dist}"
 
 usage() {
   cat <<EOF
-Usage: $0 --version <v> [--base-url <url>] [--channel <c>] [--cosign-pub-url <url>]
+Usage: $0 --version <v> [--base-url <url>] [--channel <c>] [--trust-regex <re>]
 
   --version          autopg version, e.g. 2.260503.1 (or read from package.json)
   --base-url         absolute base URL prefix for tarball URLs
@@ -37,14 +37,18 @@ Usage: $0 --version <v> [--base-url <url>] [--channel <c>] [--cosign-pub-url <ur
                       directory the manifest sits in).
   --channel          channel hint embedded in the manifest (stable|beta|canary).
                      default: stable
-  --cosign-pub-url   absolute URL to the published cosign public key.
-                     default: <base-url>/../../keys/cosign.pub for production
-                     (cdn.automagik.dev layout) or "keys/cosign.pub" relative.
+  --trust-regex      cosign keyless identity regex consumers verify against.
+                     default: pgserve's own sign-attest.yml@refs/tags/v.*
+                     anchor (mirrors src/cosign/trust-list.js
+                     automagik-pgserve-release entry).
+  --oidc-issuer      Sigstore OIDC issuer URL.
+                     default: https://token.actions.githubusercontent.com
 
 Reads:
   dist/autopg-<version>-<platform>.tar.gz
   dist/autopg-<version>-<platform>.tar.gz.sha256
   dist/autopg-<version>-<platform>.tar.gz.sig          (optional)
+  dist/autopg-<version>-<platform>.tar.gz.cert         (optional, Wave A keyless)
   dist/autopg-<version>-<platform>.tar.gz.intoto.jsonl (optional)
 
 Writes:
@@ -56,13 +60,17 @@ parse_args() {
   VERSION="${AUTOPG_VERSION:-}"
   BASE_URL=""
   CHANNEL="stable"
-  COSIGN_PUB_URL=""
+  TRUST_REGEX_DEFAULT='^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$'
+  TRUST_REGEX=""
+  OIDC_ISSUER_DEFAULT="https://token.actions.githubusercontent.com"
+  OIDC_ISSUER=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --version)        VERSION="$2";        shift 2 ;;
-      --base-url)       BASE_URL="$2";       shift 2 ;;
-      --channel)        CHANNEL="$2";        shift 2 ;;
-      --cosign-pub-url) COSIGN_PUB_URL="$2"; shift 2 ;;
+      --version)        VERSION="$2";      shift 2 ;;
+      --base-url)       BASE_URL="$2";     shift 2 ;;
+      --channel)        CHANNEL="$2";      shift 2 ;;
+      --trust-regex)    TRUST_REGEX="$2";  shift 2 ;;
+      --oidc-issuer)    OIDC_ISSUER="$2";  shift 2 ;;
       -h|--help)        usage; exit 0 ;;
       *) echo "unknown arg: $1" >&2; usage; exit 2 ;;
     esac
@@ -73,6 +81,8 @@ parse_args() {
   if [[ -z "$VERSION" ]]; then
     echo "error: --version required (or set in package.json)" >&2; exit 2
   fi
+  [[ -n "$TRUST_REGEX" ]] || TRUST_REGEX="$TRUST_REGEX_DEFAULT"
+  [[ -n "$OIDC_ISSUER" ]] || OIDC_ISSUER="$OIDC_ISSUER_DEFAULT"
 }
 
 # Portable SHA256 — sha256sum on linux, shasum -a 256 on macOS.
@@ -109,9 +119,12 @@ emit_entry() {
   sha=$(awk '{print $1}' "${tarball}.sha256")
   sz=$(stat -c %s "$tarball" 2>/dev/null || stat -f %z "$tarball")
 
-  local sig_url="" prov_url=""
+  local sig_url="" cert_url="" prov_url=""
   if [[ -f "${tarball}.sig" ]]; then
     sig_url=$(prefix_url "${base}.sig")
+  fi
+  if [[ -f "${tarball}.cert" ]]; then
+    cert_url=$(prefix_url "${base}.cert")
   fi
   if [[ -f "${tarball}.intoto.jsonl" ]]; then
     prov_url=$(prefix_url "${base}.intoto.jsonl")
@@ -124,8 +137,9 @@ emit_entry() {
   printf '      "url": "%s",\n'      "$(prefix_url "$base")"
   printf '      "sha256": "%s",\n'   "$sha"
   printf '      "size": %d,\n'       "$sz"
-  printf '      "signature_url": "%s",\n' "$sig_url"
-  printf '      "provenance_url": "%s"\n' "$prov_url"
+  printf '      "signature_url": "%s",\n'   "$sig_url"
+  printf '      "certificate_url": "%s",\n' "$cert_url"
+  printf '      "provenance_url": "%s"\n'   "$prov_url"
   printf '    }'
 }
 
@@ -154,20 +168,20 @@ main() {
     printf '  "channel": "%s",\n' "$CHANNEL"
     printf '  "schemaVersion": 1,\n'
     printf '  "generated_at": "%s",\n' "$generated_at"
-    local cpub
-    if [[ -n "$COSIGN_PUB_URL" ]]; then
-      cpub="$COSIGN_PUB_URL"
-    elif [[ -n "$BASE_URL" ]]; then
-      # CDN layout: <base>/autopg/<channel>/<version>/manifest.json
-      # Public key lives at: <base>/autopg/keys/cosign.pub
-      # If caller passes the full <base>/autopg/<channel>/<version> as
-      # base-url, walk two levels up to reach the keys/ sibling.
-      cpub="${BASE_URL%/*}"
-      cpub="${cpub%/*}/keys/cosign.pub"
-    else
-      cpub="keys/cosign.pub"
-    fi
-    printf '  "cosign_pub_url": "%s",\n' "$cpub"
+    # Wave A: keyless OIDC verification metadata. Consumers feed these
+    # into `cosign verify-blob --certificate-identity-regexp <regex>
+    # --certificate-oidc-issuer <url> --signature <sig> --certificate
+    # <cert> <tarball>`. Replaces the legacy `cosign_pub_url` field
+    # (which pointed at a pinned long-lived public key).
+    printf '  "cosign_verification": {\n'
+    printf '    "method": "keyless",\n'
+    # Escape backslashes + double quotes for JSON string safety in the
+    # trust regex (regex characters may include both).
+    local trust_escaped
+    trust_escaped=$(printf '%s' "$TRUST_REGEX" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    printf '    "trust_identity_regexp": "%s",\n' "$trust_escaped"
+    printf '    "oidc_issuer": "%s"\n' "$OIDC_ISSUER"
+    printf '  },\n'
     printf '  "platforms": [\n'
     local first=1
     for t in "${tarballs[@]}"; do

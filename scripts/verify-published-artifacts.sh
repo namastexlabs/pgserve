@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
-# verify-published-artifacts.sh — Group 8 of autopg-distribution-cutover.
+# verify-published-artifacts.sh — operator post-release verification.
+# Wave A keyless rewrite (PR-B follow-up D13 companion).
 #
 # Validates that every autopg tarball in the given directory is:
 #   1. accompanied by its outer .sha256 and that the hash matches.
-#   2. cosign-signed (verifies against keys/cosign.pub or AUTOPG_COSIGN_PUB).
+#   2. cosign keyless-OIDC-signed — cert subject matches the trust regex
+#      (override via AUTOPG_TRUST_REGEX) under the Sigstore GH Actions
+#      OIDC issuer.
 #   3. accompanied by a SLSA L3 in-toto provenance attestation that
 #      slsa-verifier can verify against the source repo URI.
 #   4. listed in the aggregated manifest.json with matching metadata.
@@ -12,26 +15,27 @@
 # Usage:
 #   bash scripts/verify-published-artifacts.sh dist/
 #   bash scripts/verify-published-artifacts.sh dist/ --skip-slsa
-#   AUTOPG_COSIGN_PUB=tests/fixtures/cosign/cosign.pub \
+#   AUTOPG_TRUST_REGEX='^https://github.com/my-org/.+/.github/workflows/release\.yml@refs/tags/v.*$' \
 #     bash scripts/verify-published-artifacts.sh dist/
 #
 # Exit codes:
 #   0  all artifacts verified
 #   1  verification failure (any tarball fails any check)
 #   2  invalid args / missing inputs
-#
-# Group 8 acceptance criteria:
-#   - cosign verify-blob succeeds for every platform tarball
-#   - slsa-verifier verify-artifact succeeds for every platform tarball
-#   - tampered tarball fails both verifications
-#   - script exits non-zero if any tarball ships without sig + provenance
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COSIGN_PUB_DEFAULT="${REPO_ROOT}/keys/cosign.pub"
-COSIGN_PUB="${AUTOPG_COSIGN_PUB:-${COSIGN_PUB_DEFAULT}}"
-SOURCE_URI_DEFAULT="github.com/automagik-dev/autopg"
+# Wave A: keyless OIDC trust regex. Default matches pgserve's own
+# sign-attest.yml workflow on tag refs (mirrors src/cosign/trust-list.js
+# automagik-pgserve-release entry). Override via AUTOPG_TRUST_REGEX to
+# verify artifacts from a different signer (e.g. local CI runs that
+# anchor on a feature branch).
+TRUST_REGEX_DEFAULT='^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$'
+TRUST_REGEX="${AUTOPG_TRUST_REGEX:-${TRUST_REGEX_DEFAULT}}"
+OIDC_ISSUER_DEFAULT="https://token.actions.githubusercontent.com"
+OIDC_ISSUER="${AUTOPG_OIDC_ISSUER:-${OIDC_ISSUER_DEFAULT}}"
+
+SOURCE_URI_DEFAULT="github.com/namastexlabs/pgserve"
 SOURCE_URI="${AUTOPG_SOURCE_URI:-${SOURCE_URI_DEFAULT}}"
 
 PASS=0
@@ -47,14 +51,18 @@ usage() {
   cat <<EOF
 Usage: $0 <dist-dir> [--skip-slsa] [--skip-manifest]
 
-Verifies every autopg-*.tar.gz in <dist-dir> using:
-  - keys/cosign.pub    (override with AUTOPG_COSIGN_PUB=<path>)
+Verifies every autopg-*.tar.gz in <dist-dir> using cosign keyless OIDC:
+  - trust regex        ${TRUST_REGEX_DEFAULT}
+                       (override with AUTOPG_TRUST_REGEX=<regex>)
+  - oidc issuer        ${OIDC_ISSUER_DEFAULT}
+                       (override with AUTOPG_OIDC_ISSUER=<url>)
   - source URI         ${SOURCE_URI_DEFAULT}
                        (override with AUTOPG_SOURCE_URI=<uri>)
 
 Required siblings per tarball:
   <tarball>.sha256
   <tarball>.sig
+  <tarball>.cert
   <tarball>.intoto.jsonl    (skip with --skip-slsa)
 
 Optional:
@@ -75,9 +83,6 @@ parse_args() {
   done
   if [[ ! -d "$DIST_DIR" ]]; then
     echo "error: dist dir not found: $DIST_DIR" >&2; exit 2
-  fi
-  if [[ ! -f "$COSIGN_PUB" ]]; then
-    echo "error: cosign public key not found: $COSIGN_PUB" >&2; exit 2
   fi
 }
 
@@ -123,17 +128,24 @@ verify_outer_sha() {
 verify_cosign() {
   local tarball="$1"
   local sig="${tarball}.sig"
+  local cert="${tarball}.cert"
   if [[ ! -f "$sig" ]]; then
     bad "$(basename "$tarball"): missing .sig sibling"
     return 1
   fi
+  if [[ ! -f "$cert" ]]; then
+    bad "$(basename "$tarball"): missing .cert sibling (keyless OIDC requires it)"
+    return 1
+  fi
   if cosign verify-blob \
-        --key "$COSIGN_PUB" \
+        --certificate-identity-regexp "$TRUST_REGEX" \
+        --certificate-oidc-issuer "$OIDC_ISSUER" \
         --signature "$sig" \
+        --certificate "$cert" \
         "$tarball" >/dev/null 2>&1; then
-    ok "$(basename "$tarball"): cosign signature verifies"
+    ok "$(basename "$tarball"): cosign keyless signature verifies"
   else
-    bad "$(basename "$tarball"): cosign verify-blob FAILED"
+    bad "$(basename "$tarball"): cosign verify-blob FAILED (regex=${TRUST_REGEX})"
     return 1
   fi
 }
@@ -172,8 +184,9 @@ main() {
   require_tools
 
   echo "==> verify-published-artifacts: $DIST_DIR"
-  echo "    cosign pub: $COSIGN_PUB"
-  echo "    source uri: $SOURCE_URI"
+  echo "    trust regex: $TRUST_REGEX"
+  echo "    oidc issuer: $OIDC_ISSUER"
+  echo "    source uri:  $SOURCE_URI"
 
   local tarballs=()
   while IFS= read -r line; do

@@ -227,11 +227,15 @@ pgserve releases through **v2.6.1** used **keyed** cosign (with
   verification should upgrade to v2.6.2 or later.
 - **≤v2.5.x**: predates the cosign signing pipeline entirely.
 
-The `keys/cosign.pub` file remains in the repo as of this writing because
-two utility scripts (`scripts/verify-published-artifacts.sh` +
-`scripts/aggregate-manifest.sh`) still reference it. A follow-up PR will
-update those scripts to use keyless verification and remove the orphaned
-key file.
+The `keys/cosign.pub` file is no longer present on `main` (it never made
+it past the abandoned `wip: autopg-distribution-cutover#8` commit). The
+two utility scripts that previously had stale references
+(`scripts/verify-published-artifacts.sh` +
+`scripts/aggregate-manifest.sh`) have been rewritten to use keyless
+verification flags (`--certificate-identity-regexp` +
+`--certificate-oidc-issuer` + `--certificate <tarball>.cert`). Custom
+trust regexes can be threaded via `AUTOPG_TRUST_REGEX` env var or
+`--trust-regex` CLI flag respectively.
 
 ## Where to file issues
 
