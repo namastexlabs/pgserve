@@ -5,33 +5,56 @@
 # is free, maintained by GitHub, and `gh attestation verify` reads cosign
 # signatures from Sigstore Rekor without any custom verification server.
 #
-# Trigger: tag push `v*` OR manual dispatch.
+# Trigger: runs after `sign-attest.yml` completes successfully (workflow_run)
+# OR on manual dispatch. The workflow_run trigger ensures the signing
+# artifacts exist BEFORE release-publish attempts to attach them — closes
+# the race window that previously shipped releases with no signing siblings.
 #
-# Pipeline (chained from build-tarballs.yml + sign-attest.yml on the same tag):
-#   1. Download per-platform tarballs from build-tarballs.yml artifacts
-#   2. Download cosign signatures + SLSA attestations from sign-attest.yml artifacts
-#   3. Create GitHub Release (draft until manual promotion) with all assets attached
+# Pipeline:
+#   1. Download `autopg-signed-bundle-<version>` aggregate artifact from
+#      sign-attest.yml's upstream workflow_run (contains tarballs + sha256 +
+#      sig + cert + intoto.jsonl + manifest.json — everything in one fetch)
+#   2. Sanity-check: every tarball must have its sig + cert + intoto.jsonl
+#      + sha256 siblings before any release upload happens
+#   3. Create GitHub Release (draft until manual promotion) with all assets
 #   4. Update `latest.json` channel pointer in the repo (committed, served via
 #      raw.githubusercontent.com — install.sh reads this for stable/beta/canary
 #      resolution)
 #
 # Verification by consumers:
 #   gh release download v<version> --repo namastexlabs/pgserve --pattern '*.tar.gz'
-#   gh attestation verify autopg-<platform>.tar.gz --owner namastexlabs
-#   # OR via cosign:
-#   cosign verify-blob --bundle autopg-<platform>.tar.gz.bundle autopg-<platform>.tar.gz
+#   pgserve verify autopg-<v>-<platform>.tar.gz
+#   # OR raw cosign keyless:
+#   cosign verify-blob \
+#     --certificate-identity-regexp '^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$' \
+#     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+#     --signature autopg-<v>-<platform>.tar.gz.sig \
+#     --certificate autopg-<v>-<platform>.tar.gz.cert \
+#     autopg-<v>-<platform>.tar.gz
 # ============================================================================
 
 name: release-publish
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_run:
+    workflows: ["Sign + Attest Tarballs (autopg)"]
+    types: [completed]
+    # No `branches:` filter — let workflow_run fire on every successful
+    # sign-attest run, including tag refs (Wave A PR-A1 Mismatch 5 fix
+    # mirror — same logic as sign-attest.yml's own trigger).
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (e.g. 2.5.0)'
+        description: 'Version to publish (e.g. 2.6.2)'
+        required: true
+      sign_run_id:
+        description: |
+          Workflow run ID of the upstream "Sign + Attest Tarballs (autopg)"
+          run that produced the autopg-signed-bundle-<version> artifact.
+          Find it via:
+            gh run list --workflow "Sign + Attest Tarballs (autopg)" --limit 5
+          REQUIRED for manual dispatch — there's no automatic upstream
+          run-id resolution outside the workflow_run trigger path.
         required: true
       channel:
         description: 'Release channel'
@@ -56,23 +79,42 @@ permissions:
   contents: write              # gh release create
   id-token: write              # cosign keyless OIDC (if re-signing)
   attestations: write          # actions/attest-build-provenance@v1
+  actions: read                # cross-run download via `run-id` requires
+                               # this — when an explicit permissions block
+                               # is present, unlisted scopes are denied,
+                               # so we must enumerate every scope we use.
 
 jobs:
   publish:
     name: Publish to GitHub Releases
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # On workflow_run trigger only fire if the upstream sign-attest run
+    # succeeded. workflow_dispatch path has no upstream and falls through.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # On workflow_run, the head_sha is the commit sign-attest ran
+          # against; use it so latest.json updates happen on the right ref.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Resolve version
         id: ver
+        env:
+          # workflow_run carries the upstream's head_branch which is the
+          # tag name (e.g. `v2.6.4`) for tag-triggered runs.
+          UPSTREAM_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           if [ -n "${{ inputs.version }}" ]; then
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${UPSTREAM_BRANCH}" ]; then
+            # workflow_run: strip leading `v` if present
+            echo "version=${UPSTREAM_BRANCH#v}" >> "$GITHUB_OUTPUT"
           else
-            # Strip leading `v` from tag ref
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            # Manual dispatch fallback: read package.json
+            VER=$(node -p "require('./package.json').version")
+            echo "version=${VER}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Resolve channel
@@ -85,25 +127,54 @@ jobs:
             echo "channel=stable" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download tarball artifacts (build-tarballs.yml)
+      - name: Download signed bundle aggregate (sign-attest.yml)
         uses: actions/download-artifact@v4
         with:
-          pattern: autopg-*-tarball
-          merge-multiple: true
+          # sign-attest.yml's aggregate job uploads ONE artifact named
+          # `autopg-signed-bundle-<version>` containing every per-platform
+          # tarball + sha256 + sig + cert + intoto.jsonl + manifest.json.
+          # Single download replaces the prior pair of broken patterns
+          # (`autopg-*-tarball`, `autopg-*-signed`) that didn't match
+          # any real artifact name.
+          name: autopg-signed-bundle-${{ steps.ver.outputs.version }}
           path: dist/
-
-      - name: Download signature artifacts (sign-attest.yml)
-        uses: actions/download-artifact@v4
-        with:
-          pattern: autopg-*-signed
-          merge-multiple: true
-          path: dist/
-        continue-on-error: true   # sign-attest.yml may not have run on dispatch
+          # Cross-workflow downloads need the upstream run-id +
+          # github-token. workflow_run gives us the run-id for free
+          # (github.event.workflow_run.id); manual dispatch operators
+          # must supply it via the `sign_run_id` input.
+          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.sign_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: List release assets
         run: |
           echo "=== dist/ ==="
           ls -la dist/ || true
+
+      - name: Sanity-check signed bundle siblings (Wave A PR-A2 D8)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          MISSING=0
+          shopt -s nullglob
+          TARBALLS=(dist/autopg-${VERSION}-*.tar.gz)
+          if [ ${#TARBALLS[@]} -eq 0 ]; then
+            echo "::error::no autopg-${VERSION}-*.tar.gz tarballs in dist/ — sign-attest bundle is empty"
+            exit 1
+          fi
+          for tb in "${TARBALLS[@]}"; do
+            for ext in sig cert intoto.jsonl sha256; do
+              if [ ! -f "${tb}.${ext}" ]; then
+                echo "::error::missing ${tb}.${ext}"
+                MISSING=$((MISSING + 1))
+              fi
+            done
+          done
+          if [ "${MISSING}" -gt 0 ]; then
+            echo "::error::${MISSING} required sibling files missing — refusing to publish a release without signing material"
+            exit 1
+          fi
+          echo "::notice::all ${#TARBALLS[@]} tarballs have complete sig + cert + intoto.jsonl + sha256 siblings"
 
       - name: Create GitHub Release with all assets
         env:

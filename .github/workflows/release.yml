@@ -222,68 +222,58 @@ jobs:
       # `needs.bump.*` directly — only `prepare` is in its `needs:` chain.
       # On the push path nobody creates the tag before this runs; the
       # SHA-based checkout works because the merge commit already has the
-      # bumped package.json. The release job creates the tag at the end
-      # via `gh release create`.
+      # bumped package.json. The tag is pushed by the bump job (when
+      # workflow_dispatch is used). GitHub Release creation now flows
+      # through `release-publish.yml` exclusively — see "Release job
+      # removed" note below.
+      #
+      # KNOWN LIMITATION (Wave A PR-A2 follow-up): the push-to-main flow
+      # NO LONGER creates a tag automatically. The dropped `release` job
+      # was creating the tag via `gh release create v${VERSION}` against
+      # HEAD; without it, push-event runs of release.yml will npm-publish
+      # but produce no tag → no `build-tarballs → sign-attest →
+      # release-publish` chain → no GitHub Release.
+      #
+      # Workaround until a tag-creation step lands: route releases via
+      # workflow_dispatch (the bump job creates and pushes the tag,
+      # which then fires build-tarballs → sign-attest → release-publish).
+      # This matches Felipe's current operational practice (all recent
+      # v2.x releases were cut via workflow_dispatch, not push-to-main).
       ref: ${{ needs.prepare.outputs.ref }}
     secrets: inherit
 
   # ---------------------------------------------------------------------------
-  # Release: download artifacts, create GitHub Release with cliff-free notes.
+  # Release job — REMOVED in Wave A PR-A2 (Mismatch 7 Option 1).
+  #
+  # Previously this job created the GitHub Release with the pgserve-*
+  # single-file binaries. release-publish.yml ALSO creates a GitHub
+  # Release on the same tag with the autopg-*.tar.gz tarballs +
+  # cosign signing artifacts. Both ran `gh release create` without
+  # cross-workflow idempotency → race:
+  #   - if this job won: release-publish fell through to upload --clobber
+  #     and the release ended up with BOTH naming conventions on the
+  #     same tag (operator confusion)
+  #   - if release-publish won: this job's gh release create failed with
+  #     "already exists", turning the release.yml run red even though
+  #     everything succeeded
+  #
+  # Option 1 (recommended by engineer DEEPER-AUDIT, accepted by Felipe):
+  # drop this job entirely. release-publish.yml owns all GH-Releases
+  # creation. release.yml retains only bump + build + npm publish.
+  #
+  # The single-file pgserve-* binaries previously attached here are NOT
+  # currently re-attached by release-publish.yml — they're a development
+  # artifact, not the canonical production distribution surface. If
+  # operators need them, future PR-A3+ (D7 naming reconciliation) can
+  # route them through release-publish.
+  #
+  # Tag creation on the WORKFLOW_DISPATCH path is unaffected — the
+  # `bump` job creates and pushes the tag. release-publish.yml fires
+  # on `workflow_run` after sign-attest completes, picks up the tag
+  # via the upstream `workflow_run.head_branch`, and creates the
+  # GitHub Release with signed artifacts.
+  #
+  # Tag creation on the PUSH path is NOT covered here anymore — see
+  # known limitation in `build` job above. If push-to-main releases
+  # are required, route them through `workflow_dispatch` instead.
   # ---------------------------------------------------------------------------
-  release:
-    name: Create GitHub Release
-    needs: [prepare, build]
-    if: |
-      always() &&
-      needs.prepare.result == 'success' &&
-      needs.build.result == 'success' &&
-      needs.prepare.outputs.skip != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Same as the build job: prefer the bump job's tag (dispatch
-          # path) but fall back to the SHA (push path, no tag exists yet).
-          ref: ${{ needs.prepare.outputs.ref }}
-
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          path: dist/
-          pattern: binaries-*
-          merge-multiple: true
-
-      - name: List artifacts
-        run: ls -la dist/
-
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_NOTES: ${{ needs.prepare.outputs.changelog }}
-        run: |
-          TAG="${{ needs.prepare.outputs.tag }}"
-          VERSION="${{ needs.prepare.outputs.version }}"
-
-          if [ -z "$RELEASE_NOTES" ]; then
-            RELEASE_NOTES="Release ${TAG}"
-          fi
-
-          {
-            echo "$RELEASE_NOTES"
-            echo ""
-            echo "## Install"
-            echo ""
-            echo '```bash'
-            echo "npm install pgserve@${VERSION}"
-            echo "bunx pgserve@${VERSION}"
-            echo '```'
-          } > /tmp/release-notes.md
-
-          # The tag already exists (created by bump job on dispatch, or by the
-          # human commit on push). gh release create resolves --target via the
-          # tag automatically when omitted.
-          gh release create "${TAG}" \
-            --title "${TAG}" \
-            --notes-file /tmp/release-notes.md \
-            dist/*
