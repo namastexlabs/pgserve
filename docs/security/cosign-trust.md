@@ -156,7 +156,7 @@ cosign verify-blob \
 
 Expected: `Verified OK`.
 
-### SLSA L3 provenance verification
+### SLSA L3 provenance verification (GitHub Releases tarballs)
 
 ```bash
 gh attestation verify autopg-2.6.4-linux-x64-glibc.tar.gz --owner namastexlabs
@@ -164,6 +164,31 @@ gh attestation verify autopg-2.6.4-linux-x64-glibc.tar.gz --owner namastexlabs
 
 Checks the inline `.intoto.jsonl` provenance bundle against Sigstore Rekor.
 Asserts: this exact tarball was produced by this exact build job run.
+
+### npm-side provenance (registry tarballs)
+
+The npm registry separately signs the `pgserve` tarball via npm's Trusted
+Publisher OIDC integration. Operators verifying an `npm install` tarball:
+
+```bash
+# Inspect provenance attached to a registry version
+npm view pgserve@2.6.4 dist.attestations
+
+# Or download + verify via gh attestation
+npm pack pgserve@2.6.4
+gh attestation verify pgserve-2.6.4.tgz --owner namastexlabs
+```
+
+This is **separate from** the cosign signing pipeline that produces
+GitHub Releases tarballs (`autopg-<v>-<plat>.tar.gz` siblings). npm
+provenance covers the `npm install` path; cosign covers the
+`gh release download` path. Both flow through Sigstore Rekor; together
+they cover both distribution surfaces.
+
+Releases through v2.6.x (pre-D10) shipped without npm provenance — the
+publish workflow set `NPM_CONFIG_PROVENANCE: "false"` as a workaround
+for a sigstore-server 422 issue on self-hosted runners that no longer
+applies. v2.6.x+1 onward emit provenance.
 
 ## Adding a custom trust root (operator)
 

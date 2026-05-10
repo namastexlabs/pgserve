@@ -198,18 +198,27 @@ jobs:
             echo "published=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Publish to npm via OIDC
+      - name: Publish to npm via OIDC + provenance
         if: steps.check.outputs.published == 'false'
         env:
           HUSKY: "0"
-          # npm auto-enables provenance in any CI env with `id-token: write`,
-          # regardless of the --provenance CLI flag. On some runners the
-          # server-side sigstore check fails with 422; disable explicitly.
-          # OIDC token exchange still happens.
-          NPM_CONFIG_PROVENANCE: "false"
+          # Wave A PR-B D10 — enable npm-side provenance.
+          # We run on github-hosted ubuntu-latest with `id-token: write` +
+          # Trusted Publisher OIDC configured at npmjs.com. The prior
+          # NPM_CONFIG_PROVENANCE: "false" workaround was carried over
+          # from self-hosted-runner experiments where the sigstore
+          # server-side check 422'd; that path no longer applies. With
+          # provenance: true, npm publishes a Sigstore-backed provenance
+          # statement alongside the tarball, queryable via:
+          #   npm view pgserve@<v> dist.attestations
+          #   gh attestation verify <tarball> --owner namastexlabs
+          # If the registry-side sigstore check ever 422s in production,
+          # flip back to "false" and file a follow-up ticket; the keyless
+          # cosign tarball signing pipeline is independent and unaffected.
+          NPM_CONFIG_PROVENANCE: "true"
         run: |
-          echo "Publishing version ${{ inputs.version }} with tag ${{ inputs.npm_tag }} via OIDC"
-          npm publish --access public --tag ${{ inputs.npm_tag }}
+          echo "Publishing version ${{ inputs.version }} with tag ${{ inputs.npm_tag }} via OIDC + provenance"
+          npm publish --access public --tag ${{ inputs.npm_tag }} --provenance
 
       - name: Verify publish
         if: steps.check.outputs.published == 'false'
