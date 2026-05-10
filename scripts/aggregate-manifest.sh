@@ -175,12 +175,14 @@ main() {
     # (which pointed at a pinned long-lived public key).
     printf '  "cosign_verification": {\n'
     printf '    "method": "keyless",\n'
-    # Escape backslashes + double quotes for JSON string safety in the
-    # trust regex (regex characters may include both).
-    local trust_escaped
+    # Escape backslashes + double quotes for JSON string safety. The
+    # trust regex commonly contains both; the issuer URL is unlikely to
+    # but a custom --oidc-issuer could carry them, so apply uniformly.
+    local trust_escaped issuer_escaped
     trust_escaped=$(printf '%s' "$TRUST_REGEX" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    issuer_escaped=$(printf '%s' "$OIDC_ISSUER" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
     printf '    "trust_identity_regexp": "%s",\n' "$trust_escaped"
-    printf '    "oidc_issuer": "%s"\n' "$OIDC_ISSUER"
+    printf '    "oidc_issuer": "%s"\n' "$issuer_escaped"
     printf '  },\n'
     printf '  "platforms": [\n'
     local first=1

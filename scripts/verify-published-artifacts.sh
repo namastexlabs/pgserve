@@ -25,11 +25,23 @@
 
 set -euo pipefail
 
-# Wave A: keyless OIDC trust regex. Default matches pgserve's own
-# sign-attest.yml workflow on tag refs (mirrors src/cosign/trust-list.js
-# automagik-pgserve-release entry). Override via AUTOPG_TRUST_REGEX to
-# verify artifacts from a different signer (e.g. local CI runs that
-# anchor on a feature branch).
+# Wave A: keyless OIDC verification is the default. Override mode is
+# selected by setting AUTOPG_COSIGN_PUB to a public-key path — that
+# triggers KEYED verification with `--key <path>`, used exclusively by
+# tests/integration/sign-attest-smoke.sh which signs offline with a
+# checked-in fixture keypair (cosign keyless requires Sigstore network
+# + OIDC, neither of which are available during the offline smoke).
+#
+# KEYLESS mode (default — production):
+#   - requires <tarball>.sig + <tarball>.cert
+#   - trust regex from AUTOPG_TRUST_REGEX (default below)
+#   - OIDC issuer from AUTOPG_OIDC_ISSUER (default below)
+#
+# KEYED mode (opt-in via AUTOPG_COSIGN_PUB):
+#   - requires <tarball>.sig only
+#   - public key path: $AUTOPG_COSIGN_PUB
+#   - trust regex / oidc issuer ignored
+COSIGN_PUB="${AUTOPG_COSIGN_PUB:-}"
 TRUST_REGEX_DEFAULT='^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$'
 TRUST_REGEX="${AUTOPG_TRUST_REGEX:-${TRUST_REGEX_DEFAULT}}"
 OIDC_ISSUER_DEFAULT="https://token.actions.githubusercontent.com"
@@ -51,22 +63,26 @@ usage() {
   cat <<EOF
 Usage: $0 <dist-dir> [--skip-slsa] [--skip-manifest]
 
-Verifies every autopg-*.tar.gz in <dist-dir> using cosign keyless OIDC:
+KEYLESS mode (default — production):
   - trust regex        ${TRUST_REGEX_DEFAULT}
                        (override with AUTOPG_TRUST_REGEX=<regex>)
   - oidc issuer        ${OIDC_ISSUER_DEFAULT}
                        (override with AUTOPG_OIDC_ISSUER=<url>)
+  - required siblings  <tarball>.sha256 + .sig + .cert
+                       + .intoto.jsonl (skip with --skip-slsa)
+
+KEYED mode (opt-in for offline fixture smoke — set AUTOPG_COSIGN_PUB):
+  - public key path    \$AUTOPG_COSIGN_PUB
+  - required siblings  <tarball>.sha256 + .sig
+                       + .intoto.jsonl (skip with --skip-slsa)
+  - trust regex / oidc issuer ignored
+
+Always:
   - source URI         ${SOURCE_URI_DEFAULT}
                        (override with AUTOPG_SOURCE_URI=<uri>)
 
-Required siblings per tarball:
-  <tarball>.sha256
-  <tarball>.sig
-  <tarball>.cert
-  <tarball>.intoto.jsonl    (skip with --skip-slsa)
-
 Optional:
-  manifest.json            (skip with --skip-manifest)
+  manifest.json        (skip with --skip-manifest)
 EOF
 }
 
@@ -83,6 +99,10 @@ parse_args() {
   done
   if [[ ! -d "$DIST_DIR" ]]; then
     echo "error: dist dir not found: $DIST_DIR" >&2; exit 2
+  fi
+  if [[ -n "$COSIGN_PUB" && ! -f "$COSIGN_PUB" ]]; then
+    echo "error: AUTOPG_COSIGN_PUB set but file not found: $COSIGN_PUB" >&2
+    exit 2
   fi
 }
 
@@ -128,25 +148,39 @@ verify_outer_sha() {
 verify_cosign() {
   local tarball="$1"
   local sig="${tarball}.sig"
-  local cert="${tarball}.cert"
   if [[ ! -f "$sig" ]]; then
     bad "$(basename "$tarball"): missing .sig sibling"
     return 1
   fi
-  if [[ ! -f "$cert" ]]; then
-    bad "$(basename "$tarball"): missing .cert sibling (keyless OIDC requires it)"
-    return 1
-  fi
-  if cosign verify-blob \
-        --certificate-identity-regexp "$TRUST_REGEX" \
-        --certificate-oidc-issuer "$OIDC_ISSUER" \
-        --signature "$sig" \
-        --certificate "$cert" \
-        "$tarball" >/dev/null 2>&1; then
-    ok "$(basename "$tarball"): cosign keyless signature verifies"
+  if [[ -n "$COSIGN_PUB" ]]; then
+    # KEYED mode (offline fixture smoke).
+    if cosign verify-blob \
+          --key "$COSIGN_PUB" \
+          --signature "$sig" \
+          "$tarball" >/dev/null 2>&1; then
+      ok "$(basename "$tarball"): cosign keyed signature verifies"
+    else
+      bad "$(basename "$tarball"): cosign verify-blob FAILED (key=${COSIGN_PUB})"
+      return 1
+    fi
   else
-    bad "$(basename "$tarball"): cosign verify-blob FAILED (regex=${TRUST_REGEX})"
-    return 1
+    # KEYLESS mode (default — production).
+    local cert="${tarball}.cert"
+    if [[ ! -f "$cert" ]]; then
+      bad "$(basename "$tarball"): missing .cert sibling (keyless OIDC requires it)"
+      return 1
+    fi
+    if cosign verify-blob \
+          --certificate-identity-regexp "$TRUST_REGEX" \
+          --certificate-oidc-issuer "$OIDC_ISSUER" \
+          --signature "$sig" \
+          --certificate "$cert" \
+          "$tarball" >/dev/null 2>&1; then
+      ok "$(basename "$tarball"): cosign keyless signature verifies"
+    else
+      bad "$(basename "$tarball"): cosign verify-blob FAILED (regex=${TRUST_REGEX})"
+      return 1
+    fi
   fi
 }
 
@@ -184,8 +218,14 @@ main() {
   require_tools
 
   echo "==> verify-published-artifacts: $DIST_DIR"
-  echo "    trust regex: $TRUST_REGEX"
-  echo "    oidc issuer: $OIDC_ISSUER"
+  if [[ -n "$COSIGN_PUB" ]]; then
+    echo "    mode:        KEYED (AUTOPG_COSIGN_PUB set)"
+    echo "    cosign pub:  $COSIGN_PUB"
+  else
+    echo "    mode:        KEYLESS"
+    echo "    trust regex: $TRUST_REGEX"
+    echo "    oidc issuer: $OIDC_ISSUER"
+  fi
   echo "    source uri:  $SOURCE_URI"
 
   local tarballs=()
