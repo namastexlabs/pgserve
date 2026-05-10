@@ -14,6 +14,109 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] / [2.6.1] - 2026-05-09
+
+The 2.6 cohort closes the singleton-G3 sprint and the
+`autopg-distribution-cutover-finalize` Wave 1+2 work. v2.6.0 cut the singleton
+verbs to npm; v2.6.1 followed with the B2/B3/B4 CLI fix trio.
+
+### Added
+
+- **`pgserve doctor`** — read-only health probe for postmaster, pm2 supervision,
+  on-disk roots, and trust store. JSON output via `--json`. See
+  [`docs/migrations/v2.6-from-v2.5.md`](docs/migrations/v2.6-from-v2.5.md).
+- **`pgserve trust add | list | remove`** — manage the user-extensible cosign
+  trust store at `~/.pgserve/trust/identities.json`. Layered on top of the
+  hardcoded `TRUSTED_IDENTITIES` (frozen at build time). See
+  [`docs/trust-store.md`](docs/trust-store.md).
+- **`pgserve gc [--dry-run | --apply]`** — sweep orphan databases (rows in
+  `pgserve_meta` whose `source_path` no longer exists). One-line-per-event audit
+  log at `~/.pgserve/audit/gc-<YYYY-MM-DD>.log`. Rotates files >90 days old at
+  start of each run. See [`docs/pgserve-meta.md`](docs/pgserve-meta.md) for the
+  underlying schema.
+- **`pgserve provision <fingerprint>`** — idempotent DB + role provisioning for
+  an app fingerprint. Concurrency-safe via `pg_advisory_lock` keyed on
+  fingerprint hash; `42P04` ("database already exists") accepted as success.
+- **`pgserve create-app <slug>`** — per-consumer app registration with manifest
+  LOCK 1 cosign verifier. Writes `~/.autopg/<slug>/admin.json` + sibling
+  `manifest.json`, registers in `autopg_meta`, freezes `TRUSTED_IDENTITIES` for
+  this consumer at create time. `pgserve verify --slug <slug>` consults the
+  frozen snapshot.
+- **`pgserve verify --slug <slug>`** — verify a binary against an app's locked
+  roots (instead of the live `TRUSTED_IDENTITIES`). Allows trust rotation
+  without invalidating already-registered consumers.
+- **`pgserve_meta` schema** — base table for `provision`/`gc`. Cosign verification
+  columns (`verified_at`, `verified_identity`, `verified_tier`) layered on top
+  via additive ALTER TABLE migration. Schema reference at
+  [`docs/pgserve-meta.md`](docs/pgserve-meta.md).
+- **`autopg_meta` schema** — separate table keyed on `slug` for `create-app`
+  registrations. Frozen `locked_roots` JSONB. Idempotent re-runs preserve
+  `locked_roots` and only touch `last_updated`.
+- **GitHub Releases as the canonical distribution channel** — `install.sh`
+  fetches per-platform binaries from
+  `github.com/namastexlabs/pgserve/releases/download/v<version>/`. Cosign
+  attestations live in Sigstore Rekor; verification via `gh attestation verify`
+  (no custom verifier server). See
+  [`.github/workflows/release-publish.yml`](.github/workflows/release-publish.yml).
+- **Hardcoded blocklist** — `pgserve install` refuses to start against known-bad
+  versions with exit code `EBLOCKEDVERSION`.
+
+### Changed
+
+- **`pgserve install`** now runs port pre-flight (IPv4 + IPv6 connect probe on
+  5432) and refuses to start on collision. Closes the silent-failure mode
+  where pm2 reported `online` while postgres had crashed.
+- **`pgserve install --help`** respects `--help` / `-h` and exits 0 without
+  performing the install.
+- **Unknown verbs** (`pgserve foo`) exit non-zero with an "unknown verb" error
+  instead of printing top-level help and exiting 0.
+- **`pgserve doctor`** surfaces a missing `pgaudit` extension as a non-PASS
+  finding (was silently fall-through).
+- **`pgserve config --help`** exits 0 with a usage block instead of running the
+  config logic against `--help` as if it were a key.
+- **`install.sh`** replaced in-place with the ≤80-line GitHub Releases path.
+  No legacy or shim companions; the npm + pm2 install path is preserved via
+  `pgserve install` (`npm install -g pgserve && pgserve install`).
+
+### Fixed
+
+- **`fix(pg-query)`** — default `PGPASSWORD` to `'postgres'` on fresh install
+  (CV-1 release blocker).
+- **`fix(cosign)`** — correct trust-list github org refs (omni →
+  `automagik-dev`, pgserve → `namastexlabs`).
+- **`fix(cosign)`** — correct `publisher` field for pgserve + reconcile
+  `SHARED-DESIGN.md` org refs.
+- **`fix(postinstall)`** — worktree guard + non-CI pre-warning + dev-setup
+  docs. Closes the bug where every `bun install` in a pgserve worktree
+  triggered `autopg upgrade` against the real `~/.autopg/data/`.
+- **`fix(verify-binary)`** — `resolveBundlePath` fall-through to
+  `provenance.intoto.jsonl` and sibling provenance.
+- **`fix(verify-binary)`** — support detached `<tarball>.sig` +
+  `<tarball>.cert` cosign format alongside `<tarball>.bundle`.
+- **`fix(cli-install)`** — use `process.exitCode + throw` to avoid stdio-pipe
+  race on `process.exit(1)` against piped stdout.
+- **`fix(doctor)`** — timeout supervisor probes + `pgserve upgrade` hint when
+  pm2 is missing.
+- **`fix(install)`** — drop npm references in `install.sh`; canonical path is
+  the GitHub Releases curl-pipe.
+
+### Notes
+
+- The 2.6 cohort lands as **additive** changes — existing `pgserve` invocations
+  continue to work unchanged. See
+  [`docs/migrations/v2.6-from-v2.5.md`](docs/migrations/v2.6-from-v2.5.md) for
+  the operator action checklist.
+- **Signing artifacts on GitHub Releases are NOT yet shipping** as of v2.6.1.
+  The release workflow's `sign-attest.yml` produces cosign signatures + SLSA
+  L3 provenance, but the `release-publish.yml` upload step does not yet wire
+  those artifacts into the published release. Tracked as Wave A in
+  `agents/genie-pgserve/SIGNED-APPS-MISSION-STATE.md`. Will land in a follow-up
+  patch release.
+- **Connectivity fanout test** — `tests/integration/consumer-fanout.sh`
+  (verifying brain / omni / rlmx / hapvida-eugenia / email all reach the
+  postmaster) is owned by `pgserve-singleton-no-proxy` Group 9 and ships in a
+  separate cohort.
+
 ## [2.2.3] - 2026-05-03
 
 ### Changed
