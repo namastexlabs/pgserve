@@ -1,8 +1,7 @@
-import React from 'react';
-import * as ReactDOM from 'react-dom/client';
-
-globalThis.React = React;
-globalThis.ReactDOM = ReactDOM;
+// MUST be the first import: bootstraps React/ReactDOM/hooks onto
+// globalThis before any screen module evaluates. See globals.js for
+// the ESM import-hoisting hazard this fixes.
+import './globals.js';
 
 import './api.js';
 import './data.jsx';
