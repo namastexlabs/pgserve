@@ -141,6 +141,26 @@ autopg restart                         # pm2-aware: pm2 restart pgserve, else SI
 autopg ui [--port N] [--no-open]       # local web console on 127.0.0.1
 ```
 
+### v2.6 cohort verbs
+
+The 2.6 release adds five operator-facing verbs for health probing, trust-store
+management, orphan-database GC, fingerprint provisioning, and per-consumer app
+registration:
+
+```
+pgserve doctor [--json]                # read-only health probe
+pgserve trust <list|add|remove> [...]  # manage ~/.pgserve/trust/identities.json
+pgserve gc [--dry-run|--apply]         # sweep orphan databases (audit log)
+pgserve provision <fingerprint>        # idempotent DB + role provisioning
+pgserve create-app <slug>              # per-consumer manifest LOCK 1
+pgserve verify [--slug <slug>] <bin>   # cosign verify against trust list or locked roots
+```
+
+Full reference:
+[`docs/migrations/v2.6-from-v2.5.md`](docs/migrations/v2.6-from-v2.5.md) ·
+[`docs/pgserve-meta.md`](docs/pgserve-meta.md) ·
+[`docs/trust-store.md`](docs/trust-store.md).
+
 Foreground options accepted by `autopg` / `pgserve` (no subcommand):
 
 ```
