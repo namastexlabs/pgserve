@@ -244,4 +244,29 @@ describe('rotateGcAuditLogs', () => {
     expect(() => rotateGcAuditLogs({ homeDir, today: 'not-a-date' })).toThrow(TypeError);
     expect(() => rotateGcAuditLogs({ homeDir, today: new Date('not-a-date') })).toThrow(TypeError);
   });
+
+  test('failed deletion writes a rotate-error audit event with the file name', () => {
+    const dir = getAuditDir({ homeDir });
+    const today = new Date('2026-05-10T12:00:00Z');
+    makeLog(dir, '2026-02-01'); // 98 days old
+    // Make the file undeletable on platforms that honor it: chmod the
+    // parent dir to read-only. Skip the assertion on platforms where
+    // unlink succeeds anyway (e.g. running as root, certain CI sandboxes).
+    fs.chmodSync(dir, 0o500);
+    let r;
+    try {
+      r = rotateGcAuditLogs({ homeDir, today });
+    } finally {
+      fs.chmodSync(dir, AUDIT_DIR_MODE);
+    }
+    if (r.errors.length === 0) {
+      // Running as root or on a filesystem that ignores chmod — skip assertion.
+      return;
+    }
+    expect(r.errors[0].file).toBe('gc-2026-02-01.log');
+    const todayEvents = readGcAuditDay({ homeDir, date: today });
+    const errEvents = todayEvents.filter((e) => e.action === 'rotate-error');
+    expect(errEvents.length).toBe(1);
+    expect(errEvents[0].detail).toContain('gc-2026-02-01.log');
+  });
 });

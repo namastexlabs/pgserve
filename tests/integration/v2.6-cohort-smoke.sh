@@ -90,9 +90,14 @@ node "$REPO_ROOT/bin/pgserve-wrapper.cjs" provision "$SLUG" --source "$SOURCE_PA
     || { echo "FAIL: provision exited non-zero"; exit 1; }
 
 step "Step 3/8 — workload (write + read)"
+# pgserve provision --json emits camelCase `databaseName`; second invocation
+# is idempotent (already-provisioned in step 2 above) so we just read the name.
 DB_NAME="$(node "$REPO_ROOT/bin/pgserve-wrapper.cjs" provision "$SLUG" --source "$SOURCE_PATH" --port "$PORT" --json 2>/dev/null \
-    | grep -oE '"database":"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
-DB_NAME="${DB_NAME:-${SLUG//[@\/]/_}}"
+    | grep -oE '"databaseName":"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+if [ -z "$DB_NAME" ]; then
+    echo "FAIL: could not parse databaseName from pgserve provision --json output"
+    exit 1
+fi
 psql -h 127.0.0.1 -p "$PORT" -U postgres -d "$DB_NAME" \
     -c "CREATE TABLE IF NOT EXISTS smoke (k text PRIMARY KEY, v int)" >/dev/null
 psql -h 127.0.0.1 -p "$PORT" -U postgres -d "$DB_NAME" \
@@ -127,9 +132,11 @@ node "$REPO_ROOT/bin/pgserve-wrapper.cjs" create-app "$APP_NAME" --port "$PORT" 
     || { echo "FAIL: ~/.autopg/$APP_NAME/admin.json missing"; exit 1; }
 [ -f "$HOME/.autopg/$APP_NAME/manifest.json" ] \
     || { echo "FAIL: ~/.autopg/$APP_NAME/manifest.json missing"; exit 1; }
-# Verify mode 0600 on manifest, 0700 on dir
-DIR_MODE=$(stat -c '%a' "$HOME/.autopg/$APP_NAME" 2>/dev/null || stat -f '%A' "$HOME/.autopg/$APP_NAME")
-FILE_MODE=$(stat -c '%a' "$HOME/.autopg/$APP_NAME/manifest.json" 2>/dev/null || stat -f '%A' "$HOME/.autopg/$APP_NAME/manifest.json")
+# Verify mode 0600 on manifest, 0700 on dir.
+# GNU stat (Linux): -c '%a' for octal perms.
+# BSD stat (macOS):  -f '%Lp' for octal perms — '%A' returns SymbolicMode, not octal.
+DIR_MODE=$(stat -c '%a' "$HOME/.autopg/$APP_NAME" 2>/dev/null || stat -f '%Lp' "$HOME/.autopg/$APP_NAME")
+FILE_MODE=$(stat -c '%a' "$HOME/.autopg/$APP_NAME/manifest.json" 2>/dev/null || stat -f '%Lp' "$HOME/.autopg/$APP_NAME/manifest.json")
 [ "$DIR_MODE" = "700" ] || { echo "FAIL: dir mode is $DIR_MODE not 700"; exit 1; }
 [ "$FILE_MODE" = "600" ] || { echo "FAIL: manifest mode is $FILE_MODE not 600"; exit 1; }
 

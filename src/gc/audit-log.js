@@ -219,6 +219,21 @@ export function rotateGcAuditLogs({
       );
     } catch (err) {
       result.errors.push({ file: name, error: err.message });
+      // Record the per-file failure in today's audit log so an operator
+      // investigating "why is gc-2026-01-01.log still here?" can find the
+      // exact reason (permission denied / file in use / etc.) instead of
+      // only seeing the rotate-summary count.
+      try {
+        writeGcAudit(
+          {
+            action: 'rotate-error',
+            detail: `failed to delete ${name}: ${err.message}`,
+          },
+          { homeDir, date: today },
+        );
+      } catch {
+        /* best-effort — never let audit-write failure abort the rotation pass */
+      }
     }
   }
   return result;
