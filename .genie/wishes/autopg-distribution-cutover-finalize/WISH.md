@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | IN-PROGRESS — Wave 1 (G1+G2) ✅ shipped · Wave 2 (G3) ✅ shipped · Wave 3 (G4) ⚪ pending · Wave 4 (G5) ⚪ pending |
+| **Status** | ✅ SHIPPED — all 5 groups merged (Wave 1: G1+G2 · Wave 2: G3 · Wave 3: G4 · Wave 4: G5). Release-tag cut for v2.6.x is the only remaining operational step. |
 | **Slug** | `autopg-distribution-cutover-finalize` |
-| **Date** | 2026-05-09 (refreshed 2026-05-09 to record G1/G3 implementation history + reconcile decisions with shipped reality) |
+| **Date** | 2026-05-09 (refreshed 2026-05-10 to mark G4+G5 merged + close the wish) |
 | **Author** | genie-pgserve |
 | **Appetite** | 1 week (5 groups, mostly small; G3 is the only meaty one) |
 | **Branch** | `wish/autopg-distribution-cutover-finalize` |
@@ -201,6 +201,9 @@ grep -rE "pgserve (doctor|trust|gc|provision)" CHANGELOG.md docs/  # -r recurses
 
 **depends-on:** Group 3
 
+**Implementation history (2026-05-10):**
+PR #110 shipped 5 files / 607 insertions — all deliverables D1, D2, D3, D4, D6 met. D5 (per-consumer migration recipes in those repos) remains owned by the consumer-side cross-repo proposal docs (`agents/genie-pgserve/RLMX-V26-FIX-PROPOSAL.md`, `agents/genie-pgserve/OMNI-V26-VERSION-PROBE-PROPOSAL.md`) — landing as separate PRs in those repos in their own cadence. Files shipped: `docs/migrations/v2.6-from-v2.5.md` (operator action checklist + rollback), `docs/pgserve-meta.md` (schema reference for both metadata tables), `docs/trust-store.md` (`~/.pgserve/trust/identities.json` reference + `pgserve trust` CLI), `CHANGELOG.md` v2.6.0/v2.6.1 cohort entry (10 Added / 6 Changed / 8 Fixed), `README.md` Quick-Start v2.6 verbs subsection. Felipe direction 2026-05-09 placed `hapvida-eugenia` + `email` out of scope for this wish.
+
 ---
 
 ### Group 5: Final v2.4 validation + release prep (audit rotation + smoke)
@@ -233,6 +236,25 @@ gh attestation verify <downloaded-tarball> --owner namastexlabs
 ```
 
 **depends-on:** Group 4
+
+**Implementation history (2026-05-10):**
+PR #112 shipped 5 files / 481 insertions across two commits (`9e7e036` initial + `c17045c` bot-review fix-up). All 3 code/script/doc deliverables (D1, D2, D3) met; D4 (release-tag cut) deferred to Felipe's operational call per the dual-path acceptance.
+
+- **D1 — Audit log rotation**: `src/gc/audit-log.js#rotateGcAuditLogs()` with 90-day retention + current-day boundary guard. Wired into `src/commands/gc.js` to run at start of every gc invocation. Each deletion writes a `{action:'rotate'}` event into today's log; failed deletions write `{action:'rotate-error'}` with the file name + reason.
+- **D2 — End-to-end smoke**: `tests/integration/v2.6-cohort-smoke.sh` exercises provision → workload → gc dry-run → doctor → trust → create-app against fresh `$HOME` + ephemeral postgres. Skips gracefully when `initdb`/`pg_ctl` absent. Uses LOCAL build (per wish text: "do NOT use `npx pgserve@latest`").
+- **D3 — Release notes**: `docs/releases/v2.6.2.md` cohort-closer body — covers all 5 groups, supplemental fixes ledger, known limitations (Wave A signing-artifact gap, fanout test deferred to singleton G9, `doctor --fix` is a stub).
+
+Tests: 24 audit-log tests pass (was 11 pre-G5; +13 rotation + rotate-error tests). 100% function / 100% line coverage on `src/gc/audit-log.js`.
+
+Bot-review fix-up commit `c17045c` addressed 6 findings: codex P1 (smoke parsed wrong JSON key `database` instead of camelCase `databaseName`), gemini medium ×3 (`../../  .genie/...` link typos in release notes), gemini medium (BSD `stat -f '%A'` returns SymbolicMode not octal — fixed to `%Lp`), gemini medium (failed unlink now writes `rotate-error` audit event with file name).
+
+**Acceptance criteria final state:**
+- ✅ Audit rotation deletes 91-day-old / keeps 89-day-old (test pass)
+- ✅ Audit rotation never deletes current day's log even at retentionDays=0 (boundary-guard test pass)
+- ✅ Rotation event itself is audited
+- ⚠️ Smoke script Ubuntu+macOS clean-host run — gated on CI matrix availability (script ready, optional matrix per gc-provision.test.sh pattern)
+- ⚠️ `pgserve doctor --json` zero-FAIL post-smoke — script asserts; runs in CI when matrix wires in
+- ⚠️ `gh attestation verify` on release artifacts — **deferred to dual-path acceptance** (Path A: wait for Wave A signing-artifact wiring; Path B: cut now with signing-pending note in `docs/releases/v2.6.2.md`)
 
 ---
 
