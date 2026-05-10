@@ -51,8 +51,15 @@ export const TRUSTED_IDENTITIES = Object.freeze([
     id: 'automagik-pgserve-release',
     publisher: 'pgserve',
     issuer: SIGSTORE_GITHUB_ACTIONS_ISSUER,
-    identityRegexp: '^https://github.com/namastexlabs/pgserve/.github/workflows/release.yml@refs/tags/v.*$',
-    description: 'Namastex automagik pgserve release workflow (GitHub Actions OIDC)',
+    // Wave A (v2.6.x): pgserve's signing happens in `sign-attest.yml`,
+    // not `release.yml` (which is the unrelated npm-publish workflow
+    // with zero cosign content). Renaming sign-attest.yml → release.yml
+    // would clobber that workflow, so we anchor the trust regex on
+    // sign-attest.yml instead. Mirror image of genie PR #1725 (binding
+    // release.yml@refs/tags/v* — same Sigstore identity discipline,
+    // different workflow filename).
+    identityRegexp: '^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$',
+    description: 'Namastex automagik pgserve sign-attest workflow (GitHub Actions OIDC)',
   }),
 ]);
 

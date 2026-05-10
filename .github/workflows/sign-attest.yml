@@ -1,22 +1,26 @@
 name: Sign + Attest Tarballs (autopg)
 
 # Group 8 of autopg-distribution-cutover — signs every tarball produced
-# by build-tarballs.yml with cosign + emits a SLSA L3 build-provenance
-# attestation per platform, then aggregates a top-level manifest.json
-# for Group 9 (CDN publish) to consume.
+# by build-tarballs.yml with cosign keyless OIDC + emits a SLSA L3 build-
+# provenance attestation per platform, then aggregates a top-level
+# manifest.json for release-publish.yml to consume.
 #
-# Trigger: runs after build-tarballs.yml completes successfully on a tag
-# push (workflow_run), or on manual dispatch (workflow_dispatch) — also
-# usable as a callable workflow.
+# Trigger: runs after build-tarballs.yml completes successfully (any
+# ref, including tag pushes), or on manual dispatch (workflow_dispatch)
+# — also usable as a callable workflow.
 #
-# Required GitHub Actions secrets:
-#   COSIGN_PRIVATE_KEY    full contents of cosign.key (paired with keys/cosign.pub)
-#   COSIGN_PASSWORD       password used during `cosign generate-key-pair`
+# Signing is cosign keyless (OIDC via GitHub Actions). No secrets
+# required; the id-token: write permission below mints OIDC tokens on
+# demand. The Fulcio cert subject encodes
+# `<repo>/.github/workflows/sign-attest.yml@<ref>`, which is what
+# `src/cosign/trust-list.js` anchors `automagik-pgserve-release`
+# against (refs/tags/v.* under post-Wave-A binding).
 #
 # Outputs (uploaded as a single artifact `autopg-signed-bundle`):
 #   dist/autopg-<version>-<platform>.tar.gz
 #   dist/autopg-<version>-<platform>.tar.gz.sha256
 #   dist/autopg-<version>-<platform>.tar.gz.sig
+#   dist/autopg-<version>-<platform>.tar.gz.cert
 #   dist/autopg-<version>-<platform>.tar.gz.intoto.jsonl
 #   dist/manifest.json
 
@@ -24,9 +28,12 @@ on:
   workflow_run:
     workflows: ["Build Tarballs (autopg)"]
     types: [completed]
-    branches:
-      - main
-      - 'wish/**'
+    # Wave A (v2.6.x) — Mismatch 5 fix: the `branches:` filter excluded
+    # tag refs, so on a `git push origin v*` build-tarballs.yml ran but
+    # this workflow never fired (release-publish then shipped zero
+    # signing artifacts). Dropping the filter makes workflow_run fire on
+    # every successful build-tarballs run, including tag pushes that
+    # produce the actual release artifacts.
   workflow_dispatch:
     inputs:
       version:
@@ -47,11 +54,9 @@ on:
         description: 'upstream run id'
         required: false
         type: string
-    secrets:
-      COSIGN_PRIVATE_KEY:
-        required: true
-      COSIGN_PASSWORD:
-        required: true
+    # Wave A (v2.6.x) — keyless OIDC: no secrets required.
+    # The id-token: write permission below mints OIDC tokens on demand;
+    # cosign sign-blob exchanges them for a Fulcio cert at signing time.
 
 concurrency:
   group: sign-attest-${{ github.ref }}-${{ inputs.version || github.sha }}
@@ -130,25 +135,28 @@ jobs:
           fi
           echo "sha256 match: ${ACTUAL}  ${TARBALL}"
 
-      - name: cosign sign-blob
+      - name: cosign sign-blob (keyless OIDC)
         shell: bash
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD:    ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_YES: "true"
           VERSION:  ${{ steps.ver.outputs.version }}
           PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           TARBALL="dist/autopg-${VERSION}-${PLATFORM}.tar.gz"
           SIG="${TARBALL}.sig"
+          CERT="${TARBALL}.cert"
 
+          # Keyless OIDC: cosign exchanges the workflow's id-token for a
+          # short-lived Fulcio certificate. The cert subject encodes the
+          # workflow path + ref, which trust-list.js anchors against.
           cosign sign-blob \
             --yes \
-            --key env://COSIGN_PRIVATE_KEY \
             --output-signature "${SIG}" \
+            --output-certificate "${CERT}" \
             "${TARBALL}"
 
-          echo "::notice::signed ${TARBALL} -> ${SIG}"
+          echo "::notice::signed ${TARBALL} (keyless) -> ${SIG} + ${CERT}"
 
       - name: cosign verify-blob (self-check)
         shell: bash
@@ -158,9 +166,16 @@ jobs:
         run: |
           set -euo pipefail
           TARBALL="dist/autopg-${VERSION}-${PLATFORM}.tar.gz"
+          # Keyless verify: anchor on this workflow's own path + a
+          # permissive ref-tail (covers tag refs in production runs and
+          # branch refs during workflow_run-internal CI). The strict
+          # consumer-facing trust regex in src/cosign/trust-list.js
+          # tightens this to refs/tags/v.*.
           cosign verify-blob \
-            --key keys/cosign.pub \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/sign-attest.yml@" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             --signature "${TARBALL}.sig" \
+            --certificate "${TARBALL}.cert" \
             "${TARBALL}"
 
       - name: Generate SLSA build provenance
@@ -194,6 +209,7 @@ jobs:
             dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz
             dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz.sha256
             dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz.sig
+            dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz.cert
             dist/autopg-${{ steps.ver.outputs.version }}-${{ matrix.platform }}.tar.gz.intoto.jsonl
           retention-days: 14
           if-no-files-found: error
@@ -250,7 +266,7 @@ jobs:
         run: |
           bash scripts/verify-published-artifacts.sh dist/
 
-      - name: Fail if any tarball lacks sig + provenance
+      - name: Fail if any tarball lacks sig + cert + provenance
         shell: bash
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -258,7 +274,7 @@ jobs:
           set -euo pipefail
           MISSING=0
           for f in dist/autopg-${VERSION}-*.tar.gz; do
-            for ext in sig intoto.jsonl sha256; do
+            for ext in sig cert intoto.jsonl sha256; do
               if [[ ! -f "${f}.${ext}" ]]; then
                 echo "::error::missing ${f}.${ext}"
                 MISSING=$((MISSING + 1))
@@ -270,7 +286,7 @@ jobs:
             exit 1
           fi
 
-      - name: Upload aggregated bundle (handoff to Group 9)
+      - name: Upload aggregated bundle (handoff to release-publish)
         uses: actions/upload-artifact@v4
         with:
           name: autopg-signed-bundle-${{ steps.ver.outputs.version }}
@@ -278,8 +294,8 @@ jobs:
             dist/autopg-${{ steps.ver.outputs.version }}-*.tar.gz
             dist/autopg-${{ steps.ver.outputs.version }}-*.tar.gz.sha256
             dist/autopg-${{ steps.ver.outputs.version }}-*.tar.gz.sig
+            dist/autopg-${{ steps.ver.outputs.version }}-*.tar.gz.cert
             dist/autopg-${{ steps.ver.outputs.version }}-*.tar.gz.intoto.jsonl
             dist/manifest.json
-            keys/cosign.pub
           retention-days: 30
           if-no-files-found: error
