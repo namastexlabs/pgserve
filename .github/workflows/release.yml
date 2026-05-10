@@ -223,10 +223,22 @@ jobs:
       # On the push path nobody creates the tag before this runs; the
       # SHA-based checkout works because the merge commit already has the
       # bumped package.json. The tag is pushed by the bump job (when
-      # workflow_dispatch is used) OR by the human merge (when push event
-      # carries an annotated tag). GitHub Release creation now flows
+      # workflow_dispatch is used). GitHub Release creation now flows
       # through `release-publish.yml` exclusively — see "Release job
       # removed" note below.
+      #
+      # KNOWN LIMITATION (Wave A PR-A2 follow-up): the push-to-main flow
+      # NO LONGER creates a tag automatically. The dropped `release` job
+      # was creating the tag via `gh release create v${VERSION}` against
+      # HEAD; without it, push-event runs of release.yml will npm-publish
+      # but produce no tag → no `build-tarballs → sign-attest →
+      # release-publish` chain → no GitHub Release.
+      #
+      # Workaround until a tag-creation step lands: route releases via
+      # workflow_dispatch (the bump job creates and pushes the tag,
+      # which then fires build-tarballs → sign-attest → release-publish).
+      # This matches Felipe's current operational practice (all recent
+      # v2.x releases were cut via workflow_dispatch, not push-to-main).
       ref: ${{ needs.prepare.outputs.ref }}
     secrets: inherit
 
@@ -255,8 +267,13 @@ jobs:
   # operators need them, future PR-A3+ (D7 naming reconciliation) can
   # route them through release-publish.
   #
-  # Tag creation itself is unaffected: the `bump` job (workflow_dispatch
-  # path) and the human merge commit (push path) both still create the
-  # tag. release-publish.yml's `on: push: tags: ['v*']` trigger picks
-  # up the tag and creates the Release with signed artifacts.
+  # Tag creation on the WORKFLOW_DISPATCH path is unaffected — the
+  # `bump` job creates and pushes the tag. release-publish.yml fires
+  # on `workflow_run` after sign-attest completes, picks up the tag
+  # via the upstream `workflow_run.head_branch`, and creates the
+  # GitHub Release with signed artifacts.
+  #
+  # Tag creation on the PUSH path is NOT covered here anymore — see
+  # known limitation in `build` job above. If push-to-main releases
+  # are required, route them through `workflow_dispatch` instead.
   # ---------------------------------------------------------------------------

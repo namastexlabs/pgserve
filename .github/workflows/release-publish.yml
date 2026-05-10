@@ -47,6 +47,15 @@ on:
       version:
         description: 'Version to publish (e.g. 2.6.2)'
         required: true
+      sign_run_id:
+        description: |
+          Workflow run ID of the upstream "Sign + Attest Tarballs (autopg)"
+          run that produced the autopg-signed-bundle-<version> artifact.
+          Find it via:
+            gh run list --workflow "Sign + Attest Tarballs (autopg)" --limit 5
+          REQUIRED for manual dispatch — there's no automatic upstream
+          run-id resolution outside the workflow_run trigger path.
+        required: true
       channel:
         description: 'Release channel'
         required: true
@@ -70,6 +79,10 @@ permissions:
   contents: write              # gh release create
   id-token: write              # cosign keyless OIDC (if re-signing)
   attestations: write          # actions/attest-build-provenance@v1
+  actions: read                # cross-run download via `run-id` requires
+                               # this — when an explicit permissions block
+                               # is present, unlisted scopes are denied,
+                               # so we must enumerate every scope we use.
 
 jobs:
   publish:
@@ -126,11 +139,10 @@ jobs:
           name: autopg-signed-bundle-${{ steps.ver.outputs.version }}
           path: dist/
           # Cross-workflow downloads need the upstream run-id +
-          # github-token. workflow_run gives us the run-id for free;
-          # workflow_dispatch falls back to the current run (where the
-          # bundle would have been uploaded if release-publish were ever
-          # invoked inline — currently always cross-workflow).
-          run-id: ${{ github.event.workflow_run.id || github.run_id }}
+          # github-token. workflow_run gives us the run-id for free
+          # (github.event.workflow_run.id); manual dispatch operators
+          # must supply it via the `sign_run_id` input.
+          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.sign_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: List release assets
