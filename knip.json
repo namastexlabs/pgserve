@@ -4,7 +4,7 @@
     "src/index.js",
     "bin/postgres-server.js",
     "bin/pgserve-wrapper.cjs",
-    "src/upgrade/index.js",
+    "src/update/index.js",
     "src/commands/**",
     "src/cosign/**",
     "console/src/main.jsx"

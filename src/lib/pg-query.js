@@ -6,7 +6,8 @@
  *
  * Why psql shellout vs. node-postgres:
  *   - matches the existing pattern in
- *     `src/upgrade/steps/cosign-meta-migration.js` (PR #79).
+ *     `src/update/steps/cosign-meta-migration.js` (PR #79; renamed
+ *     from `src/upgrade/` in v3.0.0 verb cutover).
  *   - avoids the runtime cost of loading the `pg` driver in a CLI
  *     verb that runs once and exits.
  *   - no shell expansion: SQL goes through stdin, not a template
