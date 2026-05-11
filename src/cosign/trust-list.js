@@ -37,13 +37,28 @@ export const TRUSTED_IDENTITIES = Object.freeze([
     id: 'automagik-genie-release',
     publisher: '@automagik/genie',
     issuer: SIGSTORE_GITHUB_ACTIONS_ISSUER,
-    identityRegexp: '^https://github.com/automagik-dev/genie/.github/workflows/release.yml@refs/tags/v.*$',
-    description: 'Namastex automagik genie release workflow (GitHub Actions OIDC)',
+    // genie's release.yml is an orchestrator that workflow_call's into
+    // sign-attest.yml — the Fulcio SAN URI therefore binds to
+    // sign-attest.yml@<ref>, not release.yml@<ref>. Verified against
+    // both v4.260511.1 (released from main) and v4.260511.2 (released
+    // from wish/genie-distribution-cutover-g1) bundle certificates on
+    // 2026-05-11: both cert subjects are
+    // `automagik-dev/genie/.github/workflows/sign-attest.yml@refs/tags/v4.260511.x`.
+    // Same shape as pgserve's own entry below.
+    identityRegexp: '^https://github.com/automagik-dev/genie/.github/workflows/sign-attest.yml@refs/tags/v.*$',
+    description: 'Namastex automagik genie sign-attest workflow (GitHub Actions OIDC)',
   }),
   Object.freeze({
     id: 'automagik-omni-release',
     publisher: '@automagik/omni',
     issuer: SIGSTORE_GITHUB_ACTIONS_ISSUER,
+    // Omni signing pipeline TBD — `v3-prerelease-trust-loop` G2 wires
+    // it. Keeping the `release.yml@` anchor as the contract-of-intent
+    // until omni's signing workflow filename is locked in G2. If omni
+    // mirrors genie's orchestrator+workflow_call pattern, this regex
+    // must flip to `sign-attest.yml@` before omni's first signed tag
+    // can verify. Re-validate against the first signed omni release
+    // bundle during G4 smoke.
     identityRegexp: '^https://github.com/automagik-dev/omni/.github/workflows/release.yml@refs/tags/v.*$',
     description: 'Namastex automagik omni release workflow (GitHub Actions OIDC)',
   }),

@@ -32,7 +32,7 @@ const SAMPLE_LOCKED_ROOTS = Object.freeze([
     id: 'automagik-genie-release',
     publisher: '@automagik/genie',
     issuer: 'https://token.actions.githubusercontent.com',
-    identityRegexp: '^https://github.com/automagik-dev/genie/.github/workflows/release.yml@refs/tags/v.*$',
+    identityRegexp: '^https://github.com/automagik-dev/genie/.github/workflows/sign-attest.yml@refs/tags/v.*$',
     description: 'genie release',
   }),
 ]);
