@@ -21,8 +21,6 @@
     "scripts/**"
   ],
   "ignoreBinaries": [
-    "scripts/test-npx.sh",
-    "scripts/test-bun-self-heal.sh",
     "make",
     "gh"
   ],
