@@ -20,7 +20,7 @@ import path from 'node:path';
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const POSTGRES_SERVER = path.join(REPO_ROOT, 'bin', 'postgres-server.js');
-const WRAPPER = path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs');
+const WRAPPER = path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs');
 
 function runScript(script, args = []) {
   return spawnSync(process.execPath, [script, ...args], {

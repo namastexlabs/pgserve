@@ -33,7 +33,7 @@ import http from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const WRAPPER = path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs');
+const WRAPPER = path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs');
 const CLI_UI_PATH = path.join(REPO_ROOT, 'src', 'cli-ui.cjs');
 
 let tmpConfigDir;

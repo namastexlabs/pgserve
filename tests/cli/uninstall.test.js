@@ -16,7 +16,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const BIN = path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs');
+const BIN = path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs');
 
 let tmpHome;
 let stubBin;

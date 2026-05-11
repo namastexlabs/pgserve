@@ -463,7 +463,7 @@ function serveFile(res, filePath) {
 
 /**
  * Build the request handler. `ctx.scriptPath` is the absolute path to
- * `bin/pgserve-wrapper.cjs` (used for shell-outs). `ctx.consoleRoot`
+ * `bin/autopg-wrapper.cjs` (used for shell-outs). `ctx.consoleRoot`
  * defaults to the repo's `console/` directory.
  */
 // Lazy-load the auth verifier to avoid a require cycle with cli-install.

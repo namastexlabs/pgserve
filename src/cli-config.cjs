@@ -288,7 +288,7 @@ function dispatch(subcommand, args = []) {
     // as an unknown subcommand. Pre-fix, the dispatcher hit the default
     // branch which emitted `error: --help — INVALID_KEY: unknown config
     // subcommand "--help"` AND printed the usage block AND returned
-    // EXIT_UNKNOWN. The wrapper at bin/pgserve-wrapper.cjs translated
+    // EXIT_UNKNOWN. The wrapper at bin/autopg-wrapper.cjs translated
     // EXIT_UNKNOWN to a non-zero exit BUT the parent shell saw exit 0
     // because of a stale process.exit path; either way the message
     // shape "error:" + exit-code-status disagreed (the exact bug B6

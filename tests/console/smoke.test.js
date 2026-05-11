@@ -274,7 +274,7 @@ describe('autopg ui server hands every console asset back', () => {
     const ui = require(uiPath);
     const { port, close } = await ui.startServer({
       args: ['--no-open'],
-      scriptPath: path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'),
+      scriptPath: path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'),
       openInBrowser: () => {},
     });
     try {

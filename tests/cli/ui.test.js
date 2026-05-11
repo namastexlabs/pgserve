@@ -53,7 +53,7 @@ async function bootServer({ args = [], openInBrowser } = {}) {
   const ui = freshUi();
   return ui.startServer({
     args: ['--no-open', ...args],
-    scriptPath: path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'),
+    scriptPath: path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'),
     openInBrowser: openInBrowser || (() => {}),
   });
 }
@@ -112,7 +112,7 @@ describe('server boot', () => {
       const ui = freshUi();
       const handle = await ui.startServer({
         args: [],
-        scriptPath: path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'),
+        scriptPath: path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'),
         openInBrowser: (u) => {
           opened = u;
         },
@@ -247,7 +247,7 @@ describe('static file serving', () => {
       const ui = freshUi();
       const { port, close } = await ui.startServer({
         args: ['--no-open'],
-        scriptPath: path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'),
+        scriptPath: path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'),
         consoleRoot,
         openInBrowser: () => {},
       });
@@ -277,7 +277,7 @@ describe('static file serving', () => {
       const ui = freshUi();
       const { port, close } = await ui.startServer({
         args: ['--no-open'],
-        scriptPath: path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'),
+        scriptPath: path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'),
         consoleRoot,
         openInBrowser: () => {},
       });

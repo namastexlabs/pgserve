@@ -8,7 +8,7 @@
  *     stdout, stderr, exit codes, and the on-disk file shape.
  *
  * The wrapper's bun-probe is bypassed because `config` is in the
- * __installSubcommands set — see bin/pgserve-wrapper.cjs.
+ * __installSubcommands set — see bin/autopg-wrapper.cjs.
  */
 
 import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
@@ -18,7 +18,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const BIN = path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs');
+const BIN = path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs');
 
 let tmpHome;
 
@@ -205,7 +205,7 @@ describe('alias parity', () => {
 
     const viaPgserve = spawnSync(
       'node',
-      [path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'), 'config', 'list'],
+      [path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'), 'config', 'list'],
       {
         encoding: 'utf8',
         env: { ...process.env, AUTOPG_CONFIG_DIR: tmpHome, AUTOPG_PORT: '', PGSERVE_PORT: '' },
@@ -264,7 +264,7 @@ describe('B6 — `pgserve config --help` honored as help request (v2.6.3)', () =
   test('T6 (Decision #7): autopg and pgserve bins agree on --help behavior', () => {
     const viaPgserve = spawnSync(
       'node',
-      [path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'), 'config', '--help'],
+      [path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'), 'config', '--help'],
       {
         encoding: 'utf8',
         env: { ...process.env, AUTOPG_CONFIG_DIR: tmpHome, AUTOPG_PORT: '', PGSERVE_PORT: '' },

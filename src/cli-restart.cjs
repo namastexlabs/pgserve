@@ -7,7 +7,7 @@
  *     restart bumps the supervised counter and respects the hardened
  *     defaults registered at install time.
  *   - Otherwise → read the daemon's pidfile, SIGTERM, wait for exit, then
- *     respawn via `bin/pgserve-wrapper.cjs daemon`. Detached so the
+ *     respawn via `bin/autopg-wrapper.cjs daemon`. Detached so the
  *     respawn outlives this CLI process.
  *
  * Exit codes:
@@ -159,7 +159,7 @@ function restartViaPm2() {
  * Local-respawn path. Reads the daemon pidfile, SIGTERMs, waits, then
  * respawns the daemon detached so it survives this CLI process exiting.
  *
- * `scriptPath` is the path to bin/pgserve-wrapper.cjs (resolved by the
+ * `scriptPath` is the path to bin/autopg-wrapper.cjs (resolved by the
  * dispatcher's ctx so the test surface can inject a stub binary).
  */
 function restartLocally({ scriptPath, env = process.env } = {}) {
@@ -193,7 +193,7 @@ function restartLocally({ scriptPath, env = process.env } = {}) {
 }
 
 /**
- * Entry point. `ctx.scriptPath` is the path to `bin/pgserve-wrapper.cjs`
+ * Entry point. `ctx.scriptPath` is the path to `bin/autopg-wrapper.cjs`
  * (so the local respawn can re-enter the wrapper to start the daemon).
  *
  * `ctx.pm2IsAvailable` and `ctx.pm2GetProcess` are dependency-injection

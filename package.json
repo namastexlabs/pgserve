@@ -1,12 +1,11 @@
 {
-  "name": "pgserve",
+  "name": "autopg",
   "version": "2.6.1",
   "description": "Embedded PostgreSQL server with true concurrent connections - zero config, auto-provision databases",
   "main": "src/index.js",
   "type": "module",
   "bin": {
-    "autopg": "./bin/autopg-wrapper.cjs",
-    "pgserve": "./bin/pgserve-wrapper.cjs"
+    "autopg": "./bin/autopg-wrapper.cjs"
   },
   "files": [
     "bin/",

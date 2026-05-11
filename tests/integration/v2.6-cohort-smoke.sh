@@ -69,8 +69,8 @@ export HOME="$TMP_HOME"
 export AUTOPG_SKIP_POSTINSTALL=1
 export PGPASSWORD="${PGPASSWORD:-postgres}"
 
-PGSERVE="$REPO_ROOT/bin/pgserve-wrapper.cjs"
-[ -x "$PGSERVE" ] || PGSERVE="node $REPO_ROOT/bin/pgserve-wrapper.cjs"
+PGSERVE="$REPO_ROOT/bin/autopg-wrapper.cjs"
+[ -x "$PGSERVE" ] || PGSERVE="node $REPO_ROOT/bin/autopg-wrapper.cjs"
 
 step() {
     echo
@@ -86,13 +86,13 @@ cat >"$SOURCE_PATH/package.json" <<EOF
 EOF
 
 step "Step 2/8 — pgserve provision $SLUG"
-node "$REPO_ROOT/bin/pgserve-wrapper.cjs" provision "$SLUG" --source "$SOURCE_PATH" --port "$PORT" \
+node "$REPO_ROOT/bin/autopg-wrapper.cjs" provision "$SLUG" --source "$SOURCE_PATH" --port "$PORT" \
     || { echo "FAIL: provision exited non-zero"; exit 1; }
 
 step "Step 3/8 — workload (write + read)"
 # pgserve provision --json emits camelCase `databaseName`; second invocation
 # is idempotent (already-provisioned in step 2 above) so we just read the name.
-DB_NAME="$(node "$REPO_ROOT/bin/pgserve-wrapper.cjs" provision "$SLUG" --source "$SOURCE_PATH" --port "$PORT" --json 2>/dev/null \
+DB_NAME="$(node "$REPO_ROOT/bin/autopg-wrapper.cjs" provision "$SLUG" --source "$SOURCE_PATH" --port "$PORT" --json 2>/dev/null \
     | grep -oE '"databaseName":"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
 if [ -z "$DB_NAME" ]; then
     echo "FAIL: could not parse databaseName from pgserve provision --json output"
@@ -106,27 +106,27 @@ ROW=$(psql -h 127.0.0.1 -p "$PORT" -U postgres -d "$DB_NAME" -tAc "SELECT v FROM
 [ "$ROW" = "42" ] || { echo "FAIL: workload row mismatch (got '$ROW')"; exit 1; }
 
 step "Step 4/8 — pgserve gc --dry-run (zero orphans expected)"
-GC_OUT=$(node "$REPO_ROOT/bin/pgserve-wrapper.cjs" gc --dry-run --port "$PORT" --json 2>/dev/null) \
+GC_OUT=$(node "$REPO_ROOT/bin/autopg-wrapper.cjs" gc --dry-run --port "$PORT" --json 2>/dev/null) \
     || { echo "FAIL: gc --dry-run exited non-zero"; exit 1; }
 echo "$GC_OUT" | grep -qE '"orphans":\s*0' \
     || { echo "FAIL: expected zero orphans, got: $GC_OUT"; exit 1; }
 
 step "Step 5/8 — pgserve doctor --json (zero FAIL expected)"
-DOCTOR_OUT=$(node "$REPO_ROOT/bin/pgserve-wrapper.cjs" doctor --json 2>/dev/null) \
+DOCTOR_OUT=$(node "$REPO_ROOT/bin/autopg-wrapper.cjs" doctor --json 2>/dev/null) \
     || { echo "FAIL: doctor exited non-zero"; exit 1; }
 FAIL_COUNT=$(echo "$DOCTOR_OUT" | grep -oE '"status":"FAIL"' | wc -l | tr -d ' ')
 [ "$FAIL_COUNT" = "0" ] \
     || { echo "FAIL: doctor reports $FAIL_COUNT FAIL findings"; echo "$DOCTOR_OUT"; exit 1; }
 
 step "Step 6/8 — pgserve trust list (three hardcoded entries expected)"
-TRUST_OUT=$(node "$REPO_ROOT/bin/pgserve-wrapper.cjs" trust list --json 2>/dev/null) \
+TRUST_OUT=$(node "$REPO_ROOT/bin/autopg-wrapper.cjs" trust list --json 2>/dev/null) \
     || { echo "FAIL: trust list exited non-zero"; exit 1; }
 HARDCODED_COUNT=$(echo "$TRUST_OUT" | grep -oE '"source":"hardcoded"' | wc -l | tr -d ' ')
 [ "$HARDCODED_COUNT" -ge "3" ] \
     || { echo "FAIL: expected >= 3 hardcoded trust entries, got $HARDCODED_COUNT"; exit 1; }
 
 step "Step 7/8 — pgserve create-app $APP_NAME (registers in autopg_meta)"
-node "$REPO_ROOT/bin/pgserve-wrapper.cjs" create-app "$APP_NAME" --port "$PORT" \
+node "$REPO_ROOT/bin/autopg-wrapper.cjs" create-app "$APP_NAME" --port "$PORT" \
     || { echo "FAIL: create-app exited non-zero"; exit 1; }
 [ -f "$HOME/.autopg/$APP_NAME/admin.json" ] \
     || { echo "FAIL: ~/.autopg/$APP_NAME/admin.json missing"; exit 1; }

@@ -171,7 +171,7 @@ pgserve_run() {
   HOME="$FAKE_HOME" \
   PGHOST="$SOCKET_DIR" \
   PATH="${STUB_DIR}:${PATH}" \
-    node "${REPO_ROOT}/bin/pgserve-wrapper.cjs" "$@"
+    node "${REPO_ROOT}/bin/autopg-wrapper.cjs" "$@"
 }
 
 run_create_app() {
