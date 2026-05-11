@@ -103,11 +103,17 @@ describe('genie + omni entries (cohort siblings — regression sanity)', () => {
     );
   });
 
-  test('omni entry anchors on automagik-dev/omni release.yml@refs/tags/v.*', () => {
+  test('omni entry anchors on automagik-dev/omni sign-attest.yml@refs/tags/v.*', () => {
+    // Pre-emptive: omni's signing pipeline mirrors genie's
+    // orchestrator+workflow_call pattern per Felipe directive 2026-05-11
+    // (v3-prerelease-trust-loop G2 decision 2.α). The omni sign-attest.yml
+    // is being authored under automagik-dev/omni; this regex shape is
+    // locked here so the first signed omni release tag verifies without
+    // a follow-up trust-list flip. Re-validate empirically during G4.
     const entry = getTrustedById('automagik-omni-release');
     expect(entry).toBeTruthy();
     expect(entry.identityRegexp).toMatch(
-      /^\^https:\/\/github\.com\/automagik-dev\/omni\/\.github\/workflows\/release\.yml@refs\/tags\/v\.\*\$$/,
+      /^\^https:\/\/github\.com\/automagik-dev\/omni\/\.github\/workflows\/sign-attest\.yml@refs\/tags\/v\.\*\$$/,
     );
   });
 });
