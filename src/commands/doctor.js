@@ -91,7 +91,7 @@ function checkVersionNotBlocked() {
       `pgserve@${version} is on the hardcoded blocklist`,
       SEVERITY.FAIL,
       hit.reason,
-      'install a different version (run `pgserve upgrade` for the latest)',
+      'install a different version (run `pgserve update` for the latest)',
     );
   }
   return check('version_blocklist', `pgserve@${version} is not blocked`, SEVERITY.PASS);

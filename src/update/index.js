@@ -1,5 +1,9 @@
 /**
- * autopg upgrade — idempotent migration orchestrator.
+ * pgserve update — idempotent in-place migration orchestrator.
+ *
+ * v3.0.0 verb rename: this module is `src/update/` (was `src/upgrade/`).
+ * The CLI dispatch case in `src/cli-install.cjs` is `update`; the
+ * `pgserve upgrade` verb is gone (clean cutover, no alias).
  *
  * Runs 6 steps in order, each safe to re-run any number of times:
  *   1. port-reconcile    — ensure pgserve listens on canonical port (8432)
@@ -35,12 +39,12 @@ export const STEPS = [
   { name: 'health-validate', impl: healthValidate },
 ];
 
-export async function upgrade(options = {}) {
+export async function update(options = {}) {
   const { quiet = false, dryRun = false, skipSteps = [] } = options;
   const log = (msg) => { if (!quiet) process.stderr.write(`${msg}\n`); };
   const warn = (msg) => process.stderr.write(`${msg}\n`);
 
-  log(`autopg upgrade starting (dryRun=${dryRun}, quiet=${quiet})`);
+  log(`pgserve update starting (dryRun=${dryRun}, quiet=${quiet})`);
 
   const results = [];
   for (const step of STEPS) {
@@ -59,11 +63,11 @@ export async function upgrade(options = {}) {
   }
 
   const failed = results.filter((r) => r.status === 'FAIL');
-  const summary = `autopg upgrade complete: ${results.length - failed.length}/${results.length} steps OK`;
+  const summary = `pgserve update complete: ${results.length - failed.length}/${results.length} steps OK`;
   log(summary);
   if (failed.length > 0) {
     warn(`Failed steps: ${failed.map((r) => r.name).join(', ')}`);
-    warn('Re-run `autopg upgrade` after addressing the above.');
+    warn('Re-run `pgserve update` after addressing the above.');
     return { ok: false, results, summary };
   }
   return { ok: true, results, summary };

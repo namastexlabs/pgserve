@@ -1,6 +1,6 @@
 /**
  * Smoke tests: postinstall hook short-circuits on fresh install + skip flag.
- * Full integration tests (synthetic 2.1.3 → 2.2.x) live in tests/integration/upgrade-*.test.js (TBD).
+ * v3.0.0 verb rename: dispatches `pgserve update` (was `autopg upgrade`).
  */
 
 import { test, expect } from 'bun:test';
@@ -106,7 +106,7 @@ test('main: emits dev-worktree skip note when isDevWorktree returns true', () =>
   });
 
   expect(stderrContent).toContain('dev worktree detected');
-  expect(stderrContent).toContain('skipping upgrade');
+  expect(stderrContent).toContain('skipping update');
   expect(stderrContent).toContain('/synthetic/worktrees/pgserve/branch-x');
 });
 
@@ -145,7 +145,7 @@ test('main: fresh install (no data dir) exits silently when not a worktree', () 
   expect(spawnCalled).toBe(false);
 });
 
-test('main: invokes upgrade when not worktree + data dir exists + wrapper exists + non-CI', () => {
+test('main: invokes update when not worktree + data dir exists + wrapper exists + non-CI', () => {
   let stderrContent = '';
   let spawnArgs = null;
   const mod = require(POSTINSTALL);
@@ -164,13 +164,13 @@ test('main: invokes upgrade when not worktree + data dir exists + wrapper exists
   // Non-CI pre-warning emitted
   expect(stderrContent).toContain('About to run');
   expect(stderrContent).toContain('AUTOPG_SKIP_POSTINSTALL=1');
-  // Upgrade was invoked
+  // Update verb (renamed from upgrade in v3.0.0) was invoked
   expect(spawnArgs).not.toBeNull();
-  expect(spawnArgs[1]).toContain('upgrade');
+  expect(spawnArgs[1]).toContain('update');
   expect(spawnArgs[1]).toContain('--quiet');
 });
 
-test('main: CI=true suppresses pre-warning when invoking upgrade', () => {
+test('main: CI=true suppresses pre-warning when invoking update', () => {
   let stderrContent = '';
   const mod = require(POSTINSTALL);
 
@@ -188,12 +188,12 @@ test('main: CI=true suppresses pre-warning when invoking upgrade', () => {
   expect(stderrContent).not.toContain('About to run');
 });
 
-test('upgrade orchestrator: dry-run lists 7 steps without executing', async () => {
-  const { upgrade, STEPS } = await import(path.join(__dirname, '..', '..', 'src', 'upgrade', 'index.js'));
+test('update orchestrator: dry-run lists 7 steps without executing', async () => {
+  const { update, STEPS } = await import(path.join(__dirname, '..', '..', 'src', 'update', 'index.js'));
   // 7 steps after pgserve singleton (v2.4) added cosign-meta-migration.
   expect(STEPS.length).toBe(7);
   expect(STEPS.map((s) => s.name)).toContain('cosign-meta-migration');
-  const r = await upgrade({ dryRun: true, quiet: true });
+  const r = await update({ dryRun: true, quiet: true });
   expect(r.results.length).toBe(7);
   expect(r.results.every((x) => x.status === 'DRY-RUN')).toBe(true);
 });
