@@ -6,7 +6,7 @@ complements the cohort docs:
 
 - [`docs/migrations/v2.6-from-v2.5.md`](../migrations/v2.6-from-v2.5.md) — upgrade guide
 - [`docs/pgserve-meta.md`](../pgserve-meta.md) — `pgserve_meta` + `autopg_meta` schema reference
-- [`docs/trust-store.md`](../trust-store.md) — `~/.pgserve/trust/identities.json` reference + `pgserve trust` CLI
+- [`docs/trust-store.md`](../trust-store.md) — `~/.pgserve/trust/identities.json` reference + `autopg trust` CLI
 
 ## TL;DR
 
@@ -14,8 +14,8 @@ complements the cohort docs:
 # Download a release tarball + signing siblings
 gh release download v2.6.4 --repo namastexlabs/pgserve
 
-# Verify via pgserve verify (recommended — handles trust list automatically)
-pgserve verify autopg-2.6.4-linux-x64-glibc.tar.gz
+# Verify via autopg verify (recommended — handles trust list automatically)
+autopg verify autopg-2.6.4-linux-x64-glibc.tar.gz
 
 # OR raw cosign keyless verification
 cosign verify-blob \
@@ -47,8 +47,8 @@ Trust is layered in three tiers:
 | Tier | Source | Mutability |
 |------|--------|------------|
 | 0 (binary build-time) | `src/cosign/trust-list.js` — `TRUSTED_IDENTITIES` | Frozen at build time; updated only by shipping a new pgserve binary |
-| 1 (operator-extensible) | `~/.pgserve/trust/identities.json` | Mutated via `pgserve trust add` / `remove` |
-| 2 (per-consumer locked) | `autopg_meta.locked_roots` per `pgserve create-app <slug>` | Snapshot of Tiers 0+1 frozen at create-app time; only that consumer reads it |
+| 1 (operator-extensible) | `~/.pgserve/trust/identities.json` | Mutated via `autopg trust add` / `remove` |
+| 2 (per-consumer locked) | `autopg_meta.locked_roots` per `autopg create-app <slug>` | Snapshot of Tiers 0+1 frozen at create-app time; only that consumer reads it |
 
 A binary verifies if **any** layer's regex matches its cert subject.
 
@@ -123,10 +123,10 @@ T25 audit).
 
 ```bash
 gh release download v2.6.4 --repo namastexlabs/pgserve
-pgserve verify autopg-2.6.4-linux-x64-glibc.tar.gz
+autopg verify autopg-2.6.4-linux-x64-glibc.tar.gz
 ```
 
-`pgserve verify` reads `TRUSTED_IDENTITIES` automatically + falls through to
+`autopg verify` reads `TRUSTED_IDENTITIES` automatically + falls through to
 `~/.pgserve/trust/identities.json`. Exit codes:
 - `0` — verified
 - `2` — verification rejected (cert doesn't match any trusted identity)
@@ -135,8 +135,8 @@ pgserve verify autopg-2.6.4-linux-x64-glibc.tar.gz
 ### Verify against a specific consumer's locked trust roots
 
 ```bash
-# Earlier: pgserve create-app @my-org/my-app  (snapshots trust at that moment)
-pgserve verify --slug my_org_my_app autopg-2.6.4-linux-x64-glibc.tar.gz
+# Earlier: autopg create-app @my-org/my-app  (snapshots trust at that moment)
+autopg verify --slug my_org_my_app autopg-2.6.4-linux-x64-glibc.tar.gz
 ```
 
 This consults `autopg_meta.locked_roots` for the named slug instead of the
@@ -171,7 +171,7 @@ If your organization signs pgserve consumers (e.g. internal apps that should
 trust pgserve as a base layer), add a trust entry locally:
 
 ```bash
-pgserve trust add my-org-release \
+autopg trust add my-org-release \
     --issuer https://token.actions.githubusercontent.com \
     --identity-regexp '^https://github.com/my-org/my-app/.github/workflows/release.yml@refs/tags/v.*$' \
     --publisher '@my-org/my-app' \
@@ -192,8 +192,8 @@ entry requires:
 3. Add a CHANGELOG entry under the next release
 4. Ship a new pgserve binary
 
-Operators DO NOT modify hardcoded trust at runtime. `pgserve trust remove`
-refuses to remove hardcoded entries (`pgserve trust remove
+Operators DO NOT modify hardcoded trust at runtime. `autopg trust remove`
+refuses to remove hardcoded entries (`autopg trust remove
 automagik-pgserve-release` exits with code 1).
 
 ## Single-file `pgserve-*` binaries vs `autopg-*.tar.gz` tarballs
@@ -221,7 +221,7 @@ pgserve releases through **v2.6.1** used **keyed** cosign (with
   + `--certificate-oidc-issuer` + `--certificate <tarball>.cert`).
 - **v2.6.0 + v2.6.1**: shipped no signing artifacts at all (the wiring gap
   between `sign-attest.yml` and `release-publish.yml` meant signatures
-  never reached the release page). `pgserve verify` against those releases
+  never reached the release page). `autopg verify` against those releases
   returns FAIL — there's nothing to verify against. v2.6.0 + v2.6.1 are
   effectively unsigned releases; operators relying on supply-chain
   verification should upgrade to v2.6.2 or later.
@@ -252,7 +252,7 @@ GitHub Actions OIDC binding questions:
 
 - [`src/cosign/trust-list.js`](../../src/cosign/trust-list.js) — `TRUSTED_IDENTITIES` source
 - [`src/cosign/trust-store.js`](../../src/cosign/trust-store.js) — user-extensible store reader/writer
-- [`src/commands/trust.js`](../../src/commands/trust.js) — `pgserve trust` CLI
-- [`src/commands/verify.js`](../../src/commands/verify.js) — `pgserve verify` CLI
+- [`src/commands/trust.js`](../../src/commands/trust.js) — `autopg trust` CLI
+- [`src/commands/verify.js`](../../src/commands/verify.js) — `autopg verify` CLI
 - [`.github/workflows/sign-attest.yml`](../../.github/workflows/sign-attest.yml) — keyless signing pipeline
 - [`.github/workflows/release-publish.yml`](../../.github/workflows/release-publish.yml) — release-page assembly
