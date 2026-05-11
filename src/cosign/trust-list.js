@@ -52,15 +52,16 @@ export const TRUSTED_IDENTITIES = Object.freeze([
     id: 'automagik-omni-release',
     publisher: '@automagik/omni',
     issuer: SIGSTORE_GITHUB_ACTIONS_ISSUER,
-    // Omni signing pipeline TBD — `v3-prerelease-trust-loop` G2 wires
-    // it. Keeping the `release.yml@` anchor as the contract-of-intent
-    // until omni's signing workflow filename is locked in G2. If omni
-    // mirrors genie's orchestrator+workflow_call pattern, this regex
-    // must flip to `sign-attest.yml@` before omni's first signed tag
-    // can verify. Re-validate against the first signed omni release
-    // bundle during G4 smoke.
-    identityRegexp: '^https://github.com/automagik-dev/omni/.github/workflows/release.yml@refs/tags/v.*$',
-    description: 'Namastex automagik omni release workflow (GitHub Actions OIDC)',
+    // Omni signing pipeline mirrors genie's orchestrator+workflow_call
+    // pattern (Felipe directive 2026-05-11, decision 2.α for
+    // `v3-prerelease-trust-loop` G2): release.yml orchestrates, the
+    // cosign keyless sign-blob runs inside a reusable sign-attest.yml,
+    // and the Fulcio SAN URI binds to sign-attest.yml@<ref>. Anchoring
+    // here pre-emptively so omni's first signed tag (post-G2 merge)
+    // verifies without a follow-up trust-list flip. Re-validate against
+    // the first signed omni bundle during G4 smoke.
+    identityRegexp: '^https://github.com/automagik-dev/omni/.github/workflows/sign-attest.yml@refs/tags/v.*$',
+    description: 'Namastex automagik omni sign-attest workflow (GitHub Actions OIDC)',
   }),
   Object.freeze({
     id: 'automagik-pgserve-release',
