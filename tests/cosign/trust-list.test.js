@@ -89,11 +89,17 @@ describe('automagik-pgserve-release entry (Wave A regression)', () => {
 });
 
 describe('genie + omni entries (cohort siblings — regression sanity)', () => {
-  test('genie entry anchors on automagik-dev/genie release.yml@refs/tags/v.*', () => {
+  test('genie entry anchors on automagik-dev/genie sign-attest.yml@refs/tags/v.*', () => {
+    // genie's release.yml is an orchestrator that workflow_call's into
+    // sign-attest.yml — the Fulcio SAN URI binds to sign-attest.yml@<ref>.
+    // Verified empirically against v4.260511.1 + v4.260511.2 bundle certs
+    // on 2026-05-11. Locking the regex shape here so a regression that
+    // reverts to `release.yml@` is caught at unit-test time, not at
+    // `pgserve verify --slug genie` runtime.
     const entry = getTrustedById('automagik-genie-release');
     expect(entry).toBeTruthy();
     expect(entry.identityRegexp).toMatch(
-      /^\^https:\/\/github\.com\/automagik-dev\/genie\/\.github\/workflows\/release\.yml@refs\/tags\/v\.\*\$$/,
+      /^\^https:\/\/github\.com\/automagik-dev\/genie\/\.github\/workflows\/sign-attest\.yml@refs\/tags\/v\.\*\$$/,
     );
   });
 
