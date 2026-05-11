@@ -31,9 +31,7 @@
     "lint:fix": "eslint src/ bin/ --fix",
     "lint:audit": "bun scripts/audit-redaction-lint.js",
     "deadcode": "knip",
-    "test:npx": "scripts/test-npx.sh",
-    "test:bun-self-heal": "scripts/test-bun-self-heal.sh",
-    "prepublishOnly": "npm run console:build && npm run lint && npm run deadcode && npm run test:npx && npm run test:bun-self-heal",
+    "prepublishOnly": "npm run console:build && npm run lint && npm run deadcode",
     "prepare": "husky"
   },
   "keywords": [

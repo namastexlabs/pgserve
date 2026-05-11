@@ -197,36 +197,19 @@ jobs:
       - name: Run Wave A build→sign→verify smoke
         run: bash tests/integration/wave-a-e2e.test.sh
 
-  # Test npx flow (user experience)
-  test-npx:
-    name: Test npx install
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Bun (for packing)
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.11
-
-      - name: Setup Node.js (for testing)
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install deps and pack
-        run: |
-          bun install
-          bun pm pack --destination /tmp --ignore-scripts
-
-      - name: Test npx install (fresh environment)
-        run: |
-          cd /tmp
-          mkdir test-pgserve
-          cd test-pgserve
-          npm init -y
-          npm install /tmp/pgserve-*.tgz
-          timeout 30 npx pgserve --help
-          echo "npx test passed!"
+  # `test-npx` CI job — REMOVED in v3.0.0 (V3 follow-up cleanup).
+  #
+  # The job packed an npm tarball + ran `npx pgserve --help` to verify
+  # the npm-install path worked end-to-end. After V3-2 (npm-publish step
+  # dropped) + V3 rename (the `pgserve` CLI bin is gone, package renamed
+  # to `autopg`), the job was failing on two compounding mismatches:
+  #   - `bun pm pack` now produces `autopg-*.tgz` (was `pgserve-*.tgz`)
+  #   - `npx pgserve --help` no longer works — only `npx autopg --help`
+  #     would, but we don't publish to npm so this whole flow is moot.
+  #
+  # Replacement (future): a smoke that exercises the `install.sh` +
+  # GitHub Releases path on a synthetic release tarball. Tracked under
+  # the distribution-exodus wish; not in scope for this cleanup PR.
+  #
+  # scripts/test-npx.sh + scripts/test-bun-self-heal.sh are deleted in
+  # the same PR (no other callers).
