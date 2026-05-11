@@ -12,7 +12,7 @@
  * startup-message rewriting, and no always-on daemon control socket.
  *
  * For one-off operations (`pgserve install`, `pgserve url`, …) see
- * `bin/pgserve-wrapper.cjs` + `src/cli-install.cjs`.
+ * `bin/autopg-wrapper.cjs` + `src/cli-install.cjs`.
  */
 
 import { PostgresManager } from '../src/postgres.js';

@@ -93,7 +93,7 @@ describe('admin password gate', () => {
     const ui = require(uiPath);
     const { port, close } = await ui.startServer({
       args: ['--no-open'],
-      scriptPath: path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'),
+      scriptPath: path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'),
       openInBrowser: () => {},
     });
     try {
@@ -116,7 +116,7 @@ describe('admin password gate', () => {
     const ui = require(uiPath);
     const { port, close } = await ui.startServer({
       args: ['--no-open'],
-      scriptPath: path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'),
+      scriptPath: path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'),
       openInBrowser: () => {},
     });
     try {
@@ -143,7 +143,7 @@ describe('admin password gate', () => {
     const ui = require(uiPath);
     const { port, close } = await ui.startServer({
       args: ['--no-open'],
-      scriptPath: path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'),
+      scriptPath: path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'),
       openInBrowser: () => {},
     });
     try {
@@ -167,7 +167,7 @@ describe('admin password gate', () => {
     const ui = require(uiPath);
     const { port, close } = await ui.startServer({
       args: ['--no-open'],
-      scriptPath: path.join(REPO_ROOT, 'bin', 'pgserve-wrapper.cjs'),
+      scriptPath: path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs'),
       openInBrowser: () => {},
     });
     try {

@@ -47,7 +47,7 @@ autopg config edit              # opens $EDITOR on settings.json
 autopg config path              # absolute path to settings.json
 ```
 
-`pgserve config …` is a forever alias of the same command.
+`autopg config …` is a forever alias of the same command.
 
 ## Validation error codes
 

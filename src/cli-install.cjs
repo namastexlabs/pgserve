@@ -888,7 +888,7 @@ async function cmdInstall(args, ctx) {
       // Recommended pattern: set process.exitCode and let Node exit
       // gracefully on its own once the event loop drains. We also
       // throw so the wrapper's rejection handler can suppress its
-      // duplicate stderr write — see bin/pgserve-wrapper.cjs.
+      // duplicate stderr write — see bin/autopg-wrapper.cjs.
       process.exitCode = 1;
       throw err;
     }

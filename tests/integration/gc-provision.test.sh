@@ -132,7 +132,7 @@ EOF
 # Run a pgserve verb against the worktree's bin/, with HOME redirected
 # to the fake-home so the audit log lands somewhere we control.
 #
-# Routes through `bin/pgserve-wrapper.cjs` (the verb dispatcher), NOT
+# Routes through `bin/autopg-wrapper.cjs` (the verb dispatcher), NOT
 # `bin/postgres-server.js` (the postmaster lifecycle entry). Provision
 # and gc are install-subcommands that the wrapper dispatches to
 # `src/cli-install.cjs#dispatch`; calling postgres-server.js directly
@@ -145,7 +145,7 @@ pgserve_run() {
   # only mask a real bug rather than reflect production semantics.
   HOME="$FAKE_HOME" \
   PGHOST="$SOCKET_DIR" \
-    node "${REPO_ROOT}/bin/pgserve-wrapper.cjs" "$@"
+    node "${REPO_ROOT}/bin/autopg-wrapper.cjs" "$@"
 }
 
 run_provision_twice() {

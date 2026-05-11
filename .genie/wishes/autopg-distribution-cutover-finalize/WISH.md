@@ -12,7 +12,7 @@
 
 ## Summary
 
-Closes the leftover work from the never-materialized `autopg-distribution-cutover` plan plus the technical debt accrued during the singleton-G3 sprint (PRs #86–#92). Scope: install.sh path-collision decision, pgserve create-app + manifest LOCK 1 cosign verifier, consumer migrations + final v2.4 validation, and the pg-query / integration-test / audit-rotation cleanup.
+Closes the leftover work from the never-materialized `autopg-distribution-cutover` plan plus the technical debt accrued during the singleton-G3 sprint (PRs #86–#92). Scope: install.sh path-collision decision, autopg create-app + manifest LOCK 1 cosign verifier, consumer migrations + final v2.4 validation, and the pg-query / integration-test / audit-rotation cleanup.
 
 ## Scope
 
@@ -20,14 +20,14 @@ Closes the leftover work from the never-materialized `autopg-distribution-cutove
 
 - **G1 — install.sh path-collision (Cutover G10)**: rename main's existing `install.sh` (123 lines, legacy) so the new ≤80-line `install-autopg.sh` can land without overwriting; pivot fetching URLs to `github.com/.../releases/download/...`.
 - **G2 — pg-query dedup + integration test scaffold (singleton-G3 tech debt)**: collapse `src/gc/pg-queries.js` into `src/lib/pg-query.js` (the canonical one shipped in PR #92); add `tests/integration/gc-provision.test.sh` that spins up a real postmaster and exercises the `provision → gc --apply → provision` round-trip end-to-end.
-- **G3 — pgserve create-app + manifest LOCK 1 (Cutover G5)**: ship `pgserve create-app <slug>` that writes a per-consumer manifest, registers it under `autopg_meta`, and locks the cosign trust roots used to verify follow-up upgrades. ~660 LOC; needs the `admin-bootstrap.js` + `autopg_meta` schema infrastructure that doesn't exist on main yet.
+- **G3 — autopg create-app + manifest LOCK 1 (Cutover G5)**: ship `autopg create-app <slug>` that writes a per-consumer manifest, registers it under `autopg_meta`, and locks the cosign trust roots used to verify follow-up upgrades. ~660 LOC; needs the `admin-bootstrap.js` + `autopg_meta` schema infrastructure that doesn't exist on main yet.
 - **G4 — consumer migrations + docs (Cutover G12-G18)**: pgserve consumers (brain, omni, rlmx, hapvida-eugenia, email) get explicit migration recipes; CHANGELOG entries for v2.6 capture the singleton verbs (`doctor`, `trust`, `gc`, `provision`); the `pgserve_meta` schema + `~/.pgserve/trust/identities.json` user-extensible store get user-facing docs in `docs/`.
 - **G5 — final v2.4 validation + release prep**: end-to-end smoke against a fresh host (npx install → provision → use → gc); audit log rotation policy (when do daily `gc-<DATE>.log` files get pruned?); changelog + release-notes for v2.6.
 
 ### OUT
 
 - **Tier B service install** (`autopg service install --user systemd-user / launchd`) — already covered by the parked `autopg-service-install-system` wish.
-- **Self-healing `pgserve update`** (Singleton G6) — already covered by `pgserve-singleton-no-proxy` Group 6.
+- **Self-healing `autopg update`** (Singleton G6) — already covered by `pgserve-singleton-no-proxy` Group 6.
 - **Roles + GRANTs schema audit** (Singleton G7) — already covered by `pgserve-singleton-no-proxy` Group 7.
 - **Migration tooling for existing pre-v2.4 hosts** (Singleton G8) — already covered by `pgserve-singleton-no-proxy` Group 8.
 - **Cross-repo install reuse** (genie/omni install + brain ingestion) — already covered by `canonical-pgserve-pm2-supervision` Groups 2–4.
@@ -37,11 +37,11 @@ Closes the leftover work from the never-materialized `autopg-distribution-cutove
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 1 | **Replace `install.sh` in-place** with the new GitHub Releases + cosign-verify body. Single .sh file; no legacy file kept; no shim. | Felipe directive (post-/review on PR #95): "don't deprecate, replace, I don't want several .sh". Operators with bookmarked `curl … main/install.sh \| bash` invocations get the new behavior directly — no migration step. The npm + pm2 install path is preserved via the existing `pgserve install` CLI verb (`npm install -g pgserve && pgserve install`); operators who specifically need the old script's behavior still have that path. |
+| 1 | **Replace `install.sh` in-place** with the new GitHub Releases + cosign-verify body. Single .sh file; no legacy file kept; no shim. | Felipe directive (post-/review on PR #95): "don't deprecate, replace, I don't want several .sh". Operators with bookmarked `curl … main/install.sh \| bash` invocations get the new behavior directly — no migration step. The npm + pm2 install path is preserved via the existing `autopg install` CLI verb (`npm install -g pgserve && autopg install`); operators who specifically need the old script's behavior still have that path. |
 | 2 | `src/lib/pg-query.js` is the canonical psql shellout primitive | Already shipped via PR #92 with `-F\t` + `ON_ERROR_STOP=1` + the PGPASSWORD-only-when-set fix from the bot reviews. `src/gc/pg-queries.js` is the older copy (PR #91) that still has all those fixes too but lives in the wrong directory; G2 dedupes it. |
-| 3 | Integration tests use a real postgres, not pg-mem or mocks | `pgserve provision` and `pgserve gc` shell out to `psql`; mocking psql defeats the contract under test (parser delimiters, `ON_ERROR_STOP`, error-text matching). The bot reviews on #91/#92 caught real bugs that mocks would not have surfaced; integration tests must mirror real-world. |
+| 3 | Integration tests use a real postgres, not pg-mem or mocks | `autopg provision` and `autopg gc` shell out to `psql`; mocking psql defeats the contract under test (parser delimiters, `ON_ERROR_STOP`, error-text matching). The bot reviews on #91/#92 caught real bugs that mocks would not have surfaced; integration tests must mirror real-world. |
 | 4 | Audit log rotation = "delete files >90 days old on the next gc run" | No daemon, no cron — gc runs are operator-triggered. 90-day default matches the wish's 30-day staleness window with a 3x safety margin for forensic review of "why did my DB disappear?" cases. |
-| 5 | G3 (pgserve create-app) is gated on the `autopg_meta` schema landing first | Per HANDOFF audit notes: G3 needs `admin-bootstrap.js` + `autopg_meta` schema infrastructure that doesn't exist on main. G3's first deliverable is that schema; the create-app verb is the second deliverable in the same group so they ship atomically. |
+| 5 | G3 (autopg create-app) is gated on the `autopg_meta` schema landing first | Per HANDOFF audit notes: G3 needs `admin-bootstrap.js` + `autopg_meta` schema infrastructure that doesn't exist on main. G3's first deliverable is that schema; the create-app verb is the second deliverable in the same group so they ship atomically. |
 | 6 | `provision` advisory-lock helpers stay on main as foundation | `src/provision/advisory-lock.js` is correct and reusable for a future single-session caller (daemon mode, batch provisioner). Removing it now would force a re-implementation later. The CLI verb just doesn't call it (documented in `src/commands/provision.js` header). |
 | 7 | **`autopg` and `pgserve` are interchangeable CLI bins; new verbs land as both** | `package.json` ships both `bin/autopg-wrapper.cjs` and `bin/pgserve-wrapper.cjs` (already the case on main); README + CHANGELOG state they're interchangeable. Every new verb in this wish (G3's `create-app`) gets dispatched through both wrappers — same allowlist, same case in `cli-install.cjs`. Examples in WISH and docs use `pgserve <verb>` for consistency with what shipped in PRs #86–#92, but `autopg <verb>` is equivalent at runtime. **No CLI rename, no bin removal in this wish.** |
 | 8 | **Cohort spans v2.6.0 → v2.6.x** (title says "v2.4" for historical scope-naming only) | v2.5 shipped between the singleton-G3 sprint design and this finalize wish. v2.6.0 (`d59d848`) and v2.6.1 (`6594a2c`) both shipped from main mid-cohort, carrying Wave 1 (G1+G2) plus the singleton-G3-v2.4 surface. Wave 2 (G3) merged into main via PR #104 but **has not yet been released to npm/Releases** as of 2026-05-09. Wave 3 (G4) and Wave 4 (G5) will ship in the next release tag (v2.6.2 or v2.7.0). G5 acceptance targets the release that carries G4 docs + audit-rotation, NOT the already-cut v2.6.0. |
@@ -52,11 +52,11 @@ Closes the leftover work from the never-materialized `autopg-distribution-cutove
 - [ ] `install.sh` ≤80 lines, fetches from GitHub Releases and verifies via `gh attestation verify` (single canonical file; no legacy or shim companions).
 - [ ] `src/gc/pg-queries.js` deleted; gc imports from `src/lib/pg-query.js`; no behavior change (gc tests still pass).
 - [ ] `tests/integration/gc-provision.test.sh` runs against a real postmaster and proves the round-trip (provision creates DB + role; gc dry-run reports zero orphans; remove the source path; gc --apply drops the orphan + cleans the meta row; second provision recreates cleanly).
-- [ ] `pgserve create-app <slug>` produces a per-consumer manifest registered in `autopg_meta`; cosign trust roots locked at create time; subsequent upgrades verified against the locked roots.
+- [ ] `autopg create-app <slug>` produces a per-consumer manifest registered in `autopg_meta`; cosign trust roots locked at create time; subsequent upgrades verified against the locked roots.
 - [ ] CHANGELOG entry for v2.6 lists every singleton verb (doctor / trust / gc / provision) with one-line operator-facing description.
-- [ ] `docs/pgserve-meta.md` documents the schema + every column purpose; `docs/trust-store.md` documents `~/.pgserve/trust/identities.json` schema + `pgserve trust` verbs.
-- [ ] Audit log rotation: `pgserve gc` deletes `~/.pgserve/audit/gc-<DATE>.log` files older than 90 days at start of each run; rotation event is itself audited.
-- [ ] Final v2.4 smoke: a fresh host running `npx pgserve install` followed by a sequence of `provision`, real workload, then `gc --apply` produces zero orphan databases and a clean audit trail.
+- [ ] `docs/pgserve-meta.md` documents the schema + every column purpose; `docs/trust-store.md` documents `~/.pgserve/trust/identities.json` schema + `autopg trust` verbs.
+- [ ] Audit log rotation: `autopg gc` deletes `~/.pgserve/audit/gc-<DATE>.log` files older than 90 days at start of each run; rotation event is itself audited.
+- [ ] Final v2.4 smoke: a fresh host running `npx autopg install` followed by a sequence of `provision`, real workload, then `gc --apply` produces zero orphan databases and a clean audit trail.
 
 ## Execution Strategy
 
@@ -65,7 +65,7 @@ Five waves; G2 (dedup + integration test scaffold) is parallelizable with G1 (in
 | Wave | Group(s) | Why this ordering |
 |------|----------|-------------------|
 | 1 | G1 (install.sh) + G2 (pg-query dedup + integration tests) | Both small + independent; can ship in parallel. G2 unblocks regression coverage for everything that follows. |
-| 2 | G3 (pgserve create-app + manifest LOCK 1) | Long pole. Needs `admin-bootstrap.js` + `autopg_meta` schema infra that doesn't exist; gates everything that ships consumer-facing artifacts. |
+| 2 | G3 (autopg create-app + manifest LOCK 1) | Long pole. Needs `admin-bootstrap.js` + `autopg_meta` schema infra that doesn't exist; gates everything that ships consumer-facing artifacts. |
 | 3 | G4 (consumer migrations + docs) | Depends on G3 for the create-app verb consumers will adopt; depends on G2 for the integration test pattern they'll mirror. |
 | 4 | G5 (final v2.4 validation + release) | Last; requires every other group merged so the smoke test exercises the full stack. |
 
@@ -77,10 +77,10 @@ Five waves; G2 (dedup + integration test scaffold) is parallelizable with G1 (in
 **Goal:** Land an ≤80-line `install-autopg.sh` that fetches from GitHub Releases, verifies via `gh attestation verify`, without overwriting the legacy `install.sh`.
 
 **Deliverables:**
-1. **Replace** `install.sh` in-place (≤80 lines): detect platform → fetch the matching tarball from `github.com/namastexlabs/pgserve/releases/download/v<version>/...` → verify via `gh attestation verify` → extract → `pgserve install`.
+1. **Replace** `install.sh` in-place (≤80 lines): detect platform → fetch the matching tarball from `github.com/namastexlabs/pgserve/releases/download/v<version>/...` → verify via `gh attestation verify` → extract → `autopg install`.
 2. Update `README.md` install instructions: the recommended path is now `curl -fsSL .../install.sh | bash`; npm paths preserved below for development.
 
-The npm + pm2 install path the old `install.sh` provided is preserved via the existing `pgserve install` CLI verb — operators who want it do `npm install -g pgserve && pgserve install`.
+The npm + pm2 install path the old `install.sh` provided is preserved via the existing `autopg install` CLI verb — operators who want it do `npm install -g pgserve && autopg install`.
 
 **Acceptance Criteria:**
 - [ ] `wc -l install.sh` returns ≤80.
@@ -111,7 +111,7 @@ PR #95 shipped both deliverables: replaced `install.sh` in-place with the GitHub
 1. Delete `src/gc/pg-queries.js`. Move every export gc relied on (`selectMetaRows`, `selectExistingDbs`, `selectActiveDbs`, `dropDatabase`, `deleteMetaRow`) into `src/lib/pg-query.js` or a new `src/gc/queries.js` that imports the primitive `pgQuery` / `quoteIdent` / `quoteLiteral` from `src/lib/pg-query.js`.
 2. Update `src/commands/gc.js` imports.
 3. Update `tests/gc/pg-queries.test.js` → `tests/gc/queries.test.js` to point at the new module path.
-4. New `tests/integration/gc-provision.test.sh`: starts an ephemeral postgres on a high port, runs `pgserve provision <fp>` twice (idempotency check), then `pgserve gc --dry-run` (zero orphans expected), then removes the source path, then `pgserve gc --apply` (one orphan dropped expected), asserts the audit log contains the expected `start / skip / drop / finish` events.
+4. New `tests/integration/gc-provision.test.sh`: starts an ephemeral postgres on a high port, runs `autopg provision <fp>` twice (idempotency check), then `autopg gc --dry-run` (zero orphans expected), then removes the source path, then `autopg gc --apply` (one orphan dropped expected), asserts the audit log contains the expected `start / skip / drop / finish` events.
 5. Wire the integration test into CI as an optional matrix job (skipped on hosts without Docker / postgres).
 
 **Acceptance Criteria:**
@@ -133,7 +133,7 @@ PR #94 shipped deliverables 1+2 partially — the dedup work landed but `src/gc/
 
 ---
 
-### Group 3: pgserve create-app + manifest LOCK 1 cosign verifier (Cutover G5)
+### Group 3: autopg create-app + manifest LOCK 1 cosign verifier (Cutover G5)
 **Goal:** Per-consumer manifest registration with locked-at-create-time cosign trust roots; cosign verifier checks every upgrade against those roots.
 
 **Deliverables:**
@@ -141,16 +141,16 @@ PR #94 shipped deliverables 1+2 partially — the dedup work landed but `src/gc/
    **Sanitization rule (matches `src/provision/db-naming.js#sanitizeSlug`):** `slug.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')`. So `@demo/app` becomes `demo_app` (one flat dir under `~/.autopg/`, never nested). Reuses the existing helper — no new sanitizer.
    **Orthogonality:** `~/.autopg/<sanitized-slug>/admin.json` is per-consumer; the host-level `~/.autopg/admin.json` (owned by `canonical-pgserve-pm2-supervision` G1) records supervisor mode for the whole host. The two paths never collide because the per-consumer one lives one directory level deeper.
 2. `autopg_meta` schema (table + indexes), CREATE-TABLE module shaped like `src/schema/pgserve-meta.js`. Lives in a SEPARATE postgres table from `pgserve_meta` because the rows have different lifecycle (per-consumer-app vs per-fingerprint-database).
-   **Source-of-truth split** (addresses bot review on state redundancy): `autopg_meta` is the **authoritative** source for "which apps exist + what trust roots are locked at create time". The per-consumer `admin.json` + manifest file are **derived caches** — written at create-app time for fast reads from CLI verbs that don't want a postgres connection (`pgserve doctor`, `pgserve update`'s pre-flight — renamed from `pgserve upgrade` in v3.0.0). On any divergence, `autopg_meta` wins; the next `pgserve doctor` run reports the divergence as a FAIL finding. **Cache regeneration in v2.6 V1 is operator-driven**: `pgserve doctor --fix` is a stub (exits 64) — operators manually `rm -rf ~/.autopg/<slug>/` and re-run `pgserve create-app <slug>` to rebuild the cache from `autopg_meta`. Auto-regeneration via `--fix` is owned by `pgserve-singleton-no-proxy` Group 6 (self-healing update) and tracked separately. Documented in the verifier's docstring + `docs/migrations/v2.6-from-v2.5.md` (G4 deliverable).
-3. `pgserve create-app <slug>` CLI verb that writes the manifest + registers in `autopg_meta` + locks the cosign trust roots from `src/cosign/trust-list.js` at the moment of creation.
-4. Manifest LOCK 1 verifier: a function called by `pgserve update` (renamed from `pgserve upgrade` in v3.0.0; the existing verb) that verifies the new binary's cosign attestation matches one of the locked roots (not the current `TRUSTED_IDENTITIES` — operators control update trust at create time, not at update time). The trust-rotation primitive itself lives in `pgserve-singleton-no-proxy` G4 / `src/cosign/trust-list.js`; this group exercises the locked-roots path through rotation, NOT the rotation itself.
+   **Source-of-truth split** (addresses bot review on state redundancy): `autopg_meta` is the **authoritative** source for "which apps exist + what trust roots are locked at create time". The per-consumer `admin.json` + manifest file are **derived caches** — written at create-app time for fast reads from CLI verbs that don't want a postgres connection (`autopg doctor`, `autopg update`'s pre-flight — renamed from `pgserve upgrade` in v3.0.0). On any divergence, `autopg_meta` wins; the next `autopg doctor` run reports the divergence as a FAIL finding. **Cache regeneration in v2.6 V1 is operator-driven**: `autopg doctor --fix` is a stub (exits 64) — operators manually `rm -rf ~/.autopg/<slug>/` and re-run `autopg create-app <slug>` to rebuild the cache from `autopg_meta`. Auto-regeneration via `--fix` is owned by `pgserve-singleton-no-proxy` Group 6 (self-healing update) and tracked separately. Documented in the verifier's docstring + `docs/migrations/v2.6-from-v2.5.md` (G4 deliverable).
+3. `autopg create-app <slug>` CLI verb that writes the manifest + registers in `autopg_meta` + locks the cosign trust roots from `src/cosign/trust-list.js` at the moment of creation.
+4. Manifest LOCK 1 verifier: a function called by `autopg update` (renamed from `pgserve upgrade` in v3.0.0; the existing verb) that verifies the new binary's cosign attestation matches one of the locked roots (not the current `TRUSTED_IDENTITIES` — operators control update trust at create time, not at update time). The trust-rotation primitive itself lives in `pgserve-singleton-no-proxy` G4 / `src/cosign/trust-list.js`; this group exercises the locked-roots path through rotation, NOT the rotation itself.
 5. Tests for each module.
 
 **Acceptance Criteria:**
-- [ ] `pgserve create-app <slug>` is idempotent — second run with same slug touches `lastUpdated` and exits success.
+- [ ] `autopg create-app <slug>` is idempotent — second run with same slug touches `lastUpdated` and exits success.
 - [ ] Manifest file is mode 0600; dir is mode 0700.
-- [ ] `pgserve update` against a binary signed by an identity NOT in the locked roots refuses with a clear error.
-- [ ] `pgserve update` against a binary signed by an identity IN the locked roots succeeds.
+- [ ] `autopg update` against a binary signed by an identity NOT in the locked roots refuses with a clear error.
+- [ ] `autopg update` against a binary signed by an identity IN the locked roots succeeds.
 - [ ] Integration test covers the update-after-trust-rotation case (operator rotates `TRUSTED_IDENTITIES` after create-app; the older slug still verifies against its frozen lock).
 
 **Validation:**
@@ -165,9 +165,9 @@ bun run lint && bun run deadcode
 PR #104 shipped all 5 deliverables across 5 commits on branch `g3-create-app-lock1` (squash-merged into main):
 - `c10de2d feat(g3-d1): autopg_meta table bootstrap module` — D2 (CREATE TABLE module mirroring `src/schema/pgserve-meta.js`)
 - `76f8f15 feat(g3-d2): per-consumer admin + manifest bootstrap module` — D1 (`admin-bootstrap.js` writing `~/.autopg/<sanitized-slug>/admin.json` + sibling `manifest.json` with pinned schema `{schemaVersion:1, slug, lockedRoots, createdAt, lastUpdated}`)
-- `7dafd31 feat(g3-d3): pgserve create-app verb + wrapper allowlist + cli-install dispatch` — D3 (CLI verb composing D1+D2; deep-clones `TRUSTED_IDENTITIES` into `autopg_meta.locked_roots`; allowlisted in both `pgserve-wrapper.cjs` and `autopg-wrapper.cjs`)
-- `f5f066f feat(g3-d4): pgserve verify --slug + locked_roots loader` — D4 (`src/cosign/locked-roots.js` + extends `src/commands/verify.js` with `--slug` parseArgs; reuses provision/gc psql shellout pattern)
-- `28a8060 feat(g3-d5): integration test — pgserve verify --slug lock-vs-live rotation` — D5 (`tests/integration/verify-slug-rotation.test.sh` validating AC #5)
+- `7dafd31 feat(g3-d3): autopg create-app verb + wrapper allowlist + cli-install dispatch` — D3 (CLI verb composing D1+D2; deep-clones `TRUSTED_IDENTITIES` into `autopg_meta.locked_roots`; allowlisted in both `pgserve-wrapper.cjs` and `autopg-wrapper.cjs`)
+- `f5f066f feat(g3-d4): autopg verify --slug + locked_roots loader` — D4 (`src/cosign/locked-roots.js` + extends `src/commands/verify.js` with `--slug` parseArgs; reuses provision/gc psql shellout pattern)
+- `28a8060 feat(g3-d5): integration test — autopg verify --slug lock-vs-live rotation` — D5 (`tests/integration/verify-slug-rotation.test.sh` validating AC #5)
 
 Acceptance criteria all met: idempotent re-run, mode 0600 manifest + 0700 dir, upgrade refuses out-of-lock identity, upgrade succeeds for in-lock identity, rotation-after-create-app integration test passes. The wave2-g3 takeover narrative (BRIEF v5 spec-pinning corrections, A2/A4/A6 resolutions on manifest path / `autopg_meta` columns / idempotent lockedRoots preservation) is archived under `agents/genie-pgserve/.archive/wave2-g3-coordination/`.
 
@@ -181,7 +181,7 @@ Acceptance criteria all met: idempotent re-run, mode 0600 manifest + 0700 dir, u
 **Deliverables:**
 1. `docs/migrations/v2.6-from-v2.5.md` — what changed (new verbs + schema), what action operators take, rollback notes.
 2. `docs/pgserve-meta.md` — schema reference; every column documented.
-3. `docs/trust-store.md` — `~/.pgserve/trust/identities.json` schema + `pgserve trust` verb reference.
+3. `docs/trust-store.md` — `~/.pgserve/trust/identities.json` schema + `autopg trust` verb reference.
 4. `CHANGELOG.md` v2.6 section: doctor / trust / gc / provision entries with one-line description each.
 5. Per-consumer migration recipe (one Markdown file per repo) checked into each consumer's docs via PRs from this wish — operator-facing instructions only, NOT a connectivity test.
 6. Update README's Quick Start section to reference the new verbs.
@@ -202,7 +202,7 @@ grep -rE "pgserve (doctor|trust|gc|provision)" CHANGELOG.md docs/  # -r recurses
 **depends-on:** Group 3
 
 **Implementation history (2026-05-10):**
-PR #110 shipped 5 files / 607 insertions — all deliverables D1, D2, D3, D4, D6 met. D5 (per-consumer migration recipes in those repos) remains owned by the consumer-side cross-repo proposal docs (`agents/genie-pgserve/RLMX-V26-FIX-PROPOSAL.md`, `agents/genie-pgserve/OMNI-V26-VERSION-PROBE-PROPOSAL.md`) — landing as separate PRs in those repos in their own cadence. Files shipped: `docs/migrations/v2.6-from-v2.5.md` (operator action checklist + rollback), `docs/pgserve-meta.md` (schema reference for both metadata tables), `docs/trust-store.md` (`~/.pgserve/trust/identities.json` reference + `pgserve trust` CLI), `CHANGELOG.md` v2.6.0/v2.6.1 cohort entry (10 Added / 6 Changed / 8 Fixed), `README.md` Quick-Start v2.6 verbs subsection. Felipe direction 2026-05-09 placed `hapvida-eugenia` + `email` out of scope for this wish.
+PR #110 shipped 5 files / 607 insertions — all deliverables D1, D2, D3, D4, D6 met. D5 (per-consumer migration recipes in those repos) remains owned by the consumer-side cross-repo proposal docs (`agents/genie-pgserve/RLMX-V26-FIX-PROPOSAL.md`, `agents/genie-pgserve/OMNI-V26-VERSION-PROBE-PROPOSAL.md`) — landing as separate PRs in those repos in their own cadence. Files shipped: `docs/migrations/v2.6-from-v2.5.md` (operator action checklist + rollback), `docs/pgserve-meta.md` (schema reference for both metadata tables), `docs/trust-store.md` (`~/.pgserve/trust/identities.json` reference + `autopg trust` CLI), `CHANGELOG.md` v2.6.0/v2.6.1 cohort entry (10 Added / 6 Changed / 8 Fixed), `README.md` Quick-Start v2.6 verbs subsection. Felipe direction 2026-05-09 placed `hapvida-eugenia` + `email` out of scope for this wish.
 
 ---
 
@@ -211,7 +211,7 @@ PR #110 shipped 5 files / 607 insertions — all deliverables D1, D2, D3, D4, D6
 
 **Deliverables:**
 1. Audit rotation in `src/gc/audit-log.js`: at start of every gc run, scan `~/.pgserve/audit/` for `gc-<YYYY-MM-DD>.log` files older than 90 days, delete them, audit each deletion with a `rotate` action. **Never deletes the current day's log file** even if 90-day boundary math somehow includes it (defensive guard against clock skew).
-2. End-to-end smoke script: `tests/integration/v2.6-cohort-smoke.sh` — fresh `mktemp` HOME → install the **local build** (via `npm pack` + `npx <local-tarball>` OR `node bin/pgserve-wrapper.cjs install` against the worktree) → `pgserve provision @demo/app` → workload → `pgserve gc --dry-run` → `pgserve doctor --json` (no FAIL) → cleanup. **Do NOT use `npx pgserve@latest`** — that would test the published version, not the changes about to be released.
+2. End-to-end smoke script: `tests/integration/v2.6-cohort-smoke.sh` — fresh `mktemp` HOME → install the **local build** (via `npm pack` + `npx <local-tarball>` OR `node bin/pgserve-wrapper.cjs install` against the worktree) → `autopg provision @demo/app` → workload → `autopg gc --dry-run` → `autopg doctor --json` (no FAIL) → cleanup. **Do NOT use `npx pgserve@latest`** — that would test the published version, not the changes about to be released.
 3. Release notes for v2.6.x capturing the cohort.
 4. Tag + push v2.6.x (next semver after v2.6.1); release workflow handles GitHub Releases artifact upload.
 
@@ -225,7 +225,7 @@ The original wish text claimed "release workflow handles GitHub Releases artifac
 - [ ] Audit rotation never deletes the current day's log file (boundary guard test).
 - [ ] Rotation event itself is audited.
 - [ ] Smoke script exits 0 on a clean Ubuntu 24.04 + macOS 14 host.
-- [ ] `pgserve doctor --json` after the smoke shows zero FAIL findings.
+- [ ] `autopg doctor --json` after the smoke shows zero FAIL findings.
 - [ ] v2.6.x release artifacts on GitHub Releases verify with `gh attestation verify` against the workflow OIDC identity (Path A) — OR — release notes explicitly defer this criterion to the next patch release with Wave A included (Path B).
 
 **Validation:**
@@ -253,7 +253,7 @@ Bot-review fix-up commit `c17045c` addressed 6 findings: codex P1 (smoke parsed 
 - ✅ Audit rotation never deletes current day's log even at retentionDays=0 (boundary-guard test pass)
 - ✅ Rotation event itself is audited
 - ⚠️ Smoke script Ubuntu+macOS clean-host run — gated on CI matrix availability (script ready, optional matrix per gc-provision.test.sh pattern)
-- ⚠️ `pgserve doctor --json` zero-FAIL post-smoke — script asserts; runs in CI when matrix wires in
+- ⚠️ `autopg doctor --json` zero-FAIL post-smoke — script asserts; runs in CI when matrix wires in
 - ⚠️ `gh attestation verify` on release artifacts — **deferred to dual-path acceptance** (Path A: wait for Wave A signing-artifact wiring; Path B: cut now with signing-pending note in `docs/releases/v2.6.2.md`)
 
 ---
@@ -271,11 +271,11 @@ Bot-review fix-up commit `c17045c` addressed 6 findings: codex P1 (smoke parsed 
 After all five groups merge to dev:
 
 - [ ] `npx pgserve@<v2.6> install` on a clean macOS-arm64 + Ubuntu host works without manual fixup.
-- [ ] `pgserve doctor --json` on the fresh install reports every check PASS or WARN — zero FAIL.
-- [ ] `pgserve provision @demo/app` is idempotent across 10 concurrent runs (background jobs); exactly one DB + role + meta row.
-- [ ] `pgserve gc --apply` on a synthetic orphan drops it and cleans the meta row; audit log captures every event.
-- [ ] `pgserve trust list` shows the hardcoded roots; `pgserve trust add` + `remove` round-trips a user identity.
-- [ ] `pgserve update` (renamed from `pgserve upgrade` in v3.0.0) against a binary outside the locked roots refuses; against a binary inside the locked roots succeeds.
+- [ ] `autopg doctor --json` on the fresh install reports every check PASS or WARN — zero FAIL.
+- [ ] `autopg provision @demo/app` is idempotent across 10 concurrent runs (background jobs); exactly one DB + role + meta row.
+- [ ] `autopg gc --apply` on a synthetic orphan drops it and cleans the meta row; audit log captures every event.
+- [ ] `autopg trust list` shows the hardcoded roots; `autopg trust add` + `remove` round-trips a user identity.
+- [ ] `autopg update` (renamed from `pgserve upgrade` in v3.0.0) against a binary outside the locked roots refuses; against a binary inside the locked roots succeeds.
 - [ ] CHANGELOG and migration docs land before the v2.6 tag.
 
 ## Assumptions / Risks
@@ -301,7 +301,7 @@ These PRs landed during the cohort calendar but are **out of this wish's scope**
 | #102 | `fix(cosign): correct publisher field for pgserve + reconcile SHARED-DESIGN org refs` | MEDIUM | engineer T7 |
 | #103 | `fix(cli): respect --help flag, pre-flight port collision, error on unknown verbs (B2/B3/B4)` | HIGH × 3 | qa baseline audit |
 | #105 | `fix(cli-install): use process.exitCode + throw to avoid stdio-pipe race (CV103-2)` | HIGH | qa loop-2 stdio-pipe race |
-| #106 | `fix(cli): pgserve install crash diagnostic + config --help` (B5/B6/B7 trio) | MEDIUM × 3 | qa coverage-gap recipes |
+| #106 | `fix(cli): autopg install crash diagnostic + config --help` (B5/B6/B7 trio) | MEDIUM × 3 | qa coverage-gap recipes |
 | `9a5dff4` | `fix(verify-binary): resolveBundlePath fall-through to .intoto.jsonl + sibling provenance` | HIGH | engineer Wave-B audit |
 | `bbe11dc` | `fix(verify-binary): support detached <tarball>.sig + <tarball>.cert format (WAVE-B-BUNDLE-FORMAT)` | HIGH | qa Wave-B-BUNDLE-FORMAT finding |
 

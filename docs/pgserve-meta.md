@@ -3,12 +3,12 @@
 This is the operator reference for the two metadata tables pgserve maintains in
 `postgres`: `pgserve_meta` (per-database) and `autopg_meta` (per-consumer-app).
 Both live in the `public` schema. Both are bootstrapped lazily — `pgserve
-provision` and `pgserve create-app` invoke their respective `IF NOT EXISTS`
+provision` and `autopg create-app` invoke their respective `IF NOT EXISTS`
 DDL on first use.
 
 ## `pgserve_meta`
 
-**Owner:** `pgserve provision` / `pgserve gc`
+**Owner:** `autopg provision` / `autopg gc`
 **Lifecycle:** one row per provisioned database
 **Bootstrap:** `src/schema/pgserve-meta.js#getBootstrapStatements()` (idempotent)
 
@@ -30,7 +30,7 @@ for the migration shape and idempotency contract.
 ### How rows are created
 
 ```text
-pgserve provision <fingerprint>
+autopg provision <fingerprint>
   ├─ pg_advisory_lock(hash(fingerprint))
   ├─ INSERT INTO pgserve_meta (fingerprint, database_name, role_name, …)
   │     ON CONFLICT (fingerprint) DO UPDATE SET last_used_at = now()
@@ -45,7 +45,7 @@ success during the underlying `CREATE DATABASE`.
 ### How rows are deleted
 
 ```text
-pgserve gc [--apply]
+autopg gc [--apply]
   ├─ SELECT fingerprint, database_name, source_path, last_used_at FROM pgserve_meta
   ├─ FOR EACH row WHERE source_path IS NOT NULL AND NOT EXISTS(source_path):
   │     DROP DATABASE database_name
@@ -60,7 +60,7 @@ keyed by op-id; redaction lint ensures no fingerprint hashes leak verbatim.
 
 ## `autopg_meta`
 
-**Owner:** `pgserve create-app`
+**Owner:** `autopg create-app`
 **Lifecycle:** one row per consumer app
 **Bootstrap:** `src/schema/autopg-meta.js#getBootstrapStatements()` (idempotent)
 
@@ -75,7 +75,7 @@ keyed by op-id; redaction lint ensures no fingerprint hashes leak verbatim.
 ### How rows are created
 
 ```text
-pgserve create-app <slug>
+autopg create-app <slug>
   ├─ sanitizeSlug(<slug>) → e.g. "demo_app"
   ├─ ensure ~/.autopg/<slug>/ exists (mode 0700)
   ├─ INSERT INTO autopg_meta (slug, manifest_path, locked_roots, …)
@@ -87,10 +87,10 @@ pgserve create-app <slug>
        schema: { schemaVersion: 1, slug, lockedRoots, createdAt, lastUpdated }
 ```
 
-### How `pgserve verify --slug` reads the table
+### How `autopg verify --slug` reads the table
 
 ```text
-pgserve verify --slug <slug> <binary>
+autopg verify --slug <slug> <binary>
   ├─ SELECT locked_roots FROM autopg_meta WHERE slug = <slug>
   ├─ verifyBinary(<binary>, options: { trustList: locked_roots })
   └─ exit 0 on PASS, non-zero on FAIL (exit-3 if slug not found, exit-2 if identity mismatch)
@@ -101,18 +101,18 @@ pgserve verify --slug <slug> <binary>
 `autopg_meta` is the **authoritative** source for "which apps exist + what
 trust roots are locked at create time."  The per-consumer `admin.json` +
 `manifest.json` are **derived caches** — written at create-app time for fast
-reads from CLI verbs that don't want a postgres connection (`pgserve doctor`,
-`pgserve update` pre-flight — renamed from `pgserve upgrade` in v3.0.0).
+reads from CLI verbs that don't want a postgres connection (`autopg doctor`,
+`autopg update` pre-flight — renamed from `pgserve upgrade` in v3.0.0).
 
-On divergence, `autopg_meta` wins.  The next `pgserve doctor` run reports the
+On divergence, `autopg_meta` wins.  The next `autopg doctor` run reports the
 divergence as a `FAIL` finding.  Cache regeneration in v2.6 V1 is manual: the
-operator removes `~/.autopg/<slug>/` and re-runs `pgserve create-app <slug>`.
+operator removes `~/.autopg/<slug>/` and re-runs `autopg create-app <slug>`.
 The verb is idempotent and reads back `locked_roots` from the table to rebuild
 the cache files.
 
-Auto-regeneration via `pgserve doctor --fix` is owned by
+Auto-regeneration via `autopg doctor --fix` is owned by
 `pgserve-singleton-no-proxy` Group 6 (self-healing update) and ships in a
-separate cohort.  Until then, `pgserve doctor --fix` is a stub that exits 64.
+separate cohort.  Until then, `autopg doctor --fix` is a stub that exits 64.
 
 ### Why two tables, not one
 
@@ -133,7 +133,7 @@ carry the union of both invariants.
 - [`docs/migrations/v2.6-from-v2.5.md`](migrations/v2.6-from-v2.5.md) — what to do
   during the upgrade.
 - [`docs/trust-store.md`](trust-store.md) — `~/.pgserve/trust/identities.json`
-  format + `pgserve trust` verb reference.
+  format + `autopg trust` verb reference.
 - [`src/schema/pgserve-meta.js`](../src/schema/pgserve-meta.js) — bootstrap source.
 - [`src/schema/autopg-meta.js`](../src/schema/autopg-meta.js) — bootstrap source.
 - [`src/cosign/schema.js`](../src/cosign/schema.js) — verified-* column delta on `pgserve_meta`.

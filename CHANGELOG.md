@@ -14,44 +14,62 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — pgserve v3.0.0 (post-npm-departure cutover)
+## [Unreleased] — autopg v3.0.0 (post-npm-departure cutover · pgserve → autopg)
 
-The v3.0.0 cohort moves pgserve off npm-as-canonical-distribution. Installs +
-in-place updates flow through `install.sh` + GitHub Releases exclusively.
-Tracking wish: `pgserve-singleton-no-proxy` Decision #1 — *"3.0 reserved for
-post-npm-departure cutover (`distribution-exodus`)"*.
+v3.0.0 is the **first publishing independently from npmjs.com**. Installs and
+in-place updates flow through `install.sh` + GitHub Releases exclusively
+(cosign-keyless-signed tarballs). The project is renamed `pgserve` → `autopg`;
+the `pgserve` CLI bin is gone. Tracking wish:
+[`.genie/wishes/distribution-exodus/WISH.md`](.genie/wishes/distribution-exodus/WISH.md).
 
 ### Changed (breaking)
 
-- **`pgserve upgrade` → `pgserve update` (clean cutover)**. The `upgrade` verb
-  is gone; `pgserve upgrade` exits with "unknown verb" (the B4 path from
-  `pgserve-singleton-no-proxy` G3). Operators must use `pgserve update`.
-  Source dir renamed `src/upgrade/` → `src/update/`; tests `tests/upgrade/`
-  → `tests/update/`; CLI dispatch + wrapper allowlist all updated in lockstep.
-- **`pgserve update` orchestrator function** in `src/update/index.js` is now
-  exported as `update()` (was `upgrade()`); the `STEPS` array shape is
-  unchanged.
+- **CLI rename: `pgserve` → `autopg`.** The `pgserve` shell command is gone
+  (clean cutover; no alias). All previous `pgserve <verb>` invocations are
+  now `autopg <verb>`. `bin/pgserve-wrapper.cjs` was renamed via `git mv` to
+  `bin/autopg-wrapper.cjs` (the previous 16-line `bin/autopg-wrapper.cjs`
+  delegator was deleted). `package.json` `bin` map drops the `pgserve`
+  entry; only `autopg` remains.
+- **Package name: `pgserve` → `autopg`.** `package.json` `name` field
+  flipped. No operational impact post-V3-2 (we don't publish to npm); local
+  tooling (`bun install`, `npm pack`) reads the new name.
+- **`pgserve upgrade` → `autopg update` (clean cutover).** The `upgrade` verb
+  is gone; `autopg upgrade` exits with "unknown verb" (the B4 path from
+  `pgserve-singleton-no-proxy` G3). Source dir renamed `src/upgrade/` →
+  `src/update/`; tests `tests/upgrade/` → `tests/update/`; CLI dispatch +
+  wrapper allowlist all updated in lockstep.
+- **`update` orchestrator function** in `src/update/index.js` is exported
+  as `update()` (was `upgrade()`); the `STEPS` array shape is unchanged.
 - **npm publish step removed** from `.github/workflows/version.yml`. v3.0.0+
-  releases ship via GitHub Releases only (cosign-keyless-signed tarballs via
-  `install.sh` + `pgserve update`). Historical v2.x tarballs on npmjs.com
-  stay published (npm registry tarballs are immutable); no new versions go
-  to npm from v3.0.0 onward.
-- **`package.json` `postinstall` hook removed**. The hook auto-ran
-  `autopg upgrade` (and was rewired to `pgserve update` in V3-1) on
-  `npm install` / `bun install`. Since v3.0.0 doesn't publish to npm, the
-  hook never fires for end-users; dropped to avoid confusing the dev-only
-  invocation path. `scripts/postinstall.cjs` is preserved in the repo for
-  manual invocation; the hook can be re-added if a future cohort
-  reintroduces an npm distribution path.
+  releases ship via GitHub Releases only. Historical v2.x tarballs on
+  npmjs.com stay published (registry tarballs are immutable); no new
+  versions go to npm.
+- **`package.json` `postinstall` hook removed.** The hook auto-ran the
+  upgrade verb on `npm install` — orphaned after npm departure.
+  `scripts/postinstall.cjs` is preserved for manual invocation.
+
+### Preserved (deliberate, deferred)
+
+- **`pgserve_meta` postgres table** — separate from `autopg_meta` with
+  different lifecycle (per-database vs per-consumer-app). Renaming requires
+  DDL migration on deployed v2.6.x hosts; step-by-step transition.
+- **GitHub URLs at `namastexlabs/pgserve`** — `install.sh REPO=`, trust
+  regex at `src/cosign/trust-list.js`, every `github.com/namastexlabs/pgserve`
+  doc link. The repo rename to `automagik-dev/autopg` is the LAST cutover
+  step (a `gh repo transfer` admin action by the operator); a follow-up
+  PR rewrites all URLs + regex in lockstep when that lands.
+- **`npm install pgserve@2.6.x`** continues to work for operators who haven't
+  migrated; the npm tarballs from v2.x stay published forever. New
+  operators install via `install.sh`.
 
 ### Removed
 
-- `.github/workflows/version.yml` — `Publish to npm via OIDC` job and its
-  7 supporting steps (Setup Node 24, Verify OIDC support, Download
-  artifacts, Verify binaries, Check version, Publish, Verify publish).
-  The `build` matrix job is preserved as a per-release sanity gate.
-- `package.json:scripts.postinstall` — no longer triggered after npm
-  departure.
+- `bin/pgserve-wrapper.cjs` (renamed via `git mv` to `bin/autopg-wrapper.cjs`).
+- The previous 16-line `bin/autopg-wrapper.cjs` delegator stub.
+- `package.json` `bin.pgserve` entry.
+- `.github/workflows/version.yml` `Publish to npm via OIDC` job + 7
+  supporting steps.
+- `package.json:scripts.postinstall`.
 
 ## [2.6.0] / [2.6.1] - 2026-05-09
 
@@ -61,27 +79,27 @@ verbs to npm; v2.6.1 followed with the B2/B3/B4 CLI fix trio.
 
 ### Added
 
-- **`pgserve doctor`** — read-only health probe for postmaster, pm2 supervision,
+- **`autopg doctor`** — read-only health probe for postmaster, pm2 supervision,
   on-disk roots, and trust store. JSON output via `--json`. See
   [`docs/migrations/v2.6-from-v2.5.md`](docs/migrations/v2.6-from-v2.5.md).
-- **`pgserve trust add | list | remove`** — manage the user-extensible cosign
+- **`autopg trust add | list | remove`** — manage the user-extensible cosign
   trust store at `~/.pgserve/trust/identities.json`. Layered on top of the
   hardcoded `TRUSTED_IDENTITIES` (frozen at build time). See
   [`docs/trust-store.md`](docs/trust-store.md).
-- **`pgserve gc [--dry-run | --apply]`** — sweep orphan databases (rows in
+- **`autopg gc [--dry-run | --apply]`** — sweep orphan databases (rows in
   `pgserve_meta` whose `source_path` no longer exists). One-line-per-event audit
   log at `~/.pgserve/audit/gc-<YYYY-MM-DD>.log`. Rotates files >90 days old at
   start of each run. See [`docs/pgserve-meta.md`](docs/pgserve-meta.md) for the
   underlying schema.
-- **`pgserve provision <fingerprint>`** — idempotent DB + role provisioning for
+- **`autopg provision <fingerprint>`** — idempotent DB + role provisioning for
   an app fingerprint. Concurrency-safe via `pg_advisory_lock` keyed on
   fingerprint hash; `42P04` ("database already exists") accepted as success.
-- **`pgserve create-app <slug>`** — per-consumer app registration with manifest
+- **`autopg create-app <slug>`** — per-consumer app registration with manifest
   LOCK 1 cosign verifier. Writes `~/.autopg/<slug>/admin.json` + sibling
   `manifest.json`, registers in `autopg_meta`, freezes `TRUSTED_IDENTITIES` for
-  this consumer at create time. `pgserve verify --slug <slug>` consults the
+  this consumer at create time. `autopg verify --slug <slug>` consults the
   frozen snapshot.
-- **`pgserve verify --slug <slug>`** — verify a binary against an app's locked
+- **`autopg verify --slug <slug>`** — verify a binary against an app's locked
   roots (instead of the live `TRUSTED_IDENTITIES`). Allows trust rotation
   without invalidating already-registered consumers.
 - **`pgserve_meta` schema** — base table for `provision`/`gc`. Cosign verification
@@ -97,25 +115,25 @@ verbs to npm; v2.6.1 followed with the B2/B3/B4 CLI fix trio.
   attestations live in Sigstore Rekor; verification via `gh attestation verify`
   (no custom verifier server). See
   [`.github/workflows/release-publish.yml`](.github/workflows/release-publish.yml).
-- **Hardcoded blocklist** — `pgserve install` refuses to start against known-bad
+- **Hardcoded blocklist** — `autopg install` refuses to start against known-bad
   versions with exit code `EBLOCKEDVERSION`.
 
 ### Changed
 
-- **`pgserve install`** now runs port pre-flight (IPv4 + IPv6 connect probe on
+- **`autopg install`** now runs port pre-flight (IPv4 + IPv6 connect probe on
   5432) and refuses to start on collision. Closes the silent-failure mode
   where pm2 reported `online` while postgres had crashed.
-- **`pgserve install --help`** respects `--help` / `-h` and exits 0 without
+- **`autopg install --help`** respects `--help` / `-h` and exits 0 without
   performing the install.
 - **Unknown verbs** (`pgserve foo`) exit non-zero with an "unknown verb" error
   instead of printing top-level help and exiting 0.
-- **`pgserve doctor`** surfaces a missing `pgaudit` extension as a non-PASS
+- **`autopg doctor`** surfaces a missing `pgaudit` extension as a non-PASS
   finding (was silently fall-through).
-- **`pgserve config --help`** exits 0 with a usage block instead of running the
+- **`autopg config --help`** exits 0 with a usage block instead of running the
   config logic against `--help` as if it were a key.
 - **`install.sh`** replaced in-place with the ≤80-line GitHub Releases path.
   No legacy or shim companions; the npm + pm2 install path is preserved via
-  `pgserve install` (`npm install -g pgserve && pgserve install`).
+  `autopg install` (`npm install -g pgserve && autopg install`).
 
 ### Fixed
 
@@ -267,7 +285,7 @@ verbs to npm; v2.6.1 followed with the B2/B3/B4 CLI fix trio.
 - **Soft rename to `autopg`.** The npm package stays `pgserve` (no
   `npm deprecate`); the package now also ships an `autopg` bin that
   routes through the same dispatcher. Use either name interchangeably:
-  `autopg config list` and `pgserve config list` are byte-equivalent.
+  `autopg config list` and `autopg config list` are byte-equivalent.
   pm2 process name stays `pgserve` so existing supervised installs
   upgrade cleanly with no migration step.
 - **`~/.autopg/settings.json` (schema version 1).** Six sections —

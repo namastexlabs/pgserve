@@ -108,7 +108,7 @@ curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install.s
 PGSERVE_VERSION=v2.6.0 curl -fsSL .../install.sh | bash
 ```
 
-> `install.sh` fetches the signed tarball from GitHub Releases and verifies it via `gh attestation verify` (Sigstore Rekor public-good). Requires the [`gh` CLI](https://cli.github.com/). pgserve no longer depends on npm — the install + update path is binary tarballs all the way down (run `pgserve update` for in-place version migrations; renamed from `pgserve upgrade` in v3.0.0).
+> `install.sh` fetches the signed tarball from GitHub Releases and verifies it via `gh attestation verify` (Sigstore Rekor public-good). Requires the [`gh` CLI](https://cli.github.com/). pgserve no longer depends on npm — the install + update path is binary tarballs all the way down (run `autopg update` for in-place version migrations; renamed from `pgserve upgrade` in v3.0.0).
 
 ### Windows
 
@@ -148,12 +148,12 @@ management, orphan-database GC, fingerprint provisioning, and per-consumer app
 registration:
 
 ```
-pgserve doctor [--json]                # read-only health probe
-pgserve trust <list|add|remove> [...]  # manage ~/.pgserve/trust/identities.json
-pgserve gc [--dry-run|--apply]         # sweep orphan databases (audit log)
-pgserve provision <fingerprint>        # idempotent DB + role provisioning
-pgserve create-app <slug>              # per-consumer manifest LOCK 1
-pgserve verify [--slug <slug>] <bin>   # cosign verify against trust list or locked roots
+autopg doctor [--json]                # read-only health probe
+autopg trust <list|add|remove> [...]  # manage ~/.pgserve/trust/identities.json
+autopg gc [--dry-run|--apply]         # sweep orphan databases (audit log)
+autopg provision <fingerprint>        # idempotent DB + role provisioning
+autopg create-app <slug>              # per-consumer manifest LOCK 1
+autopg verify [--slug <slug>] <bin>   # cosign verify against trust list or locked roots
 ```
 
 Full reference:
@@ -241,20 +241,20 @@ psql -h "${XDG_RUNTIME_DIR:-/tmp}/pgserve" -d myapp
 psql "postgresql:///myapp?host=${XDG_RUNTIME_DIR:-/tmp}/pgserve"
 ```
 
-### Supervised by PM2 — `pgserve install` (recommended)
+### Supervised by PM2 — `autopg install` (recommended)
 
-`pgserve install` registers pgserve as a hardened pm2 process in one
+`autopg install` registers pgserve as a hardened pm2 process in one
 command. Idempotent: re-running it is a no-op when already installed.
 
 ```bash
-pgserve install                    # one-shot register + start under pm2
-pgserve install --port 8442        # custom port
-pgserve install --data /data/pg    # custom data dir
+autopg install                    # one-shot register + start under pm2
+autopg install --port 8442        # custom port
+autopg install --data /data/pg    # custom data dir
 
-pgserve url                        # postgres://localhost:8432/postgres
-pgserve port                       # 8432
-pgserve status                     # pm2 + on-disk config snapshot
-pgserve uninstall                  # remove from pm2; keep data dir
+autopg url                        # postgres://localhost:8432/postgres
+autopg port                       # 8432
+autopg status                     # pm2 + on-disk config snapshot
+autopg uninstall                  # remove from pm2; keep data dir
 ```
 
 **Hardened defaults** (tuned for production-grade Postgres workloads,
@@ -262,7 +262,7 @@ not toy-machine values):
 
 | Flag | Default | Why |
 |------|---------|-----|
-| `--max-memory-restart` | `4G` | Postgres realistic working set: shared_buffers + autovacuum + connection backends. 1G OOM-kills under modest load. Override with `PGSERVE_MAX_MEMORY=8G pgserve install`. |
+| `--max-memory-restart` | `4G` | Postgres realistic working set: shared_buffers + autovacuum + connection backends. 1G OOM-kills under modest load. Override with `PGSERVE_MAX_MEMORY=8G autopg install`. |
 | `--max-restarts` | `50` | Tolerates extended outages (NATS reconnect storms, host pressure). Combined with `--min-uptime`, only RAPID failures count. |
 | `--min-uptime` | `10000` ms | Restart counts against the cap only when the process crashed within 10s of starting. Healthy long-uptime crashes don't burn the budget. |
 | `--restart-delay` | `4000` ms | Initial gap between restarts. |
@@ -276,8 +276,8 @@ Config: `~/.pgserve/config.json` (override the directory with
 `PGSERVE_MAX_MEMORY` at install time.
 
 Downstream services that need a Postgres connection can shell out to
-`pgserve install` (no-op if already running) and read the canonical URL
-from `pgserve url` instead of spinning up their own embedded pgserve.
+`autopg install` (no-op if already running) and read the canonical URL
+from `autopg url` instead of spinning up their own embedded pgserve.
 
 #### Manual ecosystem.config.cjs (legacy)
 

@@ -4,7 +4,7 @@
 # When pgserve is installed via `bun install`, the nested `bun` npm package's
 # postinstall can be skipped, leaving @oven/bun-<platform>/bin/bun empty.
 # The bun stub then refuses to run with "Bun's postinstall script was not run".
-# pgserve-wrapper.cjs must detect this and self-heal via `node install.js`.
+# autopg-wrapper.cjs must detect this and self-heal via `node install.js`.
 #
 # This test stages a synthetic broken install tree, runs the wrapper, and
 # asserts that it recovers and spawns postgres-server.
@@ -12,7 +12,7 @@
 set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WRAPPER="$REPO_ROOT/bin/pgserve-wrapper.cjs"
+WRAPPER="$REPO_ROOT/bin/autopg-wrapper.cjs"
 
 if [ ! -f "$WRAPPER" ]; then
   echo "✗ wrapper not found: $WRAPPER"
@@ -35,7 +35,7 @@ mkdir -p "$FIXTURE/node_modules/@oven/bun-linux-x64/bin"   # empty, simulating t
 mkdir -p "$FIXTURE/node_modules/.bin"
 mkdir -p "$FIXTURE/node_modules/pgserve/bin"
 
-cp "$WRAPPER" "$FIXTURE/node_modules/pgserve/bin/pgserve-wrapper.cjs"
+cp "$WRAPPER" "$FIXTURE/node_modules/pgserve/bin/autopg-wrapper.cjs"
 
 # Stub postgres-server so we can detect a successful spawn without needing
 # postgres binaries in the fixture.
@@ -76,7 +76,7 @@ chmod +x "$FIXTURE/node_modules/bun/bin/bun"
 ln -s ../bun/bin/bun "$FIXTURE/node_modules/.bin/bun"
 
 echo "=== Testing self-heal on broken install ==="
-OUTPUT=$(node "$FIXTURE/node_modules/pgserve/bin/pgserve-wrapper.cjs" 2>&1)
+OUTPUT=$(node "$FIXTURE/node_modules/pgserve/bin/autopg-wrapper.cjs" 2>&1)
 EXIT=$?
 
 if [ $EXIT -ne 0 ]; then
@@ -107,7 +107,7 @@ echo "✓ self-heal path: wrapper detected, repaired, and spawned postgres-serve
 
 echo ""
 echo "=== Testing healthy path is unaffected ==="
-OUTPUT=$(node "$FIXTURE/node_modules/pgserve/bin/pgserve-wrapper.cjs" 2>&1)
+OUTPUT=$(node "$FIXTURE/node_modules/pgserve/bin/autopg-wrapper.cjs" 2>&1)
 EXIT=$?
 
 if [ $EXIT -ne 0 ]; then
@@ -143,7 +143,7 @@ chmod +x "$FIXTURE/node_modules/bun/bin/bun"
 # Clear the @oven healed binary so the stub is what runs.
 rm -f "$FIXTURE/node_modules/@oven/bun-linux-x64/bin/bun"
 
-OUTPUT=$(node "$FIXTURE/node_modules/pgserve/bin/pgserve-wrapper.cjs" 2>&1 || true)
+OUTPUT=$(node "$FIXTURE/node_modules/pgserve/bin/autopg-wrapper.cjs" 2>&1 || true)
 
 if echo "$OUTPUT" | grep -q "self-heal"; then
   echo "✗ wrapper tried self-heal for a non-postinstall error"

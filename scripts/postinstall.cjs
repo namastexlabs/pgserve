@@ -109,7 +109,7 @@ function main(deps = {}) {
     return;
   }
   // Locate own CLI entry — script is run from the package dir at install time
-  const cliEntry = path.join(pkgRoot, 'bin', 'pgserve-wrapper.cjs');
+  const cliEntry = path.join(pkgRoot, 'bin', 'autopg-wrapper.cjs');
   if (!fsApi.existsSync(cliEntry)) {
     stderr.write(`[pgserve-postinstall] wrapper not found at ${cliEntry}, skipping\n`);
     return;

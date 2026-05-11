@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pgserve canonical installer (v2.6+).
 # Fetches the signed binary tarball from GitHub Releases, verifies via
-# `gh attestation verify` (Sigstore Rekor), and runs `pgserve install`.
+# `gh attestation verify` (Sigstore Rekor), and runs `autopg install`.
 # Usage:   curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install.sh | bash
 # Pin:     PGSERVE_VERSION=v2.6.0 curl -fsSL .../install.sh | bash
 # Dry-run: bash install.sh --dry-run
@@ -38,7 +38,7 @@ URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
 if [ "$DRY_RUN" = "1" ]; then
   echo "[pgserve] would fetch:  $URL"
   echo "[pgserve] would verify: gh attestation verify <tarball> --repo ${REPO}"
-  echo "[pgserve] would extract + run: pgserve install"
+  echo "[pgserve] would extract + run: autopg install"
   exit 0
 fi
 
@@ -63,7 +63,7 @@ tar -xzf "$TMP/$TARBALL" -C "$TMP"
 
 # Tarball ships a `bin/pgserve` (or wrapper) at the root of the
 # extracted dir. The release-publish workflow lays it out so that
-# `pgserve install` Just Works after extract.
+# `autopg install` Just Works after extract.
 INSTALL_DIR="$HOME/.local/share/pgserve/${VERSION}"
 mkdir -p "$INSTALL_DIR"
 cp -r "$TMP"/* "$INSTALL_DIR/"
