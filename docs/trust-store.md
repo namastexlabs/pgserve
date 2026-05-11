@@ -136,29 +136,40 @@ Exit codes:
 
 ## Doctor checks
 
-`pgserve doctor` reports:
+`pgserve doctor` currently does **not** probe the trust store. The supervisor,
+postmaster, pm2 wiring, and `~/.autopg/admin.json` shape are what doctor
+inspects today (see `src/commands/doctor.js`). Trust-store integrity checks
+(file modes, schema validity, publisher-match) are reserved for a future
+release — tracked under `pgserve-singleton-no-proxy` Group 6 (self-healing
+`pgserve update` pipeline) and its companion `doctor --fix` tiered modes.
 
-| Check | PASS / WARN / FAIL |
-|-------|--------------------|
-| `~/.pgserve/trust/` exists and mode 0700 | PASS / FAIL |
-| `~/.pgserve/trust/identities.json` mode 0600 (if present) | PASS / FAIL |
-| `identities.json` matches schema (if present) | PASS / FAIL |
-| At least one entry trusts a release workflow that matches `pgserve.publisher` from package.json | PASS / WARN |
+Until those land, operators verify the trust store manually:
 
-Use `pgserve doctor --json` to feed downstream tooling.
+```bash
+# Inspect the user-extensible store (JSON list)
+pgserve trust list --json | jq
+
+# Confirm hardcoded entries are present (regression sanity)
+pgserve trust list --json | jq '[.[] | select(.source == "hardcoded")] | length'
+# Expected: >= 3 (genie, omni, pgserve self-trust)
+
+# Confirm file mode is 0600 (manual check)
+stat -c '%a' ~/.pgserve/trust/identities.json 2>/dev/null || stat -f '%Lp' ~/.pgserve/trust/identities.json
+# Expected: 600
+```
 
 ## Audit
 
-Every `add` and `remove` invocation appends a line to
-`~/.pgserve/audit/trust-<YYYY-MM-DD>.log`:
+`pgserve trust add` and `pgserve trust remove` currently do **not** write
+a dedicated audit log. The user-extensible store at
+`~/.pgserve/trust/identities.json` is the audit trail itself: each entry
+carries an `addedAt` ISO-8601 timestamp populated by `validateEntry()` in
+`src/cosign/trust-store.js`. Removed entries are dropped without a tombstone.
 
-```
-2026-05-10T18:23:11.123Z trust.add  id=my-org-release publisher=@my-org/cli
-2026-05-10T18:24:02.456Z trust.remove id=my-org-release
-```
-
-The audit file rotates alongside `gc-<DATE>.log` (kept >0 days, deleted
-when older than 90 days at start of each gc/trust run).
+A dedicated `~/.pgserve/audit/trust-<DATE>.log` analogue to the `gc` audit
+log is tracked as a future enhancement under `pgserve-singleton-no-proxy`
+(no shipped wish today). Operators who need a separate trust-mutation
+audit log can wrap the verb in their own shell history capture until then.
 
 ## Cross-references
 
