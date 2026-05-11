@@ -1,14 +1,21 @@
 name: Build All Platforms
 
+# v3.0.0: this workflow used to build + npm-publish. The npm `publish` job
+# was removed in V3-2 (post-npm-departure cutover). The remaining `build`
+# job is preserved as a per-release sanity build; its artifacts are not
+# currently consumed downstream. The GitHub Releases pipeline runs via
+# build-tarballs.yml → sign-attest.yml → release-publish.yml (an
+# independent chain that produces the cosign-signed autopg-*.tar.gz set).
+
 on:
   workflow_call:
     inputs:
       version:
-        description: 'Version to publish'
+        description: 'Version label for the build (informational only — no longer published to npm)'
         required: true
         type: string
       npm_tag:
-        description: 'npm dist-tag (next or latest)'
+        description: 'DEPRECATED — npm dist-tag input; ignored after V3-2 npm departure'
         required: false
         type: string
         default: 'next'
@@ -19,11 +26,11 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version (leave empty for build-only)'
+        description: 'Version label (leave empty for build-only)'
         required: false
         type: string
       npm_tag:
-        description: 'npm dist-tag'
+        description: 'DEPRECATED — npm dist-tag; ignored after V3-2 npm departure'
         required: false
         type: choice
         options:
@@ -107,122 +114,33 @@ jobs:
           path: dist/${{ matrix.output }}*
           retention-days: 7
 
-  publish:
-    name: Publish to npm
-    needs: build
-    runs-on: ubuntu-latest
-    if: inputs.version != ''
-    # Note: `environment: npm-publish` was removed because the npmjs.com
-    # Trusted Publisher entry for `pgserve` does not declare an environment
-    # name. With the env gate present here, the OIDC token's environment
-    # claim did not match the registry's expectation and `npm publish`
-    # returned 404. Re-add this line if/when the Trusted Publisher entry
-    # has its Environment Name field set to `npm-publish`.
-    permissions:
-      id-token: write
-      contents: read
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || github.ref }}
-
-      # Node 24 ships npm 11.5+ which has built-in OIDC trusted-publisher
-      # support. Avoids the `npm install -g npm@latest` self-upgrade bug
-      # (Arborist clobbering its own promise-retry dep mid-install) that
-      # broke rlmx's OIDC publish on Node 22.
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.11
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Verify npm version supports OIDC trusted publishing
-        run: |
-          NPM_VERSION=$(npm --version)
-          echo "npm version: ${NPM_VERSION}"
-          MAJOR=$(echo "${NPM_VERSION}" | cut -d. -f1)
-          if [ "${MAJOR}" -lt 11 ]; then
-            echo "::error::npm ${NPM_VERSION} too old — OIDC requires >= 11.5.1. Bump node-version above."
-            exit 1
-          fi
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist/
-          pattern: binaries-*
-          merge-multiple: true
-
-      - name: Verify binaries
-        run: |
-          echo "Downloaded binaries:"
-          ls -la dist/
-
-          MISSING=""
-          # Supported platforms: linux-x64, darwin-arm64, windows-x64
-          for platform in linux-x64 darwin-arm64; do
-            if [ ! -f "dist/pgserve-$platform" ]; then
-              MISSING="$MISSING pgserve-$platform"
-            fi
-          done
-          if [ ! -f "dist/pgserve-windows-x64.exe" ]; then
-            MISSING="$MISSING pgserve-windows-x64.exe"
-          fi
-
-          if [ -n "$MISSING" ]; then
-            echo "Missing binaries:$MISSING"
-            exit 1
-          fi
-
-          echo "All binaries present!"
-
-      - name: Check if version already published
-        id: check
-        run: |
-          VERSION="${{ inputs.version }}"
-          if npm view pgserve@$VERSION version >/dev/null 2>&1; then
-            echo "Version $VERSION already published"
-            echo "published=true" >> $GITHUB_OUTPUT
-          else
-            echo "Version $VERSION not yet published"
-            echo "published=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Publish to npm via OIDC
-        if: steps.check.outputs.published == 'false'
-        env:
-          HUSKY: "0"
-          # npm auto-enables provenance in any CI env with `id-token: write`,
-          # regardless of the --provenance CLI flag. On some runners the
-          # server-side sigstore check fails with 422; disable explicitly.
-          # OIDC token exchange still happens.
-          NPM_CONFIG_PROVENANCE: "false"
-        run: |
-          echo "Publishing version ${{ inputs.version }} with tag ${{ inputs.npm_tag }} via OIDC"
-          npm publish --access public --tag ${{ inputs.npm_tag }}
-
-      - name: Verify publish
-        if: steps.check.outputs.published == 'false'
-        run: |
-          # npm registry can take up to 30s to propagate
-          for i in 1 2 3 4 5; do
-            echo "Attempt $i: Checking npm for pgserve@${{ inputs.version }}..."
-            if npm view pgserve@${{ inputs.version }} version 2>/dev/null; then
-              echo "Successfully published pgserve@${{ inputs.version }} with tag @${{ inputs.npm_tag }}"
-              exit 0
-            fi
-            echo "Not found yet, waiting 10s..."
-            sleep 10
-          done
-          echo "Warning: Version not found after 50s, but publish command succeeded"
-          exit 0
+  # ---------------------------------------------------------------------------
+  # Publish job — REMOVED in v3.0.0 (V3-2 npm-departure).
+  #
+  # pgserve no longer publishes to npmjs.com. Distribution flows through:
+  #   - `install.sh` + GitHub Releases (cosign-keyless-signed tarballs) for
+  #     first install
+  #   - `pgserve update` for subsequent in-place version migrations
+  #
+  # See:
+  #   - .genie/wishes/pgserve-singleton-no-proxy/WISH.md L95
+  #     ("pgserve@3.0.0 bump reserved for post-npm-departure cutover")
+  #   - .genie/wishes/pgserve-singleton-no-proxy/SHARED-DESIGN.md Decision #1
+  #     ("3.0 reserved for post-npm-departure cutover per distribution-exodus")
+  #   - install.sh (canonical installer)
+  #   - .github/workflows/release-publish.yml (GitHub Releases pipeline)
+  #
+  # Historical v2.x tarballs on npmjs.com stay published (npm registry
+  # tarballs are immutable). No new versions go to npm from v3.0.0 onward.
+  #
+  # The `build` job above is preserved as a sanity-build check that the
+  # codebase still compiles on each release run; its artifacts are not
+  # currently consumed by any downstream workflow but the build itself
+  # serves as a gate. If/when that gate moves elsewhere, `build` can be
+  # dropped too along with this whole file.
+  #
+  # GitHub Actions secrets that backed the npm OIDC flow (none — pgserve
+  # used Trusted Publisher, no token needed) are unaffected. The
+  # npmjs.com Trusted Publisher entry for `pgserve` can be removed at the
+  # registry level once Felipe confirms no rollback is desired.
+  # ---------------------------------------------------------------------------

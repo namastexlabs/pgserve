@@ -35,8 +35,7 @@
     "test:npx": "scripts/test-npx.sh",
     "test:bun-self-heal": "scripts/test-bun-self-heal.sh",
     "prepublishOnly": "npm run console:build && npm run lint && npm run deadcode && npm run test:npx && npm run test:bun-self-heal",
-    "prepare": "husky",
-    "postinstall": "node scripts/postinstall.cjs"
+    "prepare": "husky"
   },
   "keywords": [
     "postgresql",

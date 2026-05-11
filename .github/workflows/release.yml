@@ -185,11 +185,17 @@ jobs:
           echo "prev=${{ steps.prev.outputs.tag }}"
 
   # ---------------------------------------------------------------------------
-  # Build & Publish: matrix build of platform binaries + npm publish via OIDC.
+  # Build (sanity): matrix build of platform binaries.
   #
-  # The reusable workflow filename is `version.yml` because npm Trusted
-  # Publisher is configured against that exact path. Renaming requires
-  # updating the npmjs.com Trusted Publisher entry first.
+  # V3-2 npm departure: the npm `publish` job in version.yml has been
+  # removed. This `build` step remains as a per-release sanity-build
+  # gate; its artifacts are not currently consumed by any downstream
+  # workflow.
+  #
+  # The reusable workflow filename `version.yml` is preserved because the
+  # historical npm Trusted Publisher entry was bound to that path; once
+  # the Trusted Publisher entry is fully retired at the registry level,
+  # this file can be renamed or merged into release.yml.
   #
   # The `if:` uses `always() && needs.prepare.result == 'success' &&
   # needs.prepare.outputs.skip != 'true'`. This is the bulletproof pattern
@@ -207,7 +213,7 @@ jobs:
   # works as intended.
   # ---------------------------------------------------------------------------
   build:
-    name: Build & Publish
+    name: Build (sanity)
     needs: prepare
     if: |
       always() &&
@@ -216,6 +222,10 @@ jobs:
     uses: ./.github/workflows/version.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
+      # `npm_tag` input is deprecated post-V3-2 (npm departure). The
+      # publish job that consumed it has been removed; passing 'latest'
+      # is harmless and kept here only to satisfy the still-required
+      # parameter shape until version.yml's signature is simplified.
       npm_tag: latest
       # Use prepare.outputs.ref (which resolves to the bump-job tag on
       # dispatch, or `github.sha` on push). Build cannot reference
@@ -223,15 +233,22 @@ jobs:
       # On the push path nobody creates the tag before this runs; the
       # SHA-based checkout works because the merge commit already has the
       # bumped package.json. The tag is pushed by the bump job (when
-      # workflow_dispatch is used). GitHub Release creation now flows
-      # through `release-publish.yml` exclusively — see "Release job
-      # removed" note below.
+      # workflow_dispatch is used). GitHub Release creation flows through
+      # `release-publish.yml` exclusively (Wave A PR-A2 race fix).
+      #
+      # V3-2 npm departure: the `publish` job that this workflow used to
+      # call has been removed from version.yml. release.yml now only runs:
+      #   bump (workflow_dispatch only) → prepare → build (sanity)
+      # The cosign-signed GitHub Releases pipeline runs independently via:
+      #   tag push → build-tarballs.yml → sign-attest.yml → release-publish.yml
+      # See .genie/wishes/pgserve-singleton-no-proxy/SHARED-DESIGN.md
+      # Decision #1 ("3.0 reserved for post-npm-departure cutover").
       #
       # KNOWN LIMITATION (Wave A PR-A2 follow-up): the push-to-main flow
       # NO LONGER creates a tag automatically. The dropped `release` job
       # was creating the tag via `gh release create v${VERSION}` against
-      # HEAD; without it, push-event runs of release.yml will npm-publish
-      # but produce no tag → no `build-tarballs → sign-attest →
+      # HEAD; without it, push-event runs of release.yml will build but
+      # produce no tag → no `build-tarballs → sign-attest →
       # release-publish` chain → no GitHub Release.
       #
       # Workaround until a tag-creation step lands: route releases via
@@ -259,7 +276,8 @@ jobs:
   #
   # Option 1 (recommended by engineer DEEPER-AUDIT, accepted by Felipe):
   # drop this job entirely. release-publish.yml owns all GH-Releases
-  # creation. release.yml retains only bump + build + npm publish.
+  # creation. release.yml retains only bump + prepare + build (sanity)
+  # after the V3-2 npm-departure removed the npm publish step too.
   #
   # The single-file pgserve-* binaries previously attached here are NOT
   # currently re-attached by release-publish.yml — they're a development
