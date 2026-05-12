@@ -1252,10 +1252,7 @@ function dispatch(subcommand, args, ctx) {
       return cmdUrl();
     case 'port':
       return cmdPort();
-    case 'update': {
-      // v3.0.0 verb rename — `upgrade` → `update`. Clean cutover per
-      // pgserve-singleton-no-proxy Group 6 + Felipe directive
-      // 2026-05-10. `pgserve upgrade` is no longer a recognised verb.
+    case 'upgrade': {
       const opts = {
         quiet: args.includes('--quiet'),
         dryRun: args.includes('--dry-run'),
@@ -1265,8 +1262,8 @@ function dispatch(subcommand, args, ctx) {
           return (args[idx + 1] || '').split(',').filter(Boolean);
         })(),
       };
-      return import(require('node:path').join(__dirname, 'update', 'index.js'))
-        .then((mod) => mod.update(opts))
+      return import(require('node:path').join(__dirname, 'upgrade', 'index.js'))
+        .then((mod) => mod.upgrade(opts))
         .then((r) => process.exit(r.ok ? 0 : 1));
     }
     case 'config': {

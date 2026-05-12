@@ -40,9 +40,7 @@ const __installSubcommands = new Set([
   // pm2 for restart). They don't need bun, so route them BEFORE the bun
   // probe — same rationale as the wave-1 install commands.
   'config',
-  // v3.0.0 verb rename: `upgrade` → `update` (clean cutover per
-  // pgserve-singleton-no-proxy Group 6 + Felipe directive 2026-05-10).
-  'update',
+  'upgrade',
   'restart',
   'ui',
   // pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 4.

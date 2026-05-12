@@ -102,7 +102,7 @@ pgserve verify --slug <slug> <binary>
 trust roots are locked at create time."  The per-consumer `admin.json` +
 `manifest.json` are **derived caches** — written at create-app time for fast
 reads from CLI verbs that don't want a postgres connection (`pgserve doctor`,
-`pgserve update` pre-flight — renamed from `pgserve upgrade` in v3.0.0).
+`pgserve upgrade` pre-flight).
 
 On divergence, `autopg_meta` wins.  The next `pgserve doctor` run reports the
 divergence as a `FAIL` finding.  Cache regeneration in v2.6 V1 is manual: the

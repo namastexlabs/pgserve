@@ -141,17 +141,17 @@ PR #94 shipped deliverables 1+2 partially — the dedup work landed but `src/gc/
    **Sanitization rule (matches `src/provision/db-naming.js#sanitizeSlug`):** `slug.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')`. So `@demo/app` becomes `demo_app` (one flat dir under `~/.autopg/`, never nested). Reuses the existing helper — no new sanitizer.
    **Orthogonality:** `~/.autopg/<sanitized-slug>/admin.json` is per-consumer; the host-level `~/.autopg/admin.json` (owned by `canonical-pgserve-pm2-supervision` G1) records supervisor mode for the whole host. The two paths never collide because the per-consumer one lives one directory level deeper.
 2. `autopg_meta` schema (table + indexes), CREATE-TABLE module shaped like `src/schema/pgserve-meta.js`. Lives in a SEPARATE postgres table from `pgserve_meta` because the rows have different lifecycle (per-consumer-app vs per-fingerprint-database).
-   **Source-of-truth split** (addresses bot review on state redundancy): `autopg_meta` is the **authoritative** source for "which apps exist + what trust roots are locked at create time". The per-consumer `admin.json` + manifest file are **derived caches** — written at create-app time for fast reads from CLI verbs that don't want a postgres connection (`pgserve doctor`, `pgserve update`'s pre-flight — renamed from `pgserve upgrade` in v3.0.0). On any divergence, `autopg_meta` wins; the next `pgserve doctor` run reports the divergence as a FAIL finding. **Cache regeneration in v2.6 V1 is operator-driven**: `pgserve doctor --fix` is a stub (exits 64) — operators manually `rm -rf ~/.autopg/<slug>/` and re-run `pgserve create-app <slug>` to rebuild the cache from `autopg_meta`. Auto-regeneration via `--fix` is owned by `pgserve-singleton-no-proxy` Group 6 (self-healing update) and tracked separately. Documented in the verifier's docstring + `docs/migrations/v2.6-from-v2.5.md` (G4 deliverable).
+   **Source-of-truth split** (addresses bot review on state redundancy): `autopg_meta` is the **authoritative** source for "which apps exist + what trust roots are locked at create time". The per-consumer `admin.json` + manifest file are **derived caches** — written at create-app time for fast reads from CLI verbs that don't want a postgres connection (`pgserve doctor`, `pgserve upgrade`'s pre-flight). On any divergence, `autopg_meta` wins; the next `pgserve doctor` run reports the divergence as a FAIL finding. **Cache regeneration in v2.6 V1 is operator-driven**: `pgserve doctor --fix` is a stub (exits 64) — operators manually `rm -rf ~/.autopg/<slug>/` and re-run `pgserve create-app <slug>` to rebuild the cache from `autopg_meta`. Auto-regeneration via `--fix` is owned by `pgserve-singleton-no-proxy` Group 6 (self-healing update) and tracked separately. Documented in the verifier's docstring + `docs/migrations/v2.6-from-v2.5.md` (G4 deliverable).
 3. `pgserve create-app <slug>` CLI verb that writes the manifest + registers in `autopg_meta` + locks the cosign trust roots from `src/cosign/trust-list.js` at the moment of creation.
-4. Manifest LOCK 1 verifier: a function called by `pgserve update` (renamed from `pgserve upgrade` in v3.0.0; the existing verb) that verifies the new binary's cosign attestation matches one of the locked roots (not the current `TRUSTED_IDENTITIES` — operators control update trust at create time, not at update time). The trust-rotation primitive itself lives in `pgserve-singleton-no-proxy` G4 / `src/cosign/trust-list.js`; this group exercises the locked-roots path through rotation, NOT the rotation itself.
+4. Manifest LOCK 1 verifier: a function called by `pgserve upgrade` (the existing verb) that verifies the new binary's cosign attestation matches one of the locked roots (not the current `TRUSTED_IDENTITIES` — operators control upgrade trust at create time, not at upgrade time). The trust-rotation primitive itself lives in `pgserve-singleton-no-proxy` G4 / `src/cosign/trust-list.js`; this group exercises the locked-roots path through rotation, NOT the rotation itself.
 5. Tests for each module.
 
 **Acceptance Criteria:**
 - [ ] `pgserve create-app <slug>` is idempotent — second run with same slug touches `lastUpdated` and exits success.
 - [ ] Manifest file is mode 0600; dir is mode 0700.
-- [ ] `pgserve update` against a binary signed by an identity NOT in the locked roots refuses with a clear error.
-- [ ] `pgserve update` against a binary signed by an identity IN the locked roots succeeds.
-- [ ] Integration test covers the update-after-trust-rotation case (operator rotates `TRUSTED_IDENTITIES` after create-app; the older slug still verifies against its frozen lock).
+- [ ] `pgserve upgrade` against a binary signed by an identity NOT in the locked roots refuses with a clear error.
+- [ ] `pgserve upgrade` against a binary signed by an identity IN the locked roots succeeds.
+- [ ] Integration test covers the upgrade-after-trust-rotation case (operator rotates `TRUSTED_IDENTITIES` after create-app; the older slug still verifies against its frozen lock).
 
 **Validation:**
 ```bash
@@ -275,7 +275,7 @@ After all five groups merge to dev:
 - [ ] `pgserve provision @demo/app` is idempotent across 10 concurrent runs (background jobs); exactly one DB + role + meta row.
 - [ ] `pgserve gc --apply` on a synthetic orphan drops it and cleans the meta row; audit log captures every event.
 - [ ] `pgserve trust list` shows the hardcoded roots; `pgserve trust add` + `remove` round-trips a user identity.
-- [ ] `pgserve update` (renamed from `pgserve upgrade` in v3.0.0) against a binary outside the locked roots refuses; against a binary inside the locked roots succeeds.
+- [ ] `pgserve upgrade` against a binary outside the locked roots refuses; against a binary inside the locked roots succeeds.
 - [ ] CHANGELOG and migration docs land before the v2.6 tag.
 
 ## Assumptions / Risks

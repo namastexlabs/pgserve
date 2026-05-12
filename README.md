@@ -108,7 +108,7 @@ curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install.s
 PGSERVE_VERSION=v2.6.0 curl -fsSL .../install.sh | bash
 ```
 
-> `install.sh` fetches the signed tarball from GitHub Releases and verifies it via `gh attestation verify` (Sigstore Rekor public-good). Requires the [`gh` CLI](https://cli.github.com/). pgserve no longer depends on npm — the install + update path is binary tarballs all the way down (run `pgserve update` for in-place version migrations; renamed from `pgserve upgrade` in v3.0.0).
+> `install.sh` fetches the signed tarball from GitHub Releases and verifies it via `gh attestation verify` (Sigstore Rekor public-good). Requires the [`gh` CLI](https://cli.github.com/). pgserve no longer depends on npm — the install + upgrade path is binary tarballs all the way down.
 
 ### Windows
 

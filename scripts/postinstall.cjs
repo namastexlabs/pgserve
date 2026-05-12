@@ -1,30 +1,23 @@
 #!/usr/bin/env node
 /**
- * pgserve postinstall — auto-runs `pgserve update` on detected in-place update.
- *
- * v3.0.0 verb rename: this hook used to invoke `autopg upgrade`. The verb is
- * now `pgserve update` (clean cutover; no alias). The hook still ships in the
- * npm tarball for any straggling `npm install pgserve` operators on v2.6.x;
- * the canonical install path going forward is `curl … install.sh | bash`
- * (see autopg-distribution-cutover-finalize G1 + Felipe directive 2026-05-10).
+ * autopg postinstall — auto-runs `autopg upgrade` on detected upgrade.
  *
  * Behavior:
- *   - Fresh install (no ~/.autopg/data/) → exit 0 silently (no update needed)
- *   - Update install (data dir exists) → invoke `pgserve update --quiet`
+ *   - Fresh install (no ~/.autopg/data/) → exit 0 silently (no upgrade needed)
+ *   - Upgrade install (data dir exists) → invoke `autopg upgrade --quiet`
  *   - Soft-fail: any error logs warning, exits 0 (never breaks `bun install`)
  *   - Skip override: AUTOPG_SKIP_POSTINSTALL=1 → exit 0 immediately
  *   - Dev-worktree auto-skip: if the package root sits inside a genie or
  *     git worktree, skip with a stderr note. Stops contributors running
  *     `bun install` in a worktree from accidentally migrating their real
  *     `~/.autopg/data` against half-built code.
- *   - Non-CI pre-warning: emit a stderr line BEFORE invoking update so
+ *   - Non-CI pre-warning: emit a stderr line BEFORE invoking upgrade so
  *     the operator can see what's about to happen and Ctrl+C if needed.
  *     CI runs (`CI=true`) stay quiet.
  *
- * The escape hatch for forced re-runs is `pgserve update` (manual).
+ * The escape hatch for forced re-runs is `autopg upgrade` (manual).
  *
- * See: .genie/wishes/autopg-upgrade-command/WISH.md (original wish, verb
- *      renamed in v3.0.0 cutover).
+ * See: .genie/wishes/autopg-upgrade-command/WISH.md
  */
 
 const fs = require('node:fs');
@@ -70,7 +63,7 @@ function isCI() {
 /**
  * Decision-and-side-effect entry. Accepts an optional `deps` object so
  * tests can drive each branch (worktree-skip, fresh-install, CI-quiet,
- * update-invoke, soft-fail-on-error) without depending on the host
+ * upgrade-invoke, soft-fail-on-error) without depending on the host
  * environment. Production callers invoke `main()` with no args; the
  * defaults reproduce the original behavior verbatim.
  *
@@ -98,40 +91,40 @@ function main(deps = {}) {
   }
   if (isDevWorktreeFn(pkgRoot)) {
     stderr.write(
-      `[pgserve-postinstall] dev worktree detected at ${pkgRoot} — skipping update.\n` +
-      '[pgserve-postinstall] Set AUTOPG_SKIP_POSTINSTALL=1 to silence this notice.\n',
+      `[autopg-postinstall] dev worktree detected at ${pkgRoot} — skipping upgrade.\n` +
+      '[autopg-postinstall] Set AUTOPG_SKIP_POSTINSTALL=1 to silence this notice.\n',
     );
     return;
   }
   const dataDir = path.join(getAutopgRootFn(), 'data');
   if (!fsApi.existsSync(dataDir)) {
-    // Fresh install — nothing to update
+    // Fresh install — nothing to upgrade
     return;
   }
   // Locate own CLI entry — script is run from the package dir at install time
   const cliEntry = path.join(pkgRoot, 'bin', 'pgserve-wrapper.cjs');
   if (!fsApi.existsSync(cliEntry)) {
-    stderr.write(`[pgserve-postinstall] wrapper not found at ${cliEntry}, skipping\n`);
+    stderr.write(`[autopg-postinstall] wrapper not found at ${cliEntry}, skipping\n`);
     return;
   }
   if (!isCIFn()) {
     stderr.write(
-      `[pgserve-postinstall] About to run \`pgserve update --quiet\` against ${dataDir}.\n` +
-      '[pgserve-postinstall] Set AUTOPG_SKIP_POSTINSTALL=1 in the environment to skip (recommended for dev worktrees).\n',
+      `[autopg-postinstall] About to run \`autopg upgrade --quiet\` against ${dataDir}.\n` +
+      '[autopg-postinstall] Set AUTOPG_SKIP_POSTINSTALL=1 in the environment to skip (recommended for dev worktrees).\n',
     );
   }
-  const result = spawnSyncFn(process.execPath, [cliEntry, 'update', '--quiet'], {
+  const result = spawnSyncFn(process.execPath, [cliEntry, 'upgrade', '--quiet'], {
     stdio: ['ignore', 'inherit', 'inherit'],
     timeout: 60_000,
   });
   if (result.error) {
-    stderr.write(`[pgserve-postinstall] WARNING: update invocation failed: ${result.error.message}\n`);
-    stderr.write('[pgserve-postinstall] Run `pgserve update` manually to retry.\n');
+    stderr.write(`[autopg-postinstall] WARNING: upgrade invocation failed: ${result.error.message}\n`);
+    stderr.write('[autopg-postinstall] Run `autopg upgrade` manually to retry.\n');
     return;
   }
   if (result.status !== 0) {
-    stderr.write(`[pgserve-postinstall] WARNING: \`pgserve update\` exited ${result.status}\n`);
-    stderr.write('[pgserve-postinstall] Run `pgserve update` manually to investigate.\n');
+    stderr.write(`[autopg-postinstall] WARNING: \`autopg upgrade\` exited ${result.status}\n`);
+    stderr.write('[autopg-postinstall] Run `autopg upgrade` manually to investigate.\n');
   }
 }
 

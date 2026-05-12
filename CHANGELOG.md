@@ -14,27 +14,6 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — pgserve v3.0.0 (post-npm-departure cutover)
-
-The v3.0.0 cohort moves pgserve off npm-as-canonical-distribution. Installs +
-in-place updates flow through `install.sh` + GitHub Releases exclusively; the
-npm tarball is no longer the source of truth (the `npm publish` step will be
-dropped from `version.yml` in V3-2). Tracking wish:
-`pgserve-singleton-no-proxy` Decision #1 — *"3.0 reserved for post-npm-
-departure cutover (`distribution-exodus`)"*.
-
-### Changed (breaking)
-
-- **`pgserve upgrade` → `pgserve update` (clean cutover)**. The `upgrade` verb
-  is gone; `pgserve upgrade` exits with "unknown verb" (the B4 path from
-  `pgserve-singleton-no-proxy` G3). Operators (and the npm postinstall hook)
-  must use `pgserve update`. Source dir renamed `src/upgrade/` →
-  `src/update/`; tests `tests/upgrade/` → `tests/update/`; CLI dispatch +
-  wrapper allowlist + postinstall script all updated in lockstep.
-- **`pgserve update` orchestrator function** in `src/update/index.js` is now
-  exported as `update()` (was `upgrade()`); the `STEPS` array shape is
-  unchanged.
-
 ## [2.6.0] / [2.6.1] - 2026-05-09
 
 The 2.6 cohort closes the singleton-G3 sprint and the
