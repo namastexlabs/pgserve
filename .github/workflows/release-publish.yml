@@ -17,9 +17,9 @@
 #   2. Sanity-check: every tarball must have its sig + cert + intoto.jsonl
 #      + sha256 siblings before any release upload happens
 #   3. Create GitHub Release (draft until manual promotion) with all assets
-#   4. Update `latest.json` channel pointer in the repo (committed, served via
-#      raw.githubusercontent.com — install.sh reads this for stable/beta/canary
-#      resolution)
+#   4. Update `<channel>.json` channel pointer in the repo (committed, served via
+#      raw.githubusercontent.com — install.sh reads this for stable/homolog/dev
+#      resolution; stable maps to latest.json for v1-manifest back-compat)
 #
 # Verification by consumers:
 #   gh release download v<version> --repo namastexlabs/pgserve --pattern '*.tar.gz'
@@ -61,10 +61,15 @@ on:
         required: true
         type: choice
         default: stable
+        # Canonical channel taxonomy (Felipe directive 2026-05-12, unified
+        # across pgserve/omni/genie): stable / homolog / dev. beta + canary
+        # have been retired. pgserve in practice only uses `stable` (main
+        # branch); homolog + dev are listed for cross-repo taxonomy parity
+        # and operator-dispatch capability if a future workflow needs them.
         options:
           - stable
-          - beta
-          - canary
+          - homolog
+          - dev
       draft:
         description: 'Create as draft (require manual promotion)?'
         required: true
@@ -212,23 +217,24 @@ jobs:
       # `autopg update` can resolve the current version for each channel via:
       #   curl -fsSL https://raw.githubusercontent.com/<repo>/main/.well-known/<channel>.json
       #
-      # Filename map (mirrors genie wish release-channel-dev, PR #2419, and
-      # omni PR #633 — Phase A of the cross-repo unification):
-      #   stable → latest.json     (kept for back-compat with v1 manifest layout)
-      #   beta   → beta.json       (reserved for future operator dispatch)
-      #   canary → canary.json     (reserved for future operator dispatch)
+      # Filename map (canonical taxonomy per Felipe directive 2026-05-12,
+      # unified across pgserve/omni/genie — beta + canary retired):
+      #   stable  → latest.json    (kept for back-compat with v1 manifest layout)
+      #   homolog → homolog.json   (homologation/staging — operator-dispatch only on pgserve)
+      #   dev     → dev.json       (development — operator-dispatch only on pgserve)
       #
-      # NO `dev` channel for pgserve. autopg ships from main only — there
-      # is no dev branch posture, no auto-version-from-dev workflow, and no
-      # development-channel consumers. Felipe directive 2026-05-12: "no dev
-      # branch, autopg wont have dev channel". The genie-style stable-also-
-      # writes-dev.json behavior is intentionally omitted here.
+      # Pgserve in practice ships only from main → `stable`. The autopg cohort
+      # has no dev branch, no auto-version workflow, and no development-channel
+      # consumers — homolog + dev are present for cross-repo taxonomy parity
+      # and ad-hoc operator dispatches (e.g., for ad-hoc autopg test releases).
+      # The genie-style "stable also advances dev.json" behavior is omitted
+      # because pgserve has no continuous dev-branch release stream that
+      # consumers track.
       #
       # The stable-only gate that lived here previously was lifted — every
-      # non-draft publish writes the manifest for its channel. In practice
-      # today only `stable` channel runs through this workflow (beta/canary
-      # are reserved for future operator dispatch); the case-statement
-      # keeps the same code shape as omni/genie for cross-repo readability.
+      # non-draft publish writes the manifest for its channel. The
+      # case-statement keeps the same code shape as omni/genie for
+      # cross-repo readability.
       # ---------------------------------------------------------------------
       - name: Update channel manifests (.well-known/*.json — non-draft only)
         if: ${{ !inputs.draft }}
@@ -240,13 +246,19 @@ jobs:
           set -euo pipefail
           # stable keeps the historical filename `latest.json`; every other
           # channel uses its own name. install.sh + autopg update consume
-          # the same convention. Unlike genie/omni, no dev branch path
-          # exists for pgserve so the stable-also-advances-dev case is
-          # intentionally absent.
+          # the same convention. Unlike omni/genie which auto-advance
+          # dev.json on stable releases (single-pipeline reality), pgserve
+          # has no continuous dev-branch release stream — homolog + dev are
+          # operator-dispatch-only paths here.
           declare -A MANIFEST_FILES=()
           case "$CHANNEL" in
-            stable) MANIFEST_FILES[stable]="latest.json" ;;
-            *)      MANIFEST_FILES[$CHANNEL]="${CHANNEL}.json" ;;
+            stable)  MANIFEST_FILES[stable]="latest.json" ;;
+            homolog) MANIFEST_FILES[homolog]="homolog.json" ;;
+            dev)     MANIFEST_FILES[dev]="dev.json" ;;
+            *)
+              echo "::error::unknown channel: $CHANNEL (valid: stable, homolog, dev)"
+              exit 1
+              ;;
           esac
 
           mkdir -p .well-known
