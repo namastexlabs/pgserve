@@ -165,7 +165,12 @@ assemble_one() {
     tar_flags+=(--owner=0 --group=0 --numeric-owner)
   fi
 
-  tar -C "$stage" -czf "$tarball" "${tar_flags[@]}" autopg/ || return 1
+  # macOS BSD tar lacks --sort/--mtime/--owner, so tar_flags can stay
+  # empty on darwin-* runners. Under `set -u` (script-wide), expanding
+  # "${tar_flags[@]}" on an empty array errors as `tar_flags[@]: unbound
+  # variable`. The `${arr[@]+"${arr[@]}"}` pattern expands the array
+  # only when it has elements, leaving the command intact otherwise.
+  tar -C "$stage" -czf "$tarball" ${tar_flags[@]+"${tar_flags[@]}"} autopg/ || return 1
   echo "    ✓ tarball: $tarball ($(du -h "$tarball" | cut -f1))"
 
   # 4) outer SHA256 — Group 8 cosign-signs this; Group 9 publishes both.

@@ -14,6 +14,49 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.9] - 2026-05-12
+
+**The actual final v2.x publish.** Bundles every fix needed to get
+Build Tarballs → Sign + Attest → release-publish completing end-to-end
+on the two platforms the v2.x signed-tarball pipeline supports.
+
+### Fixed
+
+- `scripts/assemble-tarball.sh` — defensive `${tar_flags[@]+...}`
+  expansion. macOS BSD tar lacks `--sort`/`--mtime`/`--owner`, so the
+  array stays empty on darwin runners; under `set -u`, expanding an
+  empty array errored as `tar_flags[@]: unbound variable` and broke
+  every darwin-* build.
+
+### Changed (matrix scope)
+
+Per Felipe directive 2026-05-12 ("just windows macos and linux, no
+Intel Mac"), the signed-tarball pipeline matrix is reduced to the
+platforms that actually have a working @embedded-postgres npm
+package + a wired-in build path:
+
+- ✅ `linux-x64-glibc` (linux)
+- ✅ `darwin-arm64` (macos — Apple Silicon)
+- ❌ `darwin-x64` — dropped (Intel Mac)
+- ❌ `linux-arm64` — never working (no upstream pkg)
+- ❌ `linux-x64-musl` — never working (no upstream pkg)
+- 🔁 `windows-x64` — continues to ship via npm (version.yml inline
+  publish); not in the signed-tarball pipeline
+
+### Consumer impact
+
+- `@withone/cli` and any other npm dependent: zero impact — npm package
+  installs the same way, optional native deps still cover windows-x64
+  + darwin-x64 + linux-x64 + darwin-arm64 via @embedded-postgres.
+- Operators expecting GH Release signed tarballs: linux-x64 + darwin-
+  arm64 only. v2.x is end-of-line for Intel Mac signed tarballs.
+
+### Cohort wrap-up
+
+This is **the** last `pgserve`-named npm publish. Subsequent
+development moves to the `autopg` package starting at v3.0.0 from the
+new `automagik-dev/autopg` repo (post org transfer).
+
 ## [2.6.8] - 2026-05-12
 
 **Final v2.x maintenance release with full signed-tarball GH Release.**

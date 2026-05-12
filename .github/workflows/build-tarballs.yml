@@ -65,11 +65,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # v2.6.x maintenance posture (Felipe directive 2026-05-12 "just
+        # windows macos and linux", with macos = Apple Silicon only —
+        # Intel Mac dropped):
+        #   - linux  → linux-x64-glibc (GH Release signed tarball)
+        #   - macos  → darwin-arm64    (GH Release signed tarball)
+        #   - windows → handled by version.yml inline npm build, not by
+        #               this signed-tarball pipeline. Windows users
+        #               install via npm; no .exe tarball ships here.
+        # linux-arm64 + linux-x64-musl + darwin-x64 were either never
+        # wired or no longer supported on the v2.x line; intentionally
+        # dropped to keep the final cohort artifact set internally
+        # consistent.
         platform:
           - linux-x64-glibc
-          - linux-x64-musl
-          - linux-arm64
-          - darwin-x64
           - darwin-arm64
     steps:
       - uses: actions/checkout@v4
@@ -128,17 +137,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # v2.6.x maintenance posture (Felipe directives 2026-05-12):
+        #   - "last v2 publish, most stable possible scenario"
+        #   - "remove darwin x64 no need mac intel.. just windows macos
+        #     and linux"
+        #
+        # Matrix maps to the three OS families:
+        #   linux   → linux-x64-glibc
+        #   macos   → darwin-arm64 (Apple Silicon only — Intel dropped)
+        #   windows → ships via version.yml inline npm publish; NOT
+        #             handled by this signed-tarball pipeline. Windows
+        #             users install via npm and pick up the published
+        #             package as usual.
+        #
+        # linux-arm64 + linux-x64-musl have no @embedded-postgres pkg
+        # and require operator-side AUTOPG_POSTGRES_URL_TEMPLATE /
+        # AUTOPG_POSTGRES_LOCAL_DIR plumbing; never working on v2.x.
+        # darwin-x64 (Intel Mac) dropped per Felipe directive 2026-05-12.
+        # All three intentionally absent from this matrix to keep the
+        # cohort's final release artifact set internally consistent.
+        # Consumers like @withone/cli (pgserve: ^2.x) are unaffected —
+        # they use the npm package, not the signed tarballs.
         include:
           - platform: linux-x64-glibc
             runner:   ubuntu-latest
-          - platform: linux-x64-musl
-            runner:   ubuntu-latest
-          - platform: linux-arm64
-            # GitHub-hosted ARM64 runners; falls back to QEMU emulation
-            # if the org has not yet enabled ubuntu-24.04-arm runners.
-            runner:   ubuntu-24.04-arm
-          - platform: darwin-x64
-            runner:   macos-13
           - platform: darwin-arm64
             runner:   macos-latest
 

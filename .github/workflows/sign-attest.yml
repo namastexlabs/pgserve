@@ -79,11 +79,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # v2.6.x maintenance posture (Felipe directives 2026-05-12):
+        # signed-tarball pipeline ships linux + macos only. windows
+        # ships via npm. darwin-x64 (Intel Mac) dropped. linux-arm64 +
+        # linux-x64-musl never wired. See build-tarballs.yml for the
+        # full rationale; matrix kept in sync.
         platform:
           - linux-x64-glibc
-          - linux-x64-musl
-          - linux-arm64
-          - darwin-x64
           - darwin-arm64
 
     steps:
