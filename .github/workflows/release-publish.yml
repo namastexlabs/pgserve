@@ -17,9 +17,9 @@
 #   2. Sanity-check: every tarball must have its sig + cert + intoto.jsonl
 #      + sha256 siblings before any release upload happens
 #   3. Create GitHub Release (draft until manual promotion) with all assets
-#   4. Update `latest.json` channel pointer in the repo (committed, served via
-#      raw.githubusercontent.com — install.sh reads this for stable/beta/canary
-#      resolution)
+#   4. Update `<channel>.json` channel pointer in the repo (committed, served via
+#      raw.githubusercontent.com — install.sh reads this for stable/homolog/dev
+#      resolution; stable maps to latest.json for v1-manifest back-compat)
 #
 # Verification by consumers:
 #   gh release download v<version> --repo namastexlabs/pgserve --pattern '*.tar.gz'
@@ -61,10 +61,15 @@ on:
         required: true
         type: choice
         default: stable
+        # Canonical channel taxonomy (Felipe directive 2026-05-12, unified
+        # across pgserve/omni/genie): stable / homolog / dev. beta + canary
+        # have been retired. pgserve in practice only uses `stable` (main
+        # branch); homolog + dev are listed for cross-repo taxonomy parity
+        # and operator-dispatch capability if a future workflow needs them.
         options:
           - stable
-          - beta
-          - canary
+          - homolog
+          - dev
       draft:
         description: 'Create as draft (require manual promotion)?'
         required: true
@@ -207,27 +212,87 @@ jobs:
             echo "::warning::dist/ is empty — no assets to upload"
           fi
 
-      - name: Update latest.json channel pointer
-        if: ${{ steps.ch.outputs.channel == 'stable' && !inputs.draft }}
+      # ---------------------------------------------------------------------
+      # Per-channel manifest pointers — committed to main so install.sh +
+      # `autopg update` can resolve the current version for each channel via:
+      #   curl -fsSL https://raw.githubusercontent.com/<repo>/main/.well-known/<channel>.json
+      #
+      # Filename map (canonical taxonomy per Felipe directive 2026-05-12,
+      # unified across pgserve/omni/genie — beta + canary retired):
+      #   stable  → latest.json    (kept for back-compat with v1 manifest layout)
+      #   homolog → homolog.json   (homologation/staging — operator-dispatch only on pgserve)
+      #   dev     → dev.json       (development — operator-dispatch only on pgserve)
+      #
+      # Pgserve in practice ships only from main → `stable`. The autopg cohort
+      # has no dev branch, no auto-version workflow, and no development-channel
+      # consumers — homolog + dev are present for cross-repo taxonomy parity
+      # and ad-hoc operator dispatches (e.g., for ad-hoc autopg test releases).
+      # The genie-style "stable also advances dev.json" behavior is omitted
+      # because pgserve has no continuous dev-branch release stream that
+      # consumers track.
+      #
+      # The stable-only gate that lived here previously was lifted — every
+      # non-draft publish writes the manifest for its channel. The
+      # case-statement keeps the same code shape as omni/genie for
+      # cross-repo readability.
+      # ---------------------------------------------------------------------
+      - name: Update channel manifests (.well-known/*.json — non-draft only)
+        if: ${{ !inputs.draft }}
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.ver.outputs.version }}
+          CHANNEL: ${{ steps.ch.outputs.channel }}
         run: |
+          set -euo pipefail
+          # stable keeps the historical filename `latest.json`; every other
+          # channel uses its own name. install.sh + autopg update consume
+          # the same convention. Unlike omni/genie which auto-advance
+          # dev.json on stable releases (single-pipeline reality), pgserve
+          # has no continuous dev-branch release stream — homolog + dev are
+          # operator-dispatch-only paths here.
+          declare -A MANIFEST_FILES=()
+          case "$CHANNEL" in
+            stable)  MANIFEST_FILES[stable]="latest.json" ;;
+            homolog) MANIFEST_FILES[homolog]="homolog.json" ;;
+            dev)     MANIFEST_FILES[dev]="dev.json" ;;
+            *)
+              echo "::error::unknown channel: $CHANNEL (valid: stable, homolog, dev)"
+              exit 1
+              ;;
+          esac
+
           mkdir -p .well-known
-          cat > .well-known/latest.json <<EOF
+          for manifest_channel in "${!MANIFEST_FILES[@]}"; do
+            FILE="${MANIFEST_FILES[$manifest_channel]}"
+            cat > ".well-known/${FILE}" <<EOF
           {
-            "channel": "stable",
+            "schema_version": 1,
+            "channel": "${manifest_channel}",
             "version": "${VERSION}",
             "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "tarball_base": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}",
             "platforms": ["linux-x64-glibc","linux-x64-musl","linux-arm64","darwin-x64","darwin-arm64"]
           }
           EOF
-          # Commit only if changed; CI bot configured globally
-          if ! git diff --quiet .well-known/latest.json; then
-            git config user.name "release-bot"
-            git config user.email "release-bot@namastex.com"
-            git add .well-known/latest.json
-            git commit -m "chore(release): update latest.json → v${VERSION}"
-            git push origin HEAD:main || echo "::warning::push failed (likely permission); update latest.json manually"
+          done
+
+          git config user.name "release-bot"
+          git config user.email "release-bot@namastex.com"
+          # Stage first, then compare against HEAD. `git diff --quiet <path>`
+          # returns 0 (no diff) for *untracked* files because they aren't in
+          # the index — staging registers the path; then
+          # `git diff --cached --quiet HEAD --` correctly reports "differs
+          # from HEAD" for both new and modified files. Mirrors the
+          # bootstrap fix from genie PR #2412/#2419.
+          MANIFEST_PATHS=()
+          for f in "${MANIFEST_FILES[@]}"; do
+            MANIFEST_PATHS+=(".well-known/${f}")
+          done
+          git add "${MANIFEST_PATHS[@]}"
+          if git diff --cached --quiet HEAD -- "${MANIFEST_PATHS[@]}"; then
+            echo "manifests unchanged — nothing to commit"
+            exit 0
           fi
+          MANIFEST_LIST=$(IFS=','; echo "${!MANIFEST_FILES[*]}")
+          git commit -m "chore(release): update manifests (${MANIFEST_LIST}) → v${VERSION}"
+          git push origin HEAD:main || echo "::warning::push failed (likely permission); update ${MANIFEST_PATHS[*]} manually"
