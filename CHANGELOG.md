@@ -14,6 +14,41 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.8] - 2026-05-12
+
+**Final v2.x maintenance release with full signed-tarball GH Release.**
+v2.6.7 closed the `autopg --version` smoke gate but Build Tarballs
+still failed on the next smoke check — `postgres --version` couldn't
+load `libicui18n.so.60`. Root cause: `fetch-postgres-bins.sh` was
+copying `native/bin` + `native/share` from the npm
+`@embedded-postgres` payload but skipping `native/lib`, AND was not
+recreating the SONAME symlinks described in `pg-symlinks.json`
+(`libicui18n.so.60 → libicui18n.so.60.2`).
+
+### Fixed
+
+- `scripts/fetch-postgres-bins.sh:stage_from_pkg` now copies
+  `native/lib/` into the staging directory + replays
+  `native/pg-symlinks.json` to recreate the 14 SONAME aliases. The
+  postgres binary's RPATH is `../lib/` (origin-relative), so all
+  bundled deps (libxml2, libssl, libcrypto, libz, libicudata,
+  libicui18n, libicuuc, libecpg, libpgtypes, libpq, …) now resolve at
+  runtime regardless of what the host system has installed.
+
+### Validated
+
+- Local reproduction: extracted tarball, ran
+  `./postgres/bin/postgres --version` →
+  `postgres (PostgreSQL) 18.3` ✅
+
+### Cohort wrap-up
+
+This is the LAST `pgserve`-named npm publish. Subsequent development
+moves to the `autopg` package starting at v3.0.0 from the new
+`automagik-dev/autopg` repo (post org transfer). Consumers like
+`@withone/cli` (`pgserve: ^2.x`) stay on npm latest indefinitely;
+v2.6.8 is the cohort's final stable polish.
+
 ## [2.6.7] - 2026-05-12
 
 **Stability-focused follow-up to v2.6.6** — closes the missing

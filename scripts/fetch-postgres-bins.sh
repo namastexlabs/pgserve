@@ -142,6 +142,56 @@ EOF
 
   cp -R "${native}/bin"   "${out_dir}/bin"
   cp -R "${native}/share" "${out_dir}/share" 2>/dev/null || mkdir -p "${out_dir}/share"
+
+  # The postgres binary's RPATH is `../lib/` (origin-relative), so it
+  # looks for libxml2 / libssl / libcrypto / libicu* in
+  # ${out_dir}/lib at runtime. The npm payload bundles all of these
+  # under native/lib (verified: libicui18n.so.60.2, libssl.so.1.1,
+  # etc. — 25 MB of bundled deps). Without copying lib/ the tarball
+  # extracts a postgres binary that fails with
+  # `error while loading shared libraries: libicui18n.so.60: cannot
+  # open shared object file: No such file or directory` on any
+  # platform that doesn't ship libicu60 system-wide (Ubuntu >= 20.04
+  # ships libicu70/74; only 18.04 ships libicu60).
+  #
+  # The package's normal postinstall creates SONAME symlinks
+  # (libicui18n.so.60 → libicui18n.so.60.2) from pg-symlinks.json, but
+  # we install with `--ignore-scripts` (security posture), so we must
+  # replay the symlink manifest manually. Without these symlinks the
+  # binary still can't find libicui18n.so.60 because npm packs only
+  # the real `.so.60.2` files, not the SONAME aliases.
+  if [[ -d "${native}/lib" ]]; then
+    cp -R "${native}/lib" "${out_dir}/lib"
+  fi
+
+  if [[ -f "${native}/pg-symlinks.json" ]]; then
+    # Strip the `native/` prefix from `source` + `target` and recreate
+    # symlinks under out_dir using relative names. Uses node so we get
+    # robust JSON parsing without yanking jq in as a dep.
+    OUT_DIR="$out_dir" MANIFEST="${native}/pg-symlinks.json" node -e '
+      const fs = require("fs");
+      const path = require("path");
+      const out = process.env.OUT_DIR;
+      const manifest = JSON.parse(fs.readFileSync(process.env.MANIFEST, "utf8"));
+      let made = 0;
+      for (const entry of manifest) {
+        // {"source":"native/lib/libicui18n.so.60.2","target":"native/lib/libicui18n.so.60"}
+        const src = entry.source.replace(/^native\//, "");
+        const tgt = entry.target.replace(/^native\//, "");
+        const tgtPath = path.join(out, tgt);
+        const srcRel = path.basename(src);
+        try { fs.unlinkSync(tgtPath); } catch {}
+        try {
+          fs.mkdirSync(path.dirname(tgtPath), { recursive: true });
+          fs.symlinkSync(srcRel, tgtPath);
+          made++;
+        } catch (err) {
+          console.error("  symlink failed: " + tgt + " -> " + srcRel + ": " + err.message);
+        }
+      }
+      console.error("    -> created " + made + " library SONAME symlinks");
+    ' || echo "    -> warning: pg-symlinks.json processing failed (postgres may not load shared libs)"
+  fi
   popd >/dev/null
 }
 
