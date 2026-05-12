@@ -14,6 +14,43 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.7] - 2026-05-12
+
+**Stability-focused follow-up to v2.6.6** — closes the missing
+`autopg --version` handler that was causing every `Build *` platform
+job to fail the real-mode tarball smoke gate at v2.6.4 / v2.6.5 / v2.6.6.
+
+### Fixed
+
+- `bin/postgres-server.js` — handle `autopg --version` / `autopg -v` by
+  emitting `autopg <VERSION>\n` and exiting 0. The compiled bun binary
+  is what `tests/integration/tarball-smoke.sh --real` exec-checks; the
+  previous fall-through to `printHelp() + exit 1` surfaced as the
+  misleading "binary not executable" smoke failure. Version resolution
+  honors (in order): the bun compile-time `--define BUILD_VERSION=...`
+  injection from `scripts/build-binary.sh:104`, the
+  `AUTOPG_BUILD_VERSION` env override, and the sibling `package.json`
+  for dev runs.
+
+### What this unblocks
+
+- Real-mode smoke gate now passes → Build Tarballs job uploads
+  per-platform artifacts.
+- Sign + Attest workflow (workflow_run after Build Tarballs) actually
+  fires with non-empty inputs → cosign sign-blob, SLSA L3 provenance,
+  and GitHub Attestations API attestation per tarball succeed.
+- release-publish workflow (workflow_run after Sign + Attest) creates
+  the `v2.6.7` GitHub Release with the 12 signed assets (4 platforms
+  × tarball + bundle + intoto.jsonl) attached.
+
+### Same payload as v2.6.4 / v2.6.5 / v2.6.6
+
+The npm runtime surface is identical across the 2.6.4–2.6.7 cluster.
+Consumers like `@withone/cli` (`pgserve: ^2.2.3`) pick up the latest
+on next install regardless of which version they previously resolved.
+v2.6.7 is the version that ALSO ships the GH Release with signed
+tarballs — that's the only delta visible to operators.
+
 ## [2.6.6] - 2026-05-12
 
 **Hot-fix follow-up to v2.6.5.** v2.6.5 published to npm but build-tarballs

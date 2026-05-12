@@ -33,7 +33,47 @@ process.on('uncaughtException', (error) => {
 
 const args = process.argv.slice(2);
 
-if (args[0] === 'postmaster') {
+// `--version` / `-v` short-circuit — the compiled `autopg` binary
+// (bun --compile of this entry point) is the artifact that
+// `tests/integration/tarball-smoke.sh --real` exec-checks with
+// `autopg --version`. Without this branch the binary falls through to
+// `printHelp() + exit 1` and surfaces as the misleading
+// "binary not executable" smoke failure across every platform build.
+//
+// Version resolution order:
+//   1. BUILD_VERSION compile-time constant (bun --compile --define BUILD_VERSION="'<v>'"
+//      from scripts/build-binary.sh:104 — replaces the identifier in the
+//      compiled binary with the literal version string)
+//   2. AUTOPG_BUILD_VERSION env (operator override / dev runs)
+//   3. package.json sibling (dev runs from source via `bun bin/postgres-server.js`)
+//   4. literal 'unknown' (defensive)
+if (args[0] === '--version' || args[0] === '-v') {
+  let version = 'unknown';
+  // The compile-time --define replaces the bare identifier; wrap in
+  // typeof check so the source still parses + runs in non-compiled
+  // contexts where BUILD_VERSION is genuinely undefined.
+   
+  if (typeof BUILD_VERSION !== 'undefined' && BUILD_VERSION) {
+     
+    version = BUILD_VERSION;
+  } else if (typeof process.env.AUTOPG_BUILD_VERSION === 'string' && process.env.AUTOPG_BUILD_VERSION.length > 0) {
+    version = process.env.AUTOPG_BUILD_VERSION;
+  } else {
+    try {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
+      version = pkg.version;
+    } catch {
+      // fall through to 'unknown'
+    }
+  }
+  // tarball-smoke.sh asserts `autopg ${VERSION}` on stdout line 1.
+  process.stdout.write(`autopg ${version}\n`);
+  process.exit(0);
+} else if (args[0] === 'postmaster') {
   await runPostmasterSubcommand(args.slice(1));
 } else if (args[0] === 'serve') {
   // Alias `serve` → `postmaster` for symmetry with the v2.3 alias surface.
