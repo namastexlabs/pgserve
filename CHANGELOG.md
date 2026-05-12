@@ -14,6 +14,32 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.6] - 2026-05-12
+
+**Hot-fix follow-up to v2.6.5.** v2.6.5 published to npm but build-tarballs
+still failed with the same `scratch: unbound variable` error because
+v2.6.5's fix (initialize `local scratch=""` before the trap) wasn't
+sufficient — bash's RETURN trap appears to evaluate `$scratch` AFTER
+the function frame is popped, in the parent scope where the local
+is no longer visible.
+
+### Fixed
+
+- `scripts/fetch-postgres-bins.sh` (both `stage_from_pkg` and
+  `stage_from_url`) — make the RETURN trap unbound-safe regardless of
+  bash function-scope quirks by guarding the rm with
+  `[[ -n "${scratch:-}" ]] && rm -rf "$scratch"`. Defensive default-empty
+  expansion protects against:
+  - in-function fire (normal): scratch is a tempdir → rm runs
+  - out-of-function fire (bash 5.x scope quirk): scratch is empty → skipped
+  - pre-mktemp fire (early return): scratch is empty → skipped
+
+### Same payload as v2.6.5
+
+All v2.6.4 + v2.6.5 changes carry forward. v2.6.6 is purely the
+build-tarballs / GH Releases completion. The npm runtime surface is
+identical across v2.6.4/5/6.
+
 ## [2.6.5] - 2026-05-12
 
 **Hot-fix follow-up to v2.6.4.** v2.6.4 published to npm cleanly but the
