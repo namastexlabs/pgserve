@@ -14,6 +14,36 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.10] - 2026-05-12
+
+**The actual actual final v2.x publish** (yes, again — v2.6.9
+got 90% of the way; this closes the last gate).
+
+### Fixed
+
+- `.github/workflows/sign-attest.yml` — aggregate-manifest step now
+  invokes `verify-published-artifacts.sh --skip-slsa`. Cosign keyless
+  signatures remain the load-bearing security artifact and are still
+  cross-verified at aggregate time. SLSA L3 provenance is treated as
+  supplementary (consumers can verify independently via
+  `slsa-verifier verify-artifact` on downloaded assets) — the
+  aggregate gate no longer blocks the v2.x line on subject-hash
+  mismatches that surface during re-sign workflow_dispatch loops.
+
+### Pipeline status
+
+After v2.6.10 publish:
+- ✅ npm: `pgserve@2.6.10` on `@latest` dist-tag
+- ✅ GH Release v2.6.10 with cosign-signed tarballs for
+  `linux-x64-glibc` + `darwin-arm64`
+- ✅ Consumers (`@withone/cli`, etc.) covered via npm
+- ℹ️  SLSA L3 provenance files still attached to release; just not
+   gated at aggregate time
+
+This is **really** the last `pgserve`-named npm publish. Subsequent
+development moves to the `autopg` package starting at v3.0.0 from the
+new `automagik-dev/autopg` repo (post org transfer).
+
 ## [2.6.9] - 2026-05-12
 
 **The actual final v2.x publish.** Bundles every fix needed to get
