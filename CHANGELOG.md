@@ -14,6 +14,30 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.5] - 2026-05-12
+
+**Hot-fix follow-up to v2.6.4.** v2.6.4 published to npm cleanly but the
+GitHub Releases pipeline failed at `build-tarballs.yml` due to a latent
+bug in `scripts/fetch-postgres-bins.sh` — `stage_from_url` declared
+`local scratch` without initialization, and the function's RETURN trap
+referenced `$scratch` under `set -u`, triggering an `unbound variable`
+error that propagated across function frames and masked the real
+fetch state. (Codex P2 caught the same pattern in `stage_from_pkg`
+during PR #84 review; `stage_from_url` was missed at that time.)
+
+### Fixed
+
+- `scripts/fetch-postgres-bins.sh:156` — initialize `local scratch=""`
+  before installing the RETURN trap, mirroring the fix already applied
+  to `stage_from_pkg` at line 119.
+
+### Same payload as v2.6.4
+
+All v2.6.4 changes carry forward unchanged. v2.6.5 is purely the
+GitHub Releases pipeline completion — npm consumers on
+`pgserve: ^2.x` who already picked up v2.6.4 will see v2.6.5 on next
+install but the runtime surface is identical.
+
 ## [2.6.4] - 2026-05-12
 
 **Final v2.x maintenance release** — the last `pgserve`-named npm publish.

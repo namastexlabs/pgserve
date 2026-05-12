@@ -153,9 +153,16 @@ stage_from_url() {
   url="${url//\{pf\}/$pf}"
   echo "    -> source: $url"
 
-  local scratch
-  scratch=$(mktemp -d)
+  # Initialize before installing trap — same fix stage_from_pkg has at
+  # line 119. Under `set -u` the RETURN trap fires on any early-return
+  # path (including ones where `mktemp` hasn't run yet); referencing an
+  # unset `$scratch` from the trap would print
+  # `scratch: unbound variable` and leak across function frames,
+  # masking the real fetch error (codex P2 review on PR #84 fixed this
+  # for stage_from_pkg; stage_from_url was missed at the time).
+  local scratch=""
   trap 'rm -rf "$scratch"' RETURN
+  scratch=$(mktemp -d) || return 1
 
   curl -fsSL "$url" -o "${scratch}/pg.tar.gz"
   tar -xzf "${scratch}/pg.tar.gz" -C "$scratch"
