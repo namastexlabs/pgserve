@@ -14,6 +14,84 @@ All notable changes to `pgserve` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.4] - 2026-05-12
+
+**Final v2.x maintenance release** — the last `pgserve`-named npm publish.
+Cut from the `release/v2.6.x` maintenance branch (off `1489d7d`, pre-V3
+cutover) so consumers like `@withone/cli` (and any other `pgserve: ^2.x`
+dependent) continue to receive backward-compatible updates without the
+V3 rename, V3-1 verb cutover, or npm-publish drop. **Future development
+moves to the `autopg` package starting at v3.0.0** (see
+`distribution-exodus` wish in main).
+
+### Added (since 2.6.1)
+
+- **Signed-app delivery pipeline** — `pgserve create-app <slug>` writes a
+  per-consumer manifest with cosign locked trust roots; `pgserve verify
+  --slug <slug>` differentiates lock-vs-live identities and exit-codes
+  per outcome.
+- **Cosign keyless OIDC signing** for release tarballs — Sigstore bundles
+  + SLSA L3 provenance + GitHub Attestations API attestation per
+  platform tarball. Verifiable via `cosign verify-blob`, `slsa-verifier
+  verify-artifact`, or `gh attestation verify`.
+- **Trust-list hardcoded roots** — `automagik-genie-release`,
+  `automagik-omni-release`, and `automagik-pgserve-release` entries in
+  `src/cosign/trust-list.js`. All three anchor on `sign-attest.yml@`
+  (the canonical Fulcio SAN URI shape across Namastex automagik
+  signed apps).
+- **`pgserve gc`** — orphan-DB sweep + per-day rotating audit log under
+  `~/.pgserve/audit/` (90-day retention, current-day boundary guard).
+- **Console + docs** — operator-facing migration guide
+  (`docs/migrations/v2.6-from-v2.5.md`), cosign trust reference
+  (`docs/security/cosign-trust.md`), schema docs (`pgserve_meta`,
+  trust-store, signed-app delivery).
+- **Integration test scaffolds** — `tests/integration/gc-provision.test.sh`,
+  `tests/integration/verify-slug-rotation.test.sh`,
+  `tests/integration/wave-a-e2e.test.sh`,
+  `tests/integration/v2.6-cohort-smoke.sh`.
+- **Postinstall guardrail** — soft-fails on git-worktree dev installs
+  with a stderr warning, preventing accidental `~/.pgserve` mutation
+  during package development.
+
+### Fixed (since 2.6.1)
+
+- **CV-1**: `pgserve provision` / `pgserve gc` no longer auth-fail on
+  fresh installs (hot-fix from PR #101).
+- **B5/B6/B7 trio** — audit-log rotation boundary, dual-mode keyless
+  verify, JSON-escape OIDC issuer in aggregate manifest.
+- **CV-VERIFY-BUNDLE-NAMING** — consumer-side bundle resolve falls
+  through `.bundle` → `.sig` + `.cert` detached pair when the bundle
+  filename doesn't match, so older signing artifacts continue to verify.
+- **Wave B bundle-format** — `pgserve verify` accepts both sigstore
+  bundle (`.bundle`) and detached cosign (`<tarball>.sig` +
+  `<tarball>.cert`) artifact shapes.
+
+### Preserved (intentional — for backward compatibility)
+
+- **`pgserve` CLI bin** — both `pgserve` and `autopg` bins remain
+  declared in package.json. `pgserve <verb>` works the same as it did
+  in v2.6.1.
+- **`pgserve upgrade` verb** — V3-1's clean cutover to `pgserve update`
+  was reverted on this maintenance branch (V3-1 is a v3.0.0 breaking
+  change, not safe for a patch release). Operators continue to use
+  `pgserve upgrade` on v2.x.
+- **npm publish workflow** — V3-2 dropped npm publishing from main's
+  release path; reverted on this maintenance branch so v2.6.4 publishes
+  to npm normally via the existing OIDC trusted publisher entry.
+- **Default port 8432** — unchanged from v2.6.1.
+
+### Removed
+
+(none — additive release)
+
+### Notes for `@withone/cli` + other npm dependents
+
+- `pgserve: ^2.2.3` satisfies — semver range resolves to 2.6.4.
+- No code changes required on the consumer side.
+- The next major (`autopg@v3.0.0`) ships from the new
+  `automagik-dev/autopg` repo + drops npm; if/when you migrate, switch
+  to `install.sh` + GitHub Releases per the autopg distribution model.
+
 ## [2.6.0] / [2.6.1] - 2026-05-09
 
 The 2.6 cohort closes the singleton-G3 sprint and the
