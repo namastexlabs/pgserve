@@ -19,7 +19,12 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    # `release/v2.6.x` added 2026-05-12 so the v2.6.x maintenance branch
+    # can republish via the same push-path logic main uses (auto-detect
+    # bumped package.json, skip if v${version} tag already has a GH
+    # release, else cut + publish). Tag v2.6.4 is the final pgserve npm
+    # publish before the autopg cohort takes over at v3.0.0.
+    branches: [main, release/v2.6.x]
   workflow_dispatch:
     inputs:
       bump:
