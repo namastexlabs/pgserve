@@ -117,7 +117,7 @@ stage_from_pkg() {
   # `scratch: unbound variable` and mask the real fetch error
   # (chatgpt-codex P2 review on PR #84).
   local scratch=""
-  trap 'rm -rf "$scratch"' RETURN
+  trap 'rm -rf "${scratch:-}"' RETURN
   scratch=$(mktemp -d) || return 1
 
   pushd "$scratch" >/dev/null
@@ -155,7 +155,7 @@ stage_from_url() {
 
   local scratch
   scratch=$(mktemp -d)
-  trap 'rm -rf "$scratch"' RETURN
+  trap 'rm -rf "${scratch:-}"' RETURN
 
   curl -fsSL "$url" -o "${scratch}/pg.tar.gz"
   tar -xzf "${scratch}/pg.tar.gz" -C "$scratch"
