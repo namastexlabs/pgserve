@@ -12,14 +12,14 @@ complements the cohort docs:
 
 ```bash
 # Download a release tarball + signing siblings
-gh release download v2.6.4 --repo namastexlabs/pgserve
+gh release download v2.6.4 --repo automagik-dev/autopg
 
 # Verify via autopg verify (recommended — handles trust list automatically)
 autopg verify autopg-2.6.4-linux-x64-glibc.tar.gz
 
 # OR raw cosign keyless verification
 cosign verify-blob \
-    --certificate-identity-regexp '^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$' \
+    --certificate-identity-regexp '^https://github.com/automagik-dev/autopg/.github/workflows/sign-attest.yml@refs/tags/v.*$' \
     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
     --signature autopg-2.6.4-linux-x64-glibc.tar.gz.sig \
     --certificate autopg-2.6.4-linux-x64-glibc.tar.gz.cert \
@@ -61,7 +61,7 @@ As of pgserve 2.6.x, three identities ship hardcoded (source:
 |------|-------------|---------------------|
 | `automagik-genie-release` | `@automagik/genie` | `^https://github.com/automagik-dev/genie/.github/workflows/release.yml@refs/tags/v.*$` |
 | `automagik-omni-release` | `@automagik/omni` | `^https://github.com/automagik-dev/omni/.github/workflows/release.yml@refs/tags/v.*$` |
-| `automagik-pgserve-release` | `pgserve` | `^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$` |
+| `automagik-pgserve-release` | `pgserve` | `^https://github.com/automagik-dev/autopg/.github/workflows/sign-attest.yml@refs/tags/v.*$` |
 
 All three pin the Sigstore GitHub Actions OIDC issuer
 (`https://token.actions.githubusercontent.com`) and require a tag-triggered
@@ -122,7 +122,7 @@ T25 audit).
 ### Verify a downloaded release tarball
 
 ```bash
-gh release download v2.6.4 --repo namastexlabs/pgserve
+gh release download v2.6.4 --repo automagik-dev/autopg
 autopg verify autopg-2.6.4-linux-x64-glibc.tar.gz
 ```
 
@@ -147,7 +147,7 @@ and resist trust-list rotation.
 
 ```bash
 cosign verify-blob \
-    --certificate-identity-regexp '^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$' \
+    --certificate-identity-regexp '^https://github.com/automagik-dev/autopg/.github/workflows/sign-attest.yml@refs/tags/v.*$' \
     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
     --signature autopg-2.6.4-linux-x64-glibc.tar.gz.sig \
     --certificate autopg-2.6.4-linux-x64-glibc.tar.gz.cert \
@@ -240,7 +240,7 @@ trust regexes can be threaded via `AUTOPG_TRUST_REGEX` env var or
 ## Where to file issues
 
 Signing-pipeline bugs / trust-anchor questions:
-- https://github.com/namastexlabs/pgserve/issues
+- https://github.com/automagik-dev/autopg/issues
 
 Sigstore / cosign upstream issues:
 - https://github.com/sigstore/cosign/issues

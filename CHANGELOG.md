@@ -53,8 +53,8 @@ the `pgserve` CLI bin is gone. Tracking wish:
 - **`pgserve_meta` postgres table** — separate from `autopg_meta` with
   different lifecycle (per-database vs per-consumer-app). Renaming requires
   DDL migration on deployed v2.6.x hosts; step-by-step transition.
-- **GitHub URLs at `namastexlabs/pgserve`** — `install.sh REPO=`, trust
-  regex at `src/cosign/trust-list.js`, every `github.com/namastexlabs/pgserve`
+- **GitHub URLs at `automagik-dev/autopg`** — `install.sh REPO=`, trust
+  regex at `src/cosign/trust-list.js`, every `github.com/automagik-dev/autopg`
   doc link. The repo rename to `automagik-dev/autopg` is the LAST cutover
   step (a `gh repo transfer` admin action by the operator); a follow-up
   PR rewrites all URLs + regex in lockstep when that lands.
@@ -111,7 +111,7 @@ verbs to npm; v2.6.1 followed with the B2/B3/B4 CLI fix trio.
   `locked_roots` and only touch `last_updated`.
 - **GitHub Releases as the canonical distribution channel** — `install.sh`
   fetches per-platform binaries from
-  `github.com/namastexlabs/pgserve/releases/download/v<version>/`. Cosign
+  `github.com/automagik-dev/autopg/releases/download/v<version>/`. Cosign
   attestations live in Sigstore Rekor; verification via `gh attestation verify`
   (no custom verifier server). See
   [`.github/workflows/release-publish.yml`](.github/workflows/release-publish.yml).
@@ -426,8 +426,8 @@ verbs to npm; v2.6.1 followed with the B2/B3/B4 CLI fix trio.
   `FATAL: lock file "postmaster.pid" already exists` on the next boot.
   Operators had to `rm postmaster.pid` manually to recover. A live PID
   is never touched, so a real concurrent postmaster still surfaces the
-  normal lock conflict. ([#46](https://github.com/namastexlabs/pgserve/pull/46),
-  fixes [#45](https://github.com/namastexlabs/pgserve/issues/45))
+  normal lock conflict. ([#46](https://github.com/automagik-dev/autopg/pull/46),
+  fixes [#45](https://github.com/automagik-dev/autopg/issues/45))
 
 ## 2.0.0 — Unreleased
 

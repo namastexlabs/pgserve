@@ -77,7 +77,7 @@ Five waves; G2 (dedup + integration test scaffold) is parallelizable with G1 (in
 **Goal:** Land an ≤80-line `install-autopg.sh` that fetches from GitHub Releases, verifies via `gh attestation verify`, without overwriting the legacy `install.sh`.
 
 **Deliverables:**
-1. **Replace** `install.sh` in-place (≤80 lines): detect platform → fetch the matching tarball from `github.com/namastexlabs/pgserve/releases/download/v<version>/...` → verify via `gh attestation verify` → extract → `autopg install`.
+1. **Replace** `install.sh` in-place (≤80 lines): detect platform → fetch the matching tarball from `github.com/automagik-dev/autopg/releases/download/v<version>/...` → verify via `gh attestation verify` → extract → `autopg install`.
 2. Update `README.md` install instructions: the recommended path is now `curl -fsSL .../install.sh | bash`; npm paths preserved below for development.
 
 The npm + pm2 install path the old `install.sh` provided is preserved via the existing `autopg install` CLI verb — operators who want it do `npm install -g pgserve && autopg install`.

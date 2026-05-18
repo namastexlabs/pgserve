@@ -261,7 +261,7 @@ function ensureBunHealthy(bunExe) {
   console.error('Manual fix:');
   console.error(`  cd ${path.dirname(path.dirname(installJs))}/bun && node install.js`);
   console.error('');
-  console.error('Upstream bug: https://github.com/namastexlabs/pgserve/issues/22');
+  console.error('Upstream bug: https://github.com/automagik-dev/autopg/issues/22');
   process.exit(1);
 }
 

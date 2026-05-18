@@ -14,7 +14,7 @@ Send private reports to one of the following channels:
 |---------|---------|----------|
 | Security email | `privacidade@namastex.ai` | Anything security-related, including coordinated disclosure |
 | DPO (privacy + security officer) | `dpo@khal.ai` | Privacy, LGPD, data protection concerns |
-| Private GitHub advisory | [Report via GitHub](https://github.com/namastexlabs/pgserve/security/advisories/new) | Preferred for CVE assignment and coordinated release |
+| Private GitHub advisory | [Report via GitHub](https://github.com/automagik-dev/autopg/security/advisories/new) | Preferred for CVE assignment and coordinated release |
 
 **PGP** available on request.
 
@@ -58,7 +58,7 @@ Between 2026-04-21 (~22:14 UTC) and 2026-04-22 (~14:00 UTC), versions `1.1.11`, 
 - 📖 [Full incident response manual](https://github.com/namastexlabs/genie-dpo/blob/main/knowledge/canisterworm-incident-response.md)
 - 🌐 [Public advisory (English)](https://automagik.dev/security)
 - 🌐 [Aviso público (Português)](https://automagik.dev/seguranca)
-- 🛡️ [GitHub Security Advisories](https://github.com/namastexlabs/pgserve/security/advisories) for this repository
+- 🛡️ [GitHub Security Advisories](https://github.com/automagik-dev/autopg/security/advisories) for this repository
 
 A full public post-mortem will be published within 30 days of containment.
 

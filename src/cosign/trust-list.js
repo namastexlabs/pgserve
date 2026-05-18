@@ -74,7 +74,7 @@ export const TRUSTED_IDENTITIES = Object.freeze([
     // sign-attest.yml instead. Mirror image of genie PR #1725 (binding
     // release.yml@refs/tags/v* — same Sigstore identity discipline,
     // different workflow filename).
-    identityRegexp: '^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$',
+    identityRegexp: '^https://github.com/automagik-dev/autopg/.github/workflows/sign-attest.yml@refs/tags/v.*$',
     description: 'Namastex automagik pgserve sign-attest workflow (GitHub Actions OIDC)',
   }),
 ]);

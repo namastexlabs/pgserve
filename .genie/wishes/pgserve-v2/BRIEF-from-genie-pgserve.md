@@ -76,7 +76,7 @@ The canary consumer for Group 7 / Group 0 dogfooder is **`automagik-dev/genie`**
 From `agents/genie-pgserve/AGENTS.md`:
 - **Don't restart the running pgserve daemon** at PID 160588 (orphaned but Felipe is using it for the email brain).
 - **Don't drop any `brain_*` databases** without Felipe's explicit OK.
-- **Don't merge PR #16** in `namastexlabs/pgserve` — it's superseded by this wish (delete schema/role machinery, use database-per-fingerprint).
+- **Don't merge PR #16** in `automagik-dev/autopg` — it's superseded by this wish (delete schema/role machinery, use database-per-fingerprint).
 - **Don't propose substituting pgserve with vanilla Postgres** — pgserve IS the answer.
 - **Don't spawn pgserve daemons for testing** — use ephemeral test instances per the wish's test fixtures, never daemon mode in tests.
 
