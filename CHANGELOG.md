@@ -1,3 +1,11 @@
+## v3.0.0 — autopg (org transfer + bootstrap repair)
+
+**Changed:** Repository transferred `namastexlabs/pgserve` → `automagik-dev/autopg` (transfer + rename). Old URLs 301-redirect. `src/cosign/trust-list.js` self-trust regex flipped to `automagik-dev/autopg` — v3+ binaries verify v3+ releases signed under the new org identity.
+
+**Fixed:** `install.sh` fresh-host bootstrap, broken independent of the transfer: correct `autopg-*` asset names with glibc/musl detection, `gh api` latest-resolution (the unauthenticated `curl|sed` path returned empty), correct extracted layout (`autopg/autopg`) plus a `~/.local/bin/autopg` symlink, and a `cosign verify-blob` fallback with a dual-org identity regexp so hosts on `gh < 2.49` can still cryptographically verify the current `latest` (signed pre-transfer under the old org).
+
+**Note:** the npm `pgserve` package remains on v2.6.10 as legacy LTS for `@withone/cli` — not deprecated.
+
 ## v2.2.x — Transparent Upgrade
 
 **Added:** `autopg upgrade` CLI verb — idempotent migration runner that reconciles port back to canonical 8432, flushes the binary cache against the pinned PG version, re-resolves the plpgsql `.so` path per database, refreshes `~/.autopg/<app>.env` files, signals consumers, and validates final health.
