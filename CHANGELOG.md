@@ -1,3 +1,7 @@
+## v3.0.1 — build-tarballs fix
+
+**Fixed:** `scripts/fetch-postgres-bins.sh` RETURN trap leaked globally (no `set -o functrace`) and aborted every per-platform build under `set -u` (`scratch: unbound variable`). This blocked the v3.0.0 build chain entirely; v3.0.1 is the first published v3 release (v3.0.0 tag never produced assets).
+
 ## v3.0.0 — autopg (org transfer + bootstrap repair)
 
 **Changed:** Repository transferred `namastexlabs/pgserve` → `automagik-dev/autopg` (transfer + rename). Old URLs 301-redirect. `src/cosign/trust-list.js` self-trust regex flipped to `automagik-dev/autopg` — v3+ binaries verify v3+ releases signed under the new org identity.
