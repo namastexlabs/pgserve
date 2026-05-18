@@ -8,7 +8,7 @@ Welcome. Most of this repo follows the conventions in `README.md`; this file cov
 
 ```bash
 # Standard clone
-git clone https://github.com/namastexlabs/pgserve.git
+git clone https://github.com/automagik-dev/autopg.git
 cd pgserve
 
 # Plain git worktree (used by automation under ~/.genie/worktrees/)

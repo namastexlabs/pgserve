@@ -31,7 +31,7 @@
 export const BLOCKED_VERSIONS = Object.freeze([
   // Empty by default. Populate as known-bad versions are identified.
   // Example shape (uncomment + edit when a real block is needed):
-  //   { version: '2.6.0', reason: 'Postmaster crash on Linux ARM64 — see #999', advisoryUrl: 'https://github.com/namastexlabs/pgserve/security/advisories/GHSA-xxxx' },
+  //   { version: '2.6.0', reason: 'Postmaster crash on Linux ARM64 — see #999', advisoryUrl: 'https://github.com/automagik-dev/autopg/security/advisories/GHSA-xxxx' },
 ]);
 
 /**

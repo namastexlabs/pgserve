@@ -57,7 +57,7 @@ export async function execute({ log, warn }) {
 
   if (!downloadFn) {
     warn(`binary needs refresh (pinned=${pinned}, cached=${marker || 'missing'}) but autopg postgres module not exposing download API`);
-    warn(`operator action: rerun \`curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install.sh | bash\` to refresh from GitHub Releases`);
+    warn(`operator action: rerun \`curl -fsSL https://raw.githubusercontent.com/automagik-dev/autopg/main/install.sh | bash\` to refresh from GitHub Releases`);
     return { status: 'FAIL', detail: 'binary refresh needs install.sh rerun (no npm dependency)' };
   }
   log(`re-downloading PG ${pinned} into ${cacheDir}`);

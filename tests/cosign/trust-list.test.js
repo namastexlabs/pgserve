@@ -59,13 +59,13 @@ describe('automagik-pgserve-release entry (Wave A regression)', () => {
     const re = new RegExp(entry.identityRegexp);
     expect(
       re.test(
-        'https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v2.6.4',
+        'https://github.com/automagik-dev/autopg/.github/workflows/sign-attest.yml@refs/tags/v2.6.4',
       ),
     ).toBe(true);
     // Must NOT match release.yml subjects (the unrelated npm workflow).
     expect(
       re.test(
-        'https://github.com/namastexlabs/pgserve/.github/workflows/release.yml@refs/tags/v2.6.4',
+        'https://github.com/automagik-dev/autopg/.github/workflows/release.yml@refs/tags/v2.6.4',
       ),
     ).toBe(false);
     // Must NOT match a different repo with the same workflow filename.
@@ -77,7 +77,7 @@ describe('automagik-pgserve-release entry (Wave A regression)', () => {
     // Must NOT match branch refs — only refs/tags/v.*.
     expect(
       re.test(
-        'https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/heads/main',
+        'https://github.com/automagik-dev/autopg/.github/workflows/sign-attest.yml@refs/heads/main',
       ),
     ).toBe(false);
   });

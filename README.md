@@ -102,7 +102,7 @@ psql postgresql://localhost:8432/myapp
 
 ```bash
 # Canonical install — signed binary from GitHub Releases
-curl -fsSL https://raw.githubusercontent.com/namastexlabs/pgserve/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/automagik-dev/autopg/main/install.sh | bash
 
 # Pinned version
 PGSERVE_VERSION=v2.6.0 curl -fsSL .../install.sh | bash
@@ -112,7 +112,7 @@ PGSERVE_VERSION=v2.6.0 curl -fsSL .../install.sh | bash
 
 ### Windows
 
-Download `pgserve-windows-x64.exe` from [GitHub Releases](https://github.com/namastexlabs/pgserve/releases).
+Download `pgserve-windows-x64.exe` from [GitHub Releases](https://github.com/automagik-dev/autopg/releases).
 
 Double-click to run, or use CLI:
 
@@ -903,9 +903,9 @@ Contributions welcome! Fork the repo, create a feature branch, add tests, and su
     <b>MIT License</b> — Copyright (c) 2025 Namastex Labs
   </p>
   <p>
-    <a href="https://github.com/namastexlabs/pgserve">GitHub</a> •
+    <a href="https://github.com/automagik-dev/autopg">GitHub</a> •
     <a href="https://www.npmjs.com/package/pgserve">npm</a> •
-    <a href="https://github.com/namastexlabs/pgserve/issues">Issues</a>
+    <a href="https://github.com/automagik-dev/autopg/issues">Issues</a>
   </p>
   <p>
     Made with love by <a href="https://namastex.ai">Namastex Labs</a>

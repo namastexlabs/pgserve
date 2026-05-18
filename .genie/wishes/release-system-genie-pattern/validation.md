@@ -172,18 +172,18 @@ the same archaeology.
 
 | PR | What it fixed | Symptom |
 |----|---------------|---------|
-| [#31](https://github.com/namastexlabs/pgserve/pull/31) | Added `id-token: write` to `release.yml` top-level permissions | `startup_failure` in 1s — caller permissions cannot be less than called workflow's |
-| [#32](https://github.com/namastexlabs/pgserve/pull/32) | Switched gate to `!= 'true'`, added `Debug resolved outputs` step | Build/release silently skipped despite `prepare.outputs.skip='false'` |
-| [#33](https://github.com/namastexlabs/pgserve/pull/33) | Bulletproof gate: `always() && needs.prepare.result == 'success' && needs.prepare.outputs.skip != 'true'` | Debug step proved outputs were correct; reusable-workflow caller's `if:` evaluator was treating `needs.X.outputs.Y` as null when the transitive `needs:` chain included a skipped job |
-| [#34](https://github.com/namastexlabs/pgserve/pull/34) | Surface `ref` via `prepare.outputs.ref`, checkout by SHA on push path | Build job ran, then died at checkout trying to fetch `v1.2.0` tag that nobody had created (push path doesn't run `bump`) |
-| [#35](https://github.com/namastexlabs/pgserve/pull/35) | Removed `environment: npm-publish` from `version.yml` publish job | Narrowed the OIDC claim mismatch to the workflow filename |
+| [#31](https://github.com/automagik-dev/autopg/pull/31) | Added `id-token: write` to `release.yml` top-level permissions | `startup_failure` in 1s — caller permissions cannot be less than called workflow's |
+| [#32](https://github.com/automagik-dev/autopg/pull/32) | Switched gate to `!= 'true'`, added `Debug resolved outputs` step | Build/release silently skipped despite `prepare.outputs.skip='false'` |
+| [#33](https://github.com/automagik-dev/autopg/pull/33) | Bulletproof gate: `always() && needs.prepare.result == 'success' && needs.prepare.outputs.skip != 'true'` | Debug step proved outputs were correct; reusable-workflow caller's `if:` evaluator was treating `needs.X.outputs.Y` as null when the transitive `needs:` chain included a skipped job |
+| [#34](https://github.com/automagik-dev/autopg/pull/34) | Surface `ref` via `prepare.outputs.ref`, checkout by SHA on push path | Build job ran, then died at checkout trying to fetch `v1.2.0` tag that nobody had created (push path doesn't run `bump`) |
+| [#35](https://github.com/automagik-dev/autopg/pull/35) | Removed `environment: npm-publish` from `version.yml` publish job | Narrowed the OIDC claim mismatch to the workflow filename |
 | (npmjs.com) | Trusted Publisher entry: `version.yml` → `release.yml` | npm checks the `workflow_ref` claim (top-level workflow), not `job_workflow_ref` (the reusable). Configure Trusted Publisher with the **caller** filename. |
 
 ### Final evidence
 
 | Check | Result |
 |-------|--------|
-| Workflow run | [24941829291](https://github.com/namastexlabs/pgserve/actions/runs/24941829291) — completed: success after re-run of failed publish |
+| Workflow run | [24941829291](https://github.com/automagik-dev/autopg/actions/runs/24941829291) — completed: success after re-run of failed publish |
 | All jobs | `Prepare release` ✓ · `Build linux-x64` ✓ · `Build darwin-arm64` ✓ · `Build windows-x64` ✓ · `Publish to npm` ✓ · `Create GitHub Release` ✓ |
 | npm | `npm view pgserve@latest version` → `1.2.0` |
 | GitHub Release | `gh release view v1.2.0` exists, created 2026-04-25T22:15:21Z, three platform binaries attached |

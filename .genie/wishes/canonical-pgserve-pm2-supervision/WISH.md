@@ -8,7 +8,7 @@
 | **Author** | genie-configure |
 | **Appetite** | medium-large |
 | **Branch** | `wish/canonical-pgserve-pm2-supervision` |
-| **Repos touched** | `automagik/autopg` (renamed from `namastexlabs/pgserve` in cohort sibling), `automagik-dev/omni`, `automagik-dev/genie`, `namastexlabs/genie-configure` (brain only) |
+| **Repos touched** | `automagik/autopg` (renamed from `automagik-dev/autopg` in cohort sibling), `automagik-dev/omni`, `automagik-dev/genie`, `namastexlabs/genie-configure` (brain only) |
 | **Design** | _No brainstorm — direct wish from operational pain (live debugging session 2026-04-30)_ |
 | **v2.4 cohort** | peer wishes, separate branches/PRs: `autopg-distribution-cutover` (rename + CDN + Tier B G20), `pgserve-singleton-no-proxy` (data plane + admin.json), this wish (cross-repo pm2 reuse — Tier A only) |
 
@@ -346,7 +346,7 @@ test -f brain/_decisions/2026-04-30-canonical-autopg.md
 
 - Architecture map: `brain/Configuration & Routing/canonical-pgserve-pm2.md` (230 lines, header `Updated: 2026-05-02` — fresher than original 2026-04-30 design).
 - Runbook: `brain/Runbooks/recover-pm2-stack.md` (246 lines, exact filename match).
-- ADR: `brain/_decisions/2026-04-30-canonical-pgserve.md` (112 lines; ADR header reads `Status: ACCEPTED — shipped as 3 PRs across namastexlabs/pgserve, automagik-dev/genie, automagik-dev/omni`; references this wish slug + cites the orthogonal `2026-04-30-fingerprint-trust.md` predecessor).
+- ADR: `brain/_decisions/2026-04-30-canonical-pgserve.md` (112 lines; ADR header reads `Status: ACCEPTED — shipped as 3 PRs across automagik-dev/autopg, automagik-dev/genie, automagik-dev/omni`; references this wish slug + cites the orthogonal `2026-04-30-fingerprint-trust.md` predecessor).
 
 **Filename rename note:** 2 of 3 deliverables ship under `canonical-pgserve-*` rather than the wish-prescribed `canonical-autopg-*` (only `recover-pm2-stack.md` matches exactly). Rename aligns with Decision #7 of the `autopg-distribution-cutover-finalize` wish (`autopg` and `pgserve` are interchangeable bin names). Side effect: the validation block above (`test -f brain/Configuration\ \&\ Routing/canonical-autopg-pm2.md` + `test -f brain/_decisions/2026-04-30-canonical-autopg.md`) currently FAILS against shipped state because the shipped filenames use `pgserve`. A follow-up cleanup should either retarget the test-f paths or document both names as acceptable.
 
