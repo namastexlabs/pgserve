@@ -42,12 +42,12 @@ set -euo pipefail
 #   - public key path: $AUTOPG_COSIGN_PUB
 #   - trust regex / oidc issuer ignored
 COSIGN_PUB="${AUTOPG_COSIGN_PUB:-}"
-TRUST_REGEX_DEFAULT='^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$'
+TRUST_REGEX_DEFAULT='^https://github.com/automagik-dev/autopg/.github/workflows/sign-attest.yml@refs/tags/v.*$'
 TRUST_REGEX="${AUTOPG_TRUST_REGEX:-${TRUST_REGEX_DEFAULT}}"
 OIDC_ISSUER_DEFAULT="https://token.actions.githubusercontent.com"
 OIDC_ISSUER="${AUTOPG_OIDC_ISSUER:-${OIDC_ISSUER_DEFAULT}}"
 
-SOURCE_URI_DEFAULT="github.com/namastexlabs/pgserve"
+SOURCE_URI_DEFAULT="github.com/automagik-dev/autopg"
 SOURCE_URI="${AUTOPG_SOURCE_URI:-${SOURCE_URI_DEFAULT}}"
 
 PASS=0

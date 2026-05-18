@@ -22,11 +22,11 @@
 #      resolution; stable maps to latest.json for v1-manifest back-compat)
 #
 # Verification by consumers:
-#   gh release download v<version> --repo namastexlabs/pgserve --pattern '*.tar.gz'
+#   gh release download v<version> --repo automagik-dev/autopg --pattern '*.tar.gz'
 #   pgserve verify autopg-<v>-<platform>.tar.gz
 #   # OR raw cosign keyless:
 #   cosign verify-blob \
-#     --certificate-identity-regexp '^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$' \
+#     --certificate-identity-regexp '^https://github.com/automagik-dev/autopg/.github/workflows/sign-attest.yml@refs/tags/v.*$' \
 #     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
 #     --signature autopg-<v>-<platform>.tar.gz.sig \
 #     --certificate autopg-<v>-<platform>.tar.gz.cert \

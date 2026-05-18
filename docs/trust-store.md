@@ -27,7 +27,7 @@ As of pgserve 2.6.x, three identities ship hardcoded:
 |------|-------------|------------------|
 | `automagik-genie-release` | `@automagik/genie` | `automagik-dev/genie` `release.yml@refs/tags/v.*` |
 | `automagik-omni-release` | `@automagik/omni` | `automagik-dev/omni` `release.yml@refs/tags/v.*` |
-| `automagik-pgserve-release` | `pgserve` | `namastexlabs/pgserve` `release.yml@refs/tags/v.*` |
+| `automagik-pgserve-release` | `pgserve` | `automagik-dev/autopg` `release.yml@refs/tags/v.*` |
 
 All three pin the Sigstore GitHub Actions OIDC issuer
 (`https://token.actions.githubusercontent.com`) and tag-triggered release

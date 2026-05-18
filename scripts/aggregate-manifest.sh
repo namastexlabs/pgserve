@@ -60,7 +60,7 @@ parse_args() {
   VERSION="${AUTOPG_VERSION:-}"
   BASE_URL=""
   CHANNEL="stable"
-  TRUST_REGEX_DEFAULT='^https://github.com/namastexlabs/pgserve/.github/workflows/sign-attest.yml@refs/tags/v.*$'
+  TRUST_REGEX_DEFAULT='^https://github.com/automagik-dev/autopg/.github/workflows/sign-attest.yml@refs/tags/v.*$'
   TRUST_REGEX=""
   OIDC_ISSUER_DEFAULT="https://token.actions.githubusercontent.com"
   OIDC_ISSUER=""

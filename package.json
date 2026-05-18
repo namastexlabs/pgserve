@@ -46,12 +46,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/namastexlabs/pgserve.git"
+    "url": "https://github.com/automagik-dev/autopg.git"
   },
   "bugs": {
-    "url": "https://github.com/namastexlabs/pgserve/issues"
+    "url": "https://github.com/automagik-dev/autopg/issues"
   },
-  "homepage": "https://github.com/namastexlabs/pgserve#readme",
+  "homepage": "https://github.com/automagik-dev/autopg#readme",
   "optionalDependencies": {
     "@embedded-postgres/darwin-arm64": "18.3.0-beta.17",
     "@embedded-postgres/darwin-x64": "18.3.0-beta.17",
