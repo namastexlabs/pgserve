@@ -165,7 +165,12 @@ assemble_one() {
     tar_flags+=(--owner=0 --group=0 --numeric-owner)
   fi
 
-  tar -C "$stage" -czf "$tarball" "${tar_flags[@]}" autopg/ || return 1
+  # macOS ships bash 3.2, where `"${arr[@]}"` on an EMPTY array trips
+  # `set -u` ("unbound variable"). On macOS BSD-tar none of the GNU-only
+  # flags above match, so tar_flags is empty and every darwin-* assemble
+  # died here (pre-existing; only surfaced once builds reached this step).
+  # `${arr[@]+"${arr[@]}"}` expands to nothing when unset, the flags when set.
+  tar -C "$stage" -czf "$tarball" ${tar_flags[@]+"${tar_flags[@]}"} autopg/ || return 1
   echo "    ✓ tarball: $tarball ($(du -h "$tarball" | cut -f1))"
 
   # 4) outer SHA256 — Group 8 cosign-signs this; Group 9 publishes both.

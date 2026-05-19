@@ -81,7 +81,9 @@ jobs:
       matrix:
         platform:
           - linux-x64-glibc
-          - linux-x64-musl
+          # linux-x64-musl dropped in lockstep with build-tarballs.yml
+          # (no @embedded-postgres musl package). A download-artifact for a
+          # tarball that was never built fails this leg and skips aggregate.
           - linux-arm64
           # darwin-x64 dropped in lockstep with build-tarballs.yml — see
           # the Bug #2 comment there. A `download-artifact` for a tarball

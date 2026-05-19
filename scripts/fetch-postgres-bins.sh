@@ -78,7 +78,10 @@ embedded_pkg_for() {
   case "$1" in
     linux-x64-glibc) echo "linux-x64" ;;
     linux-x64-musl)  echo "" ;;
-    linux-arm64)     echo "" ;;
+    # @embedded-postgres/linux-arm64 IS published (same 18.3.0-beta.* line
+    # as linux-x64); the mapping was just never wired, so every arm64
+    # release build failed "no @embedded-postgres pkg for linux-arm64".
+    linux-arm64)     echo "linux-arm64" ;;
     darwin-x64)      echo "darwin-x64" ;;
     darwin-arm64)    echo "darwin-arm64" ;;
     *) return 1 ;;
