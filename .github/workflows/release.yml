@@ -37,6 +37,12 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write    # the bump job's "Kick build-tarballs" step calls
+                    # `gh workflow run build-tarballs.yml` — creating a
+                    # workflow_dispatch event needs actions:write or the
+                    # default GITHUB_TOKEN gets HTTP 403 "Resource not
+                    # accessible by integration" (Bug #3 follow-up: the
+                    # dispatch step failed for v3.0.3 with exactly this).
   id-token: write   # required so the reusable `version.yml` workflow can mint
                     # the OIDC token for npm Trusted Publishing — without this,
                     # GH rejects the workflow at parse time (startup_failure)
