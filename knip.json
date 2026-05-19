@@ -3,6 +3,7 @@
   "entry": [
     "src/index.js",
     "bin/postgres-server.js",
+    "bin/autopg-cli.js",
     "bin/autopg-wrapper.cjs",
     "src/update/index.js",
     "src/commands/**",
