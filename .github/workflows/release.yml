@@ -89,6 +89,39 @@ jobs:
           git tag -a "${TAG}" -m "release ${TAG}"
           git push origin HEAD --follow-tags
 
+      # BRIEF-v3-build-fix Bug #3: the bump commit carries `[skip ci]` (a
+      # required bot-loop guard — the prepare gate filters that same marker
+      # so the push of this commit does NOT retrigger release.yml). But
+      # GitHub's skip-ci suppression ALSO applies to the *tag* push event,
+      # so `build-tarballs.yml` (on: push tags v*) never fires → the
+      # signed-release chain (build-tarballs → sign-attest →
+      # release-publish) silently never starts. This hit v2.7.0, v3.0.0,
+      # v3.0.2 (all tagged, none published anything).
+      #
+      # Fix: dispatch build-tarballs explicitly against the freshly-pushed
+      # tag. workflow_dispatch is NOT subject to skip-ci, GITHUB_TOKEN is
+      # permitted to start it, and `--ref ${TAG}` makes every job in the
+      # chain check out the tagged tree. `[skip ci]` stays intact.
+      - name: Kick build-tarballs for the tag (skip-ci-immune)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.bump.outputs.version }}"
+          TAG="${{ steps.bump.outputs.tag }}"
+          # Tag refs need a beat to register before the API accepts --ref.
+          for i in 1 2 3 4 5; do
+            if gh workflow run build-tarballs.yml \
+                 --ref "${TAG}" \
+                 -f version="${VERSION}"; then
+              echo "Dispatched build-tarballs.yml @ ${TAG} (version=${VERSION})"
+              exit 0
+            fi
+            echo "build-tarballs dispatch attempt ${i} failed; retrying in 10s"
+            sleep 10
+          done
+          echo "::error::could not dispatch build-tarballs.yml for ${TAG}"
+          exit 1
+
   # ---------------------------------------------------------------------------
   # Prepare: resolve version, skip if tag already exists, build changelog.
   #

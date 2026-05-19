@@ -31,6 +31,46 @@ DIST_DIR="${AUTOPG_DIST_DIR:-${REPO_ROOT}/dist}"
 
 PLATFORMS=(linux-x64-glibc linux-x64-musl linux-arm64 darwin-x64 darwin-arm64)
 
+# Stage the bundled shared-library tree (libssl.so.1.1, libcrypto.so.1.1,
+# libicu*.so.60, libxml2, …) that @embedded-postgres ships under native/lib/.
+#
+# WITHOUT this the postgres binary cannot start on ANY modern host: its
+# DT_NEEDED list references libssl.so.1.1 + libicui18n.so.60 which no
+# current distro provides, and its RUNPATH is `$ORIGIN/../lib` — so the
+# libs MUST sit at <out>/lib/. The previous fetch logic copied only bin/
+# + share/, so every tarball shipped a postgres that died with
+# "error while loading shared libraries" (BRIEF-v3-build-fix Bug #1b).
+#
+# The package also ships pg-symlinks.json: the version symlinks
+# (libicui18n.so.60 → libicui18n.so.60.2) that postgres' DT_NEEDED
+# resolves through are created by the package's postinstall, which we
+# deliberately skip (`npm install --ignore-scripts`). Replay them here so
+# the staged tree is self-contained and `postgres --version` works via
+# RUNPATH alone (what tests/integration/tarball-smoke.sh --real asserts).
+stage_lib_tree() {
+  local src_lib="$1" out_dir="$2" symlinks_json="${3:-}"
+  if [[ ! -d "$src_lib" ]]; then
+    echo "    (no lib/ at ${src_lib}; skipping bundled-lib stage)"
+    return 0
+  fi
+  cp -R "$src_lib" "${out_dir}/lib"
+  if [[ -n "$symlinks_json" && -f "$symlinks_json" ]]; then
+    node -e '
+      const fs = require("fs"), path = require("path");
+      const [json, libDir] = process.argv.slice(1);
+      const entries = JSON.parse(fs.readFileSync(json, "utf8"));
+      let n = 0;
+      for (const { source, target } of entries) {
+        const linkPath = path.join(libDir, path.basename(target));
+        try { fs.unlinkSync(linkPath); } catch {}
+        fs.symlinkSync(path.basename(source), linkPath);
+        n++;
+      }
+      console.log(`    ✓ replayed ${n} pg-symlinks into ${libDir}`);
+    ' "$symlinks_json" "${out_dir}/lib"
+  fi
+}
+
 # Map autopg platform tag → npm package suffix used by @embedded-postgres.
 # linux-x64-musl + linux-arm64 currently lack a published @embedded-postgres
 # package; for those, set AUTOPG_POSTGRES_LOCAL_DIR or AUTOPG_POSTGRES_URL_TEMPLATE.
@@ -106,6 +146,7 @@ stage_from_local() {
   fi
   cp -R "$local_dir/bin"   "$out_dir/bin"
   cp -R "$local_dir/share" "$out_dir/share" 2>/dev/null || mkdir -p "$out_dir/share"
+  stage_lib_tree "$local_dir/lib" "$out_dir"
 }
 
 stage_from_pkg() {
@@ -142,6 +183,7 @@ EOF
 
   cp -R "${native}/bin"   "${out_dir}/bin"
   cp -R "${native}/share" "${out_dir}/share" 2>/dev/null || mkdir -p "${out_dir}/share"
+  stage_lib_tree "${native}/lib" "${out_dir}" "${native}/pg-symlinks.json"
   popd >/dev/null
 }
 
@@ -174,6 +216,7 @@ stage_from_url() {
   fi
   cp -R "${root}/bin"   "${out_dir}/bin"
   cp -R "${root}/share" "${out_dir}/share" 2>/dev/null || mkdir -p "${out_dir}/share"
+  stage_lib_tree "${root}/lib" "${out_dir}"
 }
 
 fetch_one() {

@@ -137,8 +137,18 @@ jobs:
             # GitHub-hosted ARM64 runners; falls back to QEMU emulation
             # if the org has not yet enabled ubuntu-24.04-arm runners.
             runner:   ubuntu-24.04-arm
-          - platform: darwin-x64
-            runner:   macos-13
+          # BRIEF-v3-build-fix Bug #2: darwin-x64 is intentionally NOT in
+          # this matrix. Its only viable hosted runner is `macos-13` (the
+          # last Intel macOS image — macos-14/15 are Apple Silicon), and
+          # the org's macOS runners are chronically unavailable, so the job
+          # sat `queued` forever holding the run-level conclusion `null`.
+          # That masked real failures AND, because a missing
+          # `autopg-*-darwin-x64` artifact fails sign-attest's `aggregate`
+          # (needs:[sign], no `if: always()`), it silently sank the entire
+          # signed-release chain. Dropping it lets the 4 buildable
+          # platforms publish a real signed release. Intel-macOS support is
+          # a tracked follow-up (re-add with a self-hosted/available Intel
+          # runner, or cross-build darwin-x64 + sign on darwin-arm64).
           - platform: darwin-arm64
             runner:   macos-latest
 
