@@ -271,7 +271,7 @@ jobs:
             "version": "${VERSION}",
             "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "tarball_base": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}",
-            "platforms": ["linux-x64-glibc","linux-x64-musl","linux-arm64","darwin-x64","darwin-arm64"]
+            "platforms": ["linux-x64-glibc","linux-x64-musl","linux-arm64","darwin-arm64"]
           }
           EOF
           done

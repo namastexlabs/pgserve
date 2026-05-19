@@ -19,6 +19,9 @@ import { PostgresManager } from '../src/postgres.js';
 import { resolveSocketDir, ensureSocketDir } from '../src/lib/socket-dir.js';
 import { writeRuntimeJson, clearRuntimeJson } from '../src/lib/runtime-json.js';
 import { createLogger } from '../src/logger.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 // Global error handlers — surface unhandled rejections + uncaught errors
 // loud so a process supervisor (pm2 / systemd-user / launchd) restarts the
@@ -32,6 +35,26 @@ process.on('uncaughtException', (error) => {
 });
 
 const args = process.argv.slice(2);
+
+// `autopg --version` / `-v` — MUST exit 0 with `autopg <version>`.
+//
+// This entry point is what `scripts/build-binary.sh` compiles via
+// `bun build --compile` (the tarball's `autopg` binary IS this file),
+// AND what `bin/autopg-wrapper.cjs` spawns through bun for the npm path.
+// Both surfaces previously fell through to `printHelp()` + `exit(1)` —
+// `tests/integration/tarball-smoke.sh` swallowed the stderr and reported
+// the generic "autopg binary not executable", masking the real cause
+// (no `--version` handler ever existed). See BRIEF-v3-build-fix Bug #1a.
+//
+// Version source: build-binary.sh injects `--define BUILD_VERSION="'<v>'"`,
+// so in the compiled binary the bare `BUILD_VERSION` token is replaced with
+// a string literal. `typeof` on an undeclared identifier is the one safe
+// form in JS (returns 'undefined' without throwing), so the non-compiled
+// wrapper path falls back to package.json cleanly.
+if (args[0] === '--version' || args[0] === '-v') {
+  process.stdout.write(`autopg ${resolveVersion()}\n`);
+  process.exit(0);
+}
 
 if (args[0] === 'postmaster') {
   await runPostmasterSubcommand(args.slice(1));
@@ -216,6 +239,20 @@ no router, no bun proxy, no daemon control socket.
   }
   if (opts.socketDir === undefined) opts.socketDir = resolveSocketDir();
   return opts;
+}
+
+function resolveVersion() {
+  // Compiled binary: bun's `--define` already replaced BUILD_VERSION with a
+  // string literal. `typeof <undeclared>` is the only reference form that
+  // can't throw, so the non-compiled (wrapper/dev) path falls through here.
+  if (typeof BUILD_VERSION !== 'undefined' && BUILD_VERSION) return BUILD_VERSION;
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
+    return pkg.version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
 }
 
 function printHelp() {

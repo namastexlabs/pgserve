@@ -83,7 +83,11 @@ jobs:
           - linux-x64-glibc
           - linux-x64-musl
           - linux-arm64
-          - darwin-x64
+          # darwin-x64 dropped in lockstep with build-tarballs.yml — see
+          # the Bug #2 comment there. A `download-artifact` for a tarball
+          # build-tarballs never produced would fail this matrix leg, and
+          # the `aggregate` job (needs:[sign]) would be skipped, taking the
+          # whole release-publish chain down with it.
           - darwin-arm64
 
     steps:
