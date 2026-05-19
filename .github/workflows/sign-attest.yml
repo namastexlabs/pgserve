@@ -254,8 +254,11 @@ jobs:
         with:
           cosign-release: 'v2.4.1'
 
-      - name: Install slsa-verifier
-        uses: slsa-framework/slsa-verifier/actions/installer@v2.6.0
+      # slsa-verifier removed: it only verifies slsa-github-generator
+      # (intoto:0.0.2) provenance and rejects every actions/attest-build-
+      # provenance bundle ("unexpected tlog entry type: got dsse:0.0.1").
+      # verify-published-artifacts.sh now uses `gh attestation verify`
+      # (gh is preinstalled on GitHub runners).
 
       - name: Aggregate manifest.json
         shell: bash
@@ -269,6 +272,7 @@ jobs:
         shell: bash
         env:
           AUTOPG_SOURCE_URI: github.com/${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}   # gh attestation verify (provenance gate)
         run: |
           bash scripts/verify-published-artifacts.sh dist/
 
