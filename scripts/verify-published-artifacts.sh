@@ -112,8 +112,14 @@ require_tools() {
     exit 2
   }
   if [[ "$SKIP_SLSA" -eq 0 ]]; then
-    if ! command -v slsa-verifier >/dev/null 2>&1; then
-      note "slsa-verifier not on PATH — provenance check will be skipped (pass --skip-slsa to silence)"
+    # Provenance is produced by actions/attest-build-provenance, whose Rekor
+    # entry is `dsse:0.0.1`. `slsa-verifier verify-artifact` only understands
+    # slsa-github-generator's `intoto:0.0.2` entries and fails every bundle
+    # with "unexpected tlog entry type" — that gate is why no v3 ever got
+    # past signing. `gh attestation verify` is the first-class verifier for
+    # attest-build-provenance bundles.
+    if ! command -v gh >/dev/null 2>&1; then
+      note "gh not on PATH — provenance check will be skipped (pass --skip-slsa to silence)"
       SKIP_SLSA=1
     fi
   fi
@@ -191,13 +197,19 @@ verify_slsa() {
     bad "$(basename "$tarball"): missing .intoto.jsonl provenance"
     return 1
   fi
-  if slsa-verifier verify-artifact \
-        "$tarball" \
-        --provenance-path "$prov" \
-        --source-uri "$SOURCE_URI" >/dev/null 2>&1; then
+  # SOURCE_URI is `github.com/<owner>/<repo>`; gh wants `<owner>/<repo>`.
+  local repo="${SOURCE_URI#github.com/}"
+  # Offline bundle verification, anchored to the same Fulcio identity +
+  # OIDC issuer the cosign keyless check enforces, so a stray attestation
+  # from another workflow can't satisfy this gate.
+  if gh attestation verify "$tarball" \
+        --bundle "$prov" \
+        --repo "$repo" \
+        --cert-identity-regex "$TRUST_REGEX" \
+        --cert-oidc-issuer "$OIDC_ISSUER" >/dev/null 2>&1; then
     ok "$(basename "$tarball"): SLSA provenance verifies"
   else
-    bad "$(basename "$tarball"): slsa-verifier FAILED"
+    bad "$(basename "$tarball"): gh attestation verify FAILED"
     return 1
   fi
 }
