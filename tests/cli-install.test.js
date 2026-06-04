@@ -113,6 +113,13 @@ afterEach(() => {
 });
 
 describe('pgserve install', () => {
+  test('autopg auth is routed by the wrapper before the bun probe', () => {
+    const result = runCli(['auth', 'show-admin-path']);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(path.join(tmpHome, 'admin.json'));
+    expect(result.stderr).not.toContain('unknown verb "auth"');
+  });
+
   test('first install registers under pm2 and writes config', () => {
     const result = runCli(['install']);
     expect(result.status).toBe(0);
