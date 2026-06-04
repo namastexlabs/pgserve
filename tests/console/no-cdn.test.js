@@ -81,12 +81,14 @@ test('app.js bundle is reachable as static asset', async () => {
   // Both are valid — the test's job is to confirm if a bundle IS served, it's
   // local + valid JS.
   if (res.status === 200) {
+    expect(res.headers.get('content-type')).toMatch(/javascript/);
     const body = await res.text();
     expect(body.length).toBeGreaterThan(1000); // bundle should be > 1KB
     expect(body).not.toMatch(/unpkg\.com/);
     expect(body).not.toMatch(/jsdelivr/);
   } else {
     // src/ fallback path — accept 404 as long as src/main.jsx exists for dev mode
+    expect(res.status).toBe(404);
     const distPresent = fs.existsSync(path.join(REPO_ROOT, 'console', 'dist', 'app.js'));
     if (distPresent) {
       throw new Error(`dist/app.js exists on disk but server returned ${res.status}`);
