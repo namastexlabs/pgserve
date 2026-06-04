@@ -431,6 +431,13 @@ function handleStatic(req, res, root) {
   }
   fs.stat(target, (statErr, stat) => {
     if (statErr || !stat.isFile()) {
+      // Do not SPA-fallback concrete asset requests. If /app.js or a CSS
+      // file is missing, returning index.html as text/html creates strict
+      // module MIME failures in the browser and hides the real packaging bug.
+      if (path.extname(url)) {
+        sendError(res, 404, 'NOT_FOUND', `no file at ${url}`);
+        return;
+      }
       // SPA fallback: serve index.html on a miss so client routing works.
       const fallback = path.join(root, 'index.html');
       if (fs.existsSync(fallback)) {

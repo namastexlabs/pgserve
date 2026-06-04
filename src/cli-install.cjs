@@ -499,12 +499,56 @@ function getEffectiveSupervision() {
   }
 }
 
+/**
+ * Read the effective `runtime.enablePgvector` setting from settings.json.
+ * Defaults to `false` (matches HARDENED_DEFAULTS behavior). Returns boolean.
+ *
+ * Precedence: defaults < settings.json < env (env wins via loadEffectiveConfig).
+ *
+ * This is what propagates `autopg config set runtime.enablePgvector true` into
+ * the pm2-supervised postmaster's CLI args. Without this read, settings.json's
+ * `enablePgvector` would be silently ignored and `--pgvector` would never reach
+ * the postmaster's `parsePostmasterArgs`, so `_doEnsurePgvectorFiles` (which
+ * downloads + stages vector.so on PG start when `enablePgvector` is true) would
+ * never run — leaving fresh installs without the extension files. See
+ * https://github.com/namastexlabs/pgserve/issues/<TBD> for the regression
+ * surfaced by `@khal-os/brain` v1.61.x dogfood.
+ */
+function getEffectiveEnablePgvector() {
+  try {
+    const { loadEffectiveConfig } = require('./settings-loader.cjs');
+    const { settings } = loadEffectiveConfig();
+    return settings?.runtime?.enablePgvector === true;
+  } catch {
+    return false;
+  }
+}
+
 function buildPm2StartArgs({ scriptPath, port, dataDir, socketDir }) {
   const logs = {
     out: path.join(getLogsDir(), `${PM2_PROCESS_NAME}-out.log`),
     error: path.join(getLogsDir(), `${PM2_PROCESS_NAME}-error.log`),
   };
   const supervision = getEffectiveSupervision();
+  const enablePgvector = getEffectiveEnablePgvector();
+  const postmasterArgs = [
+    // pgserve singleton (v2.4): pm2 supervises the postmaster directly via
+    // the `pgserve postmaster` subcommand — no router, no bun proxy, no
+    // daemon control socket. Postgres binds the canonical Unix socket
+    // under <socketDir> AND TCP <port> natively. Operators connect via
+    //   psql -h $XDG_RUNTIME_DIR/pgserve     (Unix socket, no -p)
+    //   psql -h 127.0.0.1 -p 5432            (canonical TCP)
+    'postmaster',
+    '--port',
+    String(port),
+    '--data',
+    dataDir,
+    '--socket-dir',
+    socketDir,
+    '--log',
+    'warn',
+  ];
+  if (enablePgvector) postmasterArgs.push('--pgvector');
   return [
     'start',
     scriptPath,
@@ -532,21 +576,7 @@ function buildPm2StartArgs({ scriptPath, port, dataDir, socketDir }) {
     '--error',
     logs.error,
     '--',
-    // pgserve singleton (v2.4): pm2 supervises the postmaster directly via
-    // the `pgserve postmaster` subcommand — no router, no bun proxy, no
-    // daemon control socket. Postgres binds the canonical Unix socket
-    // under <socketDir> AND TCP <port> natively. Operators connect via
-    //   psql -h $XDG_RUNTIME_DIR/pgserve     (Unix socket, no -p)
-    //   psql -h 127.0.0.1 -p 5432            (canonical TCP)
-    'postmaster',
-    '--port',
-    String(port),
-    '--data',
-    dataDir,
-    '--socket-dir',
-    socketDir,
-    '--log',
-    'warn',
+    ...postmasterArgs,
   ];
 }
 

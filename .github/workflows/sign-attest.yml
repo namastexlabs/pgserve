@@ -81,9 +81,15 @@ jobs:
       matrix:
         platform:
           - linux-x64-glibc
-          - linux-x64-musl
+          # linux-x64-musl dropped in lockstep with build-tarballs.yml
+          # (no @embedded-postgres musl package). A download-artifact for a
+          # tarball that was never built fails this leg and skips aggregate.
           - linux-arm64
-          - darwin-x64
+          # darwin-x64 dropped in lockstep with build-tarballs.yml — see
+          # the Bug #2 comment there. A `download-artifact` for a tarball
+          # build-tarballs never produced would fail this matrix leg, and
+          # the `aggregate` job (needs:[sign]) would be skipped, taking the
+          # whole release-publish chain down with it.
           - darwin-arm64
 
     steps:
@@ -248,8 +254,11 @@ jobs:
         with:
           cosign-release: 'v2.4.1'
 
-      - name: Install slsa-verifier
-        uses: slsa-framework/slsa-verifier/actions/installer@v2.6.0
+      # slsa-verifier removed: it only verifies slsa-github-generator
+      # (intoto:0.0.2) provenance and rejects every actions/attest-build-
+      # provenance bundle ("unexpected tlog entry type: got dsse:0.0.1").
+      # verify-published-artifacts.sh now uses `gh attestation verify`
+      # (gh is preinstalled on GitHub runners).
 
       - name: Aggregate manifest.json
         shell: bash
@@ -263,6 +272,7 @@ jobs:
         shell: bash
         env:
           AUTOPG_SOURCE_URI: github.com/${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}   # gh attestation verify (provenance gate)
         run: |
           bash scripts/verify-published-artifacts.sh dist/
 

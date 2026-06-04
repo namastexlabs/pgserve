@@ -28,7 +28,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ENTRY_POINT="${AUTOPG_ENTRY_POINT:-bin/postgres-server.js}"
+# BRIEF-v3-build-fix #10: compile the UNIFIED CLI entry, not bare
+# postgres-server.js. bin/autopg-cli.js routes the operator verbs
+# (install/verify/doctor/…) through src/cli-install.cjs in-process and
+# delegates postmaster/serve to postgres-server.js, so the tarball
+# `autopg` has the full verb surface (and install.sh's own `autopg
+# install` works). Was `bin/postgres-server.js` → only --version/postmaster.
+ENTRY_POINT="${AUTOPG_ENTRY_POINT:-bin/autopg-cli.js}"
 DIST_DIR="${AUTOPG_DIST_DIR:-${REPO_ROOT}/dist}"
 FALLBACK_ENABLED="${AUTOPG_BUILD_FALLBACK:-0}"
 

@@ -52,6 +52,8 @@ const __installSubcommands = new Set([
   'update',
   'restart',
   'ui',
+  // Admin Basic Auth password rotation / admin path; pure node, same dispatcher.
+  'auth',
   // pgserve singleton (v2.4) — `pgserve-singleton-no-proxy` wish, Group 4.
   // `verify` shells out to cosign + writes an HMAC cache token. Pure node
   // (no bun) so it must skip the bun probe like the install surface above.

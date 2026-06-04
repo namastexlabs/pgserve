@@ -113,6 +113,13 @@ afterEach(() => {
 });
 
 describe('pgserve install', () => {
+  test('autopg auth is routed by the wrapper before the bun probe', () => {
+    const result = runCli(['auth', 'show-admin-path']);
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(path.join(tmpHome, 'admin.json'));
+    expect(result.stderr).not.toContain('unknown verb "auth"');
+  });
+
   test('first install registers under pm2 and writes config', () => {
     const result = runCli(['install']);
     expect(result.status).toBe(0);
@@ -617,6 +624,35 @@ describe('pgserve singleton (v2.4) — socket dir + admin.json supervisor record
     const sdIdx = scriptArgs.indexOf('--socket-dir');
     expect(sdIdx).toBeGreaterThan(-1);
     expect(scriptArgs[sdIdx + 1]).toBe(path.join(tmpXdg, 'pgserve'));
+  });
+
+  test('install does NOT pass --pgvector to the postmaster when settings.json omits it (default off)', () => {
+    runWithXdg(['install', '--no-ui']);
+    const calls = readCallLog(stubBin.calls);
+    const startCall = calls.find((c) => c[0] === 'start' && c.includes('autopg-server'));
+    const dashIdx = startCall.indexOf('--');
+    const scriptArgs = startCall.slice(dashIdx + 1);
+    expect(scriptArgs).not.toContain('--pgvector');
+  });
+
+  test('install passes --pgvector to the postmaster when settings.json has runtime.enablePgvector=true', () => {
+    // Pre-seed settings.json before install so loadEffectiveConfig sees it.
+    fs.mkdirSync(tmpHome, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpHome, 'settings.json'),
+      JSON.stringify({ _schemaVersion: 1, runtime: { enablePgvector: true } }),
+    );
+    runWithXdg(['install', '--no-ui']);
+    const calls = readCallLog(stubBin.calls);
+    const startCall = calls.find((c) => c[0] === 'start' && c.includes('autopg-server'));
+    const dashIdx = startCall.indexOf('--');
+    const scriptArgs = startCall.slice(dashIdx + 1);
+    // --pgvector must reach the postmaster so PostgresManager.enablePgvector
+    // is true and _doEnsurePgvectorFiles runs on PG start. Without this,
+    // `autopg config set runtime.enablePgvector true` is silently dropped
+    // and consumers (e.g. @khal-os/brain) hit "type \"vector\" does not exist"
+    // at CREATE EXTENSION time.
+    expect(scriptArgs).toContain('--pgvector');
   });
 
   test('install writes admin.json with supervisor=pm2 + canonical socketDir + port', () => {
