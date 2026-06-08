@@ -24,6 +24,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const BIN = path.join(REPO_ROOT, 'bin', 'autopg-wrapper.cjs');
 
 let tmpHome;
+let tmpRuntime;
 let stubBin;
 let originalConfigDir;
 let originalPath;
@@ -42,7 +43,7 @@ function makeStubPm2(mode = 'success') {
   // process record (so subsequent install calls hit the idempotent
   // path). We toggle via a sentinel file the test owns.
   const script = `#!/usr/bin/env node
-const fs = require('node:fs');
+import fs from 'node:fs';
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(callLog)}, JSON.stringify(args) + '\\n');
 if (args[0] === '--version') { process.stdout.write('5.0.0-stub\\n'); process.exit(0); }
@@ -86,6 +87,7 @@ function runCli(args, env = {}) {
       ...process.env,
       PGSERVE_CONFIG_DIR: tmpHome,
       PATH: `${stubBin.dir}:${process.env.PATH}`,
+      XDG_RUNTIME_DIR: tmpRuntime,
       // Default test mode: skip the B3 port pre-flight so existing
       // tests that assert on `port: 5432` literal output don't race
       // host-level services on the canonical port. B3's port-pre-
@@ -97,8 +99,24 @@ function runCli(args, env = {}) {
   });
 }
 
+function writeLiveRuntime(socketDir, port = 5432) {
+  fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    path.join(socketDir, 'runtime.json'),
+    JSON.stringify({
+      socketDir,
+      port,
+      pid: process.pid,
+      autopgPid: process.pid,
+      schemaVersion: 1,
+    }, null, 2),
+    { mode: 0o644 },
+  );
+}
+
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pgserve-cfg-'));
+  tmpRuntime = fs.mkdtempSync(path.join(os.tmpdir(), 'pgserve-runtime-'));
   stubBin = makeStubPm2('success');
   originalConfigDir = process.env.PGSERVE_CONFIG_DIR;
   originalPath = process.env.PATH;
@@ -106,6 +124,7 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpHome, { recursive: true, force: true });
+  if (tmpRuntime) fs.rmSync(tmpRuntime, { recursive: true, force: true });
   if (stubBin?.dir) fs.rmSync(stubBin.dir, { recursive: true, force: true });
   if (originalConfigDir === undefined) delete process.env.PGSERVE_CONFIG_DIR;
   else process.env.PGSERVE_CONFIG_DIR = originalConfigDir;
@@ -164,22 +183,43 @@ describe('pgserve install', () => {
     expect(scriptArgs).not.toContain('daemon');
   });
 
-  test('second install is idempotent (no second pm2 start)', () => {
+  test('second install is idempotent when pm2 has a live runtime (no second pm2 start)', () => {
     // Since v2.2.3 `autopg install` registers TWO pm2 processes (pgserve +
     // autopg-ui), so plain start-count comparisons are off. Use --no-ui to
     // keep this test focused on daemon-side idempotency.
-    runCli(['install', '--no-ui']);
-    const calls1 = readCallLog(stubBin.calls);
-    const startCount1 = calls1.filter((c) => c[0] === 'start').length;
-    expect(startCount1).toBe(1);
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'pgserve-idempotent-xdg-'));
+    try {
+      runCli(['install', '--no-ui'], { XDG_RUNTIME_DIR: tmpXdg });
+      const socketDir = path.join(tmpXdg, 'pgserve');
+      writeLiveRuntime(socketDir);
+      const calls1 = readCallLog(stubBin.calls);
+      const startCount1 = calls1.filter((c) => c[0] === 'start').length;
+      expect(startCount1).toBe(1);
 
-    const result2 = runCli(['install', '--no-ui']);
-    expect(result2.status).toBe(0);
-    expect(result2.stdout).toContain('already installed');
+      const result2 = runCli(['install', '--no-ui'], { XDG_RUNTIME_DIR: tmpXdg });
+      expect(result2.status).toBe(0);
+      expect(result2.stdout).toContain('already installed');
 
-    const calls2 = readCallLog(stubBin.calls);
-    const startCount2 = calls2.filter((c) => c[0] === 'start').length;
-    expect(startCount2).toBe(1); // no second start
+      const calls2 = readCallLog(stubBin.calls);
+      const startCount2 = calls2.filter((c) => c[0] === 'start').length;
+      expect(startCount2).toBe(1); // no second start
+    } finally {
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
+  });
+
+  test('second install refuses a pm2 ghost entry with no live runtime', () => {
+    const tmpXdg = fs.mkdtempSync(path.join(os.tmpdir(), 'pgserve-ghost-xdg-'));
+    try {
+      runCli(['install', '--no-ui'], { XDG_RUNTIME_DIR: tmpXdg });
+      const result2 = runCli(['install', '--no-ui'], { XDG_RUNTIME_DIR: tmpXdg });
+      expect(result2.status).not.toBe(0);
+      expect(result2.stderr).toContain('pm2 process "autopg-server" is not healthy');
+      expect(result2.stderr).toContain('pm2-ghost');
+      expect(result2.stderr).toContain('autopg install --redeploy');
+    } finally {
+      fs.rmSync(tmpXdg, { recursive: true, force: true });
+    }
   });
 
   test('autopg install registers BOTH autopg-server and autopg-ui by default', () => {
@@ -683,6 +723,37 @@ describe('pgserve singleton (v2.4) — socket dir + admin.json supervisor record
     expect(onDisk.supervisor).toBe('external');
     expect(onDisk.socketDir).toBe(path.join(tmpXdg, 'pgserve'));
     expect(onDisk.port).toBe(5432);
+  });
+
+  test('status marks supervisor=external healthy when runtime.json is live', () => {
+    const result = runWithXdg(['install', '--no-pm2', '--no-ui']);
+    expect(result.status).toBe(0);
+    const socketDir = path.join(tmpXdg, 'pgserve');
+    writeLiveRuntime(socketDir);
+
+    const status = runWithXdg(['status', '--json']);
+    expect(status.status).toBe(0);
+    const out = JSON.parse(status.stdout);
+    expect(out.supervisor).toBe('external');
+    expect(out.supervisorStatus).toBe('external-unmanaged');
+    expect(out.runtimeHealthy).toBe(true);
+    expect(out.healthy).toBe(true);
+    expect(out.degradedReason).toBe(null);
+    expect(out.runtime.postmasterLive).toBe(true);
+  });
+
+  test('status marks pm2 online without runtime as ghost/degraded', () => {
+    const result = runWithXdg(['install', '--no-ui']);
+    expect(result.status).toBe(0);
+
+    const status = runWithXdg(['status', '--json']);
+    expect(status.status).toBe(0);
+    const out = JSON.parse(status.stdout);
+    expect(out.supervisor).toBe('pm2');
+    expect(out.supervisorStatus).toBe('pm2-ghost');
+    expect(out.runtimeHealthy).toBe(false);
+    expect(out.healthy).toBe(false);
+    expect(out.degradedReason).toBe('pm2-entry-online-but-no-live-runtime');
   });
 
   test('install refuses with non-zero when admin.json records supervisor=systemd-user', () => {

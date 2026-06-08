@@ -377,6 +377,76 @@ function isLivePid(pid) {
   }
 }
 
+function runtimeRecordUsable(runtime) {
+  return !!(
+    runtime
+    && Number.isInteger(runtime.port)
+    && runtime.port > 0
+    && runtime.port <= 65535
+    && typeof runtime.socketDir === 'string'
+    && runtime.socketDir.length > 0
+  );
+}
+
+function runtimeRecordHealthy(runtime) {
+  return !!(
+    runtimeRecordUsable(runtime)
+    && isLivePid(runtime.autopgPid)
+    && isLivePid(runtime.pid)
+  );
+}
+
+function classifySupervisorHealth({ supervisor, proc, runtimeHealthy }) {
+  if (supervisor === 'external') {
+    return {
+      supervisorStatus: 'external-unmanaged',
+      healthy: runtimeHealthy,
+      degradedReason: runtimeHealthy ? null : 'external-supervisor-without-live-runtime',
+    };
+  }
+
+  if (supervisor === 'pm2') {
+    if (!proc) {
+      return {
+        supervisorStatus: 'pm2-missing',
+        healthy: false,
+        degradedReason: 'pm2-entry-missing',
+      };
+    }
+    const status = proc?.pm2_env?.status ?? 'unknown';
+    const pid = proc?.pid;
+    if (status !== 'online' || !Number.isInteger(pid) || pid < 1) {
+      return {
+        supervisorStatus: 'pm2-not-online',
+        healthy: false,
+        degradedReason: `pm2-entry-${status}-pid-${pid ?? 'missing'}`,
+      };
+    }
+    if (!runtimeHealthy) {
+      return {
+        supervisorStatus: 'pm2-ghost',
+        healthy: false,
+        degradedReason: 'pm2-entry-online-but-no-live-runtime',
+      };
+    }
+    return { supervisorStatus: 'pm2-online', healthy: true, degradedReason: null };
+  }
+
+  if (supervisor) {
+    return {
+      supervisorStatus: `${supervisor}-unchecked`,
+      healthy: runtimeHealthy,
+      degradedReason: runtimeHealthy ? null : `${supervisor}-without-live-runtime`,
+    };
+  }
+
+  return {
+    supervisorStatus: 'unknown',
+    healthy: runtimeHealthy,
+    degradedReason: runtimeHealthy ? null : 'no-supervisor-without-live-runtime',
+  };
+}
+
 /**
  * Compose a discovery view from runtime.json (preferred), admin.json
  * (fallback), and config.json (legacy fallback). Returns:
@@ -410,10 +480,7 @@ function readDiscovery() {
   // Mirrors the admin / config branches' Number.isInteger guard.
   let composedSocketDir = null;
   let composedPort = null;
-  const runtimeUsable = runtime
-    && Number.isInteger(runtime.port)
-    && typeof runtime.socketDir === 'string'
-    && runtime.socketDir.length > 0;
+  const runtimeUsable = runtimeRecordUsable(runtime);
   if (runtimeUsable) {
     composedSocketDir = runtime.socketDir;
     composedPort = runtime.port;
@@ -432,6 +499,8 @@ function readDiscovery() {
     socketDir: composedSocketDir,
     port: composedPort,
     liveAutopg: !!(runtime && isLivePid(runtime.autopgPid)),
+    livePostmaster: !!(runtime && isLivePid(runtime.pid)),
+    runtimeHealthy: runtimeRecordHealthy(runtime),
   };
 }
 
@@ -990,6 +1059,17 @@ async function cmdInstall(args, ctx) {
   // even on hosts where the daemon was registered pre-v2.2.3.
   const existing = redeploy ? null : pm2GetProcess(PM2_PROCESS_NAME);
   if (existing) {
+    const existingHealth = classifySupervisorHealth({
+      supervisor: 'pm2',
+      proc: existing,
+      runtimeHealthy: readDiscovery().runtimeHealthy,
+    });
+    if (!existingHealth.healthy) {
+      fail(
+        `pm2 process "${PM2_PROCESS_NAME}" is not healthy (${existingHealth.supervisorStatus}: ${existingHealth.degradedReason}). `
+        + 'Run `autopg install --redeploy` to replace the ghost entry, or `autopg doctor` for evidence.',
+      );
+    }
     ok(`already installed (pm2 process "${PM2_PROCESS_NAME}", status=${existing.pm2_env?.status ?? 'unknown'})`);
     // Refresh config in case install was re-run with new flags — but
     // don't tear down the live process. Operators wanting a port change
@@ -1094,6 +1174,12 @@ function cmdStatus(args) {
   const port = discovery.port;
   const socketDir = discovery.socketDir;
   const dataDir = config?.dataDir ?? null;
+  const runtimeHealthy = discovery.runtimeHealthy;
+  const supervisorHealth = classifySupervisorHealth({
+    supervisor: admin?.supervisor ?? null,
+    proc,
+    runtimeHealthy,
+  });
 
   const payload = {
     installed: true,
@@ -1109,6 +1195,10 @@ function cmdStatus(args) {
     restarts,
     registeredAt: config?.registeredAt ?? null,
     supervisor: admin?.supervisor ?? null,
+    supervisorStatus: supervisorHealth.supervisorStatus,
+    runtimeHealthy,
+    healthy: supervisorHealth.healthy,
+    degradedReason: supervisorHealth.degradedReason,
     runtime: runtime
       ? {
           socketDir: runtime.socketDir,
@@ -1117,6 +1207,7 @@ function cmdStatus(args) {
           autopgPid: runtime.autopgPid,
           schemaVersion: runtime.schemaVersion,
           live: discovery.liveAutopg,
+          postmasterLive: discovery.livePostmaster,
         }
       : null,
   };
@@ -1130,6 +1221,8 @@ function cmdStatus(args) {
   if (payload.supervisor) {
     process.stdout.write(`supervisor  ${payload.supervisor}\n`);
   }
+  process.stdout.write(`health      ${payload.healthy ? 'healthy' : 'degraded'} (${payload.supervisorStatus})\n`);
+  if (payload.degradedReason) process.stdout.write(`reason      ${payload.degradedReason}\n`);
   if (payload.port != null) process.stdout.write(`port        ${payload.port}\n`);
   if (payload.url) process.stdout.write(`url         ${payload.url}\n`);
   if (payload.socketDir) process.stdout.write(`socketDir   ${payload.socketDir}\n`);

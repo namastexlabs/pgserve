@@ -212,9 +212,12 @@ function pm2EntryOnline(name) {
     const entry = list.find((p) => p.name === name);
     if (!entry) return { ok: false, reason: 'no pm2 entry found' };
     if (entry.pm2_env?.status !== 'online') {
-      return { ok: false, reason: `pm2 entry status: ${entry.pm2_env?.status}` };
+      return { ok: false, reason: `pm2 entry status: ${entry.pm2_env?.status}`, entry };
     }
-    return { ok: true };
+    if (!Number.isInteger(entry.pid) || entry.pid < 1) {
+      return { ok: false, reason: `pm2 entry has invalid pid: ${entry.pid ?? 'missing'}`, entry };
+    }
+    return { ok: true, entry };
   } catch (e) {
     return { ok: false, reason: e.message };
   }
@@ -249,6 +252,22 @@ function launchdJobLoaded(label) {
   }
 }
 
+function livePid(pid) {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === 'EPERM';
+  }
+}
+
+function runtimeHealthy(admin) {
+  const socketDir = admin?.socketDir || resolveSocketDir();
+  const runtime = readRuntimeJson(socketDir);
+  return !!(runtime && isLiveRuntime(runtime) && livePid(runtime.pid));
+}
+
 function checkSupervisorLiveness(admin) {
   if (!admin || !admin.supervisor) {
     return check(
@@ -260,9 +279,19 @@ function checkSupervisorLiveness(admin) {
   switch (admin.supervisor) {
     case 'pm2': {
       const r = pm2EntryOnline('autopg-server');
-      return r.ok
-        ? check('supervisor_liveness', 'pm2 autopg-server entry online', SEVERITY.PASS)
-        : check('supervisor_liveness', 'pm2 autopg-server entry not online', SEVERITY.FAIL, r.reason, 'run `pgserve install` to (re-)register pm2 entry');
+      if (!r.ok) {
+        return check('supervisor_liveness', 'pm2 autopg-server entry not online', SEVERITY.FAIL, r.reason, 'run `pgserve install` to (re-)register pm2 entry');
+      }
+      if (!runtimeHealthy(admin)) {
+        return check(
+          'supervisor_liveness',
+          'pm2 autopg-server entry is ghosted — online but no live runtime',
+          SEVERITY.FAIL,
+          'pm2 reports online, but runtime.json is missing/stale or the postmaster pid is not live',
+          'run `autopg install --redeploy` or replace the supervisor entry',
+        );
+      }
+      return check('supervisor_liveness', 'pm2 autopg-server entry online with live runtime', SEVERITY.PASS);
     }
     case 'systemd-user': {
       const r = systemdUnitActive('autopg.service', 'user');
