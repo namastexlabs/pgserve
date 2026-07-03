@@ -31,22 +31,22 @@ describe('resolvePostmasterPassword', () => {
   });
 
   test('AUTOPG_PG_PASSWORD supplies the managed password', () => {
-    expect(resolvePostmasterPassword({ AUTOPG_PG_PASSWORD: 's3cret' })).toEqual({
-      password: 's3cret',
+    expect(resolvePostmasterPassword({ AUTOPG_PG_PASSWORD: 'example-managed-value' })).toEqual({
+      password: 'example-managed-value',
       source: 'AUTOPG_PG_PASSWORD',
     });
   });
 
   test('PGSERVE_PG_PASSWORD is honored as the legacy alias', () => {
-    expect(resolvePostmasterPassword({ PGSERVE_PG_PASSWORD: 'legacy' })).toEqual({
-      password: 'legacy',
+    expect(resolvePostmasterPassword({ PGSERVE_PG_PASSWORD: 'example-legacy-value' })).toEqual({
+      password: 'example-legacy-value',
       source: 'PGSERVE_PG_PASSWORD',
     });
   });
 
   test('AUTOPG_PG_PASSWORD wins over the legacy alias (schema env order)', () => {
-    const env = { AUTOPG_PG_PASSWORD: 'new', PGSERVE_PG_PASSWORD: 'old' };
-    expect(resolvePostmasterPassword(env).password).toBe('new');
+    const env = { AUTOPG_PG_PASSWORD: 'example-new', PGSERVE_PG_PASSWORD: 'example-old' };
+    expect(resolvePostmasterPassword(env).password).toBe('example-new');
   });
 
   test('empty-string env vars are treated as unset (cannot blank the pool password)', () => {
