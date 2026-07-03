@@ -16,6 +16,7 @@
  */
 
 import { PostgresManager } from '../src/postgres.js';
+import { resolvePostmasterPassword } from '../src/lib/postmaster-password.js';
 import { resolveSocketDir, ensureSocketDir } from '../src/lib/socket-dir.js';
 import { writeRuntimeJson, clearRuntimeJson } from '../src/lib/runtime-json.js';
 import { createLogger } from '../src/logger.js';
@@ -93,12 +94,23 @@ async function runPostmasterSubcommand(postmasterArgs) {
     process.exit(1);
   }
 
+  // Managed superuser password (AUTOPG_PG_PASSWORD / PGSERVE_PG_PASSWORD,
+  // default 'postgres'). PostgresManager feeds it to initdb's --pwfile on
+  // fresh clusters AND to its TCP admin pool — without this wire a rotated
+  // password crash-loops every postmaster restart (admin pool refused).
+  // Log the SOURCE only, never the value.
+  const { password, source: passwordSource } = resolvePostmasterPassword();
+  if (passwordSource !== 'default') {
+    logger.info({ source: passwordSource }, 'pgserve postmaster: using managed superuser password');
+  }
+
   const manager = new PostgresManager({
     dataDir: opts.dataDir,
     port: opts.port,
     socketDir,
     useRam: opts.useRam,
     enablePgvector: opts.enablePgvector,
+    password,
     logger: logger.child({ component: 'postgres' }),
   });
 
@@ -223,6 +235,11 @@ OPTIONS:
   --ram                 Use /dev/shm (Linux only)
   --pgvector            Auto-enable pgvector on new databases
   --help                Show this help
+
+ENVIRONMENT:
+  AUTOPG_PG_PASSWORD    Managed superuser password (initdb --pwfile on fresh
+                        clusters + the admin pool). PGSERVE_PG_PASSWORD is
+                        the legacy alias. Default: postgres.
 
 The postmaster binds <socket-dir>/.s.PGSQL.<port> and TCP <port> on
 localhost. This entry point is invoked by pm2/systemd-user/launchd; it has
