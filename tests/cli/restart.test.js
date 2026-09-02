@@ -2,36 +2,14 @@
  * Tests for src/cli-restart.cjs.
  *
  * Strategy:
- *   - For pm2-supervised paths, inject pm2IsAvailable / pm2GetProcess /
- *     restartViaPm2 stubs via the dispatch ctx — this avoids depending on
- *     PATH propagation through bun test's subprocess machinery.
- *   - For local respawn we point XDG_RUNTIME_DIR at a tempdir, drop a
- *     pidfile pointing at a real subprocess we control, and assert the
- *     SIGTERM + respawn flow.
+ *   - Inject PM2 and readiness stubs through the dispatch context so tests
+ *     exercise lifecycle decisions without touching the host supervisor.
  */
 
-import { test, expect, beforeEach, afterEach, describe } from 'bun:test';
-import fs from 'node:fs';
-import os from 'node:os';
+import { test, expect, describe } from 'bun:test';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-
-let tmpDir;
-let originalXdg;
-
-beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autopg-restart-'));
-  originalXdg = process.env.XDG_RUNTIME_DIR;
-  process.env.XDG_RUNTIME_DIR = tmpDir;
-});
-
-afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-  if (originalXdg === undefined) delete process.env.XDG_RUNTIME_DIR;
-  else process.env.XDG_RUNTIME_DIR = originalXdg;
-});
 
 function freshRestart() {
   const restartPath = path.join(REPO_ROOT, 'src', 'cli-restart.cjs');
@@ -40,156 +18,83 @@ function freshRestart() {
 }
 
 describe('pm2 supervised path', () => {
-  test('calls restartViaPm2 when pm2 is available and process is registered', () => {
+  test('restarts the canonical autopg-server process and waits for readiness', async () => {
     const restart = freshRestart();
     let restartCalled = false;
-    const code = restart.dispatch([], {
+    let requestedProcess = null;
+    let readinessChecked = false;
+    const code = await restart.dispatch([], {
       scriptPath: 'unused',
       pm2IsAvailable: () => true,
-      pm2GetProcess: () => ({ name: 'pgserve', pid: 1234 }),
+      pm2GetProcess: (name) => {
+        requestedProcess = name;
+        return { name: 'autopg-server', pid: 1234 };
+      },
       restartViaPm2: () => {
         restartCalled = true;
         return 0;
       },
+      waitForServiceReadiness: async () => {
+        readinessChecked = true;
+        return { ready: true, status: 'ready' };
+      },
     });
     expect(code).toBe(0);
+    expect(requestedProcess).toBe('autopg-server');
     expect(restartCalled).toBe(true);
+    expect(readinessChecked).toBe(true);
   });
 
-  test('returns 1 when restartViaPm2 fails', () => {
+  test('returns 1 when restartViaPm2 fails', async () => {
     const restart = freshRestart();
-    const code = restart.dispatch([], {
+    const code = await restart.dispatch([], {
       scriptPath: 'unused',
       pm2IsAvailable: () => true,
-      pm2GetProcess: () => ({ name: 'pgserve' }),
+      pm2GetProcess: () => ({ name: 'autopg-server' }),
       restartViaPm2: () => 1,
     });
     expect(code).toBe(1);
   });
 
-  test('falls through to local respawn when pm2 is missing', () => {
+  test('returns 1 when the restarted process never becomes ready', async () => {
     const restart = freshRestart();
-    const stubWrapper = path.join(tmpDir, 'wrapper.cjs');
-    fs.writeFileSync(stubWrapper, "process.exit(0);\n", { mode: 0o755 });
-    const code = restart.dispatch([], {
-      scriptPath: stubWrapper,
-      pm2IsAvailable: () => false,
-      pm2GetProcess: () => null,
-    });
-    expect(code).toBe(0);
-  });
-
-  test('falls through to local respawn when pm2 has no pgserve process', () => {
-    const restart = freshRestart();
-    const stubWrapper = path.join(tmpDir, 'wrapper.cjs');
-    fs.writeFileSync(stubWrapper, "process.exit(0);\n", { mode: 0o755 });
-    const code = restart.dispatch([], {
-      scriptPath: stubWrapper,
+    const code = await restart.dispatch([], {
       pm2IsAvailable: () => true,
-      pm2GetProcess: () => null,
+      pm2GetProcess: () => ({ name: 'autopg-server' }),
+      restartViaPm2: () => 0,
+      waitForServiceReadiness: async () => ({
+        ready: false,
+        status: 'degraded',
+        supervisorStatus: 'online',
+        runtimeLive: false,
+        reasons: ['runtime process is not live'],
+      }),
     });
-    expect(code).toBe(0);
-  });
-});
-
-describe('local respawn path', () => {
-  test('respawns directly when no pidfile is present', () => {
-    const restart = freshRestart();
-    const stubWrapper = path.join(tmpDir, 'wrapper.cjs');
-    fs.writeFileSync(stubWrapper, "process.exit(0);\n", { mode: 0o755 });
-    const code = restart.dispatch([], {
-      scriptPath: stubWrapper,
-      pm2IsAvailable: () => false,
-      pm2GetProcess: () => null,
-    });
-    expect(code).toBe(0);
+    expect(code).toBe(1);
   });
 
-  test('errors with code 1 when wrapper script is missing', () => {
+  test('fails instead of spawning an unmanaged daemon when pm2 is unavailable', async () => {
     const restart = freshRestart();
-    const code = restart.dispatch([], {
-      scriptPath: '/nonexistent/wrapper.cjs',
+    const code = await restart.dispatch([], {
       pm2IsAvailable: () => false,
       pm2GetProcess: () => null,
     });
     expect(code).toBe(1);
   });
 
-  test('signals SIGTERM to the daemon pid in the pidfile and respawns', async () => {
-    const pidDir = path.join(tmpDir, 'pgserve');
-    fs.mkdirSync(pidDir, { recursive: true });
-    const pidPath = path.join(pidDir, 'pgserve.pid');
-
-    // Spawn a subprocess that handles SIGTERM by removing its pidfile —
-    // mirrors what the real daemon does on graceful shutdown.
-    const child = spawn(
-      process.execPath,
-      [
-        '-e',
-        `
-        const fs = require('fs');
-        const pidPath = ${JSON.stringify(pidPath)};
-        fs.writeFileSync(pidPath, String(process.pid));
-        process.on('SIGTERM', () => {
-          try { fs.unlinkSync(pidPath); } catch {}
-          process.exit(0);
-        });
-        setInterval(() => {}, 1000);
-        `,
-      ],
-      { stdio: 'ignore' },
-    );
-
-    // Wait for the pidfile to be written.
-    const deadline = Date.now() + 5000;
-    while (!fs.existsSync(pidPath) && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    expect(fs.existsSync(pidPath)).toBe(true);
-
-    const stubWrapper = path.join(tmpDir, 'wrapper.cjs');
-    fs.writeFileSync(stubWrapper, "process.exit(0);\n", { mode: 0o755 });
-
+  test('fails instead of spawning an unmanaged daemon when the pm2 entry is missing', async () => {
     const restart = freshRestart();
-    const code = restart.dispatch([], {
-      scriptPath: stubWrapper,
-      pm2IsAvailable: () => false,
+    const code = await restart.dispatch([], {
+      pm2IsAvailable: () => true,
       pm2GetProcess: () => null,
     });
-    expect(code).toBe(0);
-
-    // Give the child a moment to clean up, then verify SIGTERM landed.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(fs.existsSync(pidPath)).toBe(false);
-    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    expect(code).toBe(1);
   });
 });
 
 describe('module helpers', () => {
-  test('readPid handles missing file', () => {
+  test('uses the canonical pm2 process name', () => {
     const restart = freshRestart();
-    expect(restart._internals.readPid('/nonexistent/pidfile')).toBe(null);
-  });
-
-  test('readPid handles malformed contents', () => {
-    const malformed = path.join(tmpDir, 'bad.pid');
-    fs.writeFileSync(malformed, 'not a number');
-    const restart = freshRestart();
-    expect(restart._internals.readPid(malformed)).toBe(null);
-  });
-
-  test('readPid returns the integer pid on a valid file', () => {
-    const good = path.join(tmpDir, 'good.pid');
-    fs.writeFileSync(good, '12345\n');
-    const restart = freshRestart();
-    expect(restart._internals.readPid(good)).toBe(12345);
-  });
-
-  test('isAlive reports true for current process and false for absurd pids', () => {
-    const restart = freshRestart();
-    expect(restart._internals.isAlive(process.pid)).toBe(true);
-    // Pid 0 is "process group" on POSIX so we use a very large number that
-    // won't be assigned. EPERM would still report alive (rare here).
-    expect(restart._internals.isAlive(2147483646)).toBe(false);
+    expect(restart._internals.PM2_PROCESS_NAME).toBe('autopg-server');
   });
 });

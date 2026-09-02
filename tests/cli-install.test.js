@@ -37,22 +37,42 @@ function makeStubPm2(mode = 'success') {
     return { dir, calls: [] };
   }
   const callLog = path.join(dir, 'calls.log');
+  const serviceState = path.join(dir, 'service-state.json');
+  const statusFile = path.join(dir, 'process-status');
   const exitCode = mode === 'failure' ? 1 : 0;
   // jlist returns either an empty list (so install proceeds) or a fake
   // process record (so subsequent install calls hit the idempotent
   // path). We toggle via a sentinel file the test owns.
   const script = `#!/usr/bin/env node
 const fs = require('node:fs');
+const path = require('node:path');
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(callLog)}, JSON.stringify(args) + '\\n');
+const serviceStatePath = ${JSON.stringify(serviceState)};
+function refreshRuntime() {
+  if (!fs.existsSync(serviceStatePath)) return;
+  const state = JSON.parse(fs.readFileSync(serviceStatePath, 'utf8'));
+  fs.mkdirSync(state.socketDir, { recursive: true });
+  fs.writeFileSync(path.join(state.socketDir, 'runtime.json'), JSON.stringify({
+    socketDir: state.socketDir,
+    port: state.port,
+    pid: Number(process.env.AUTOPG_TEST_LIVE_PID) || process.ppid,
+    autopgPid: Number(process.env.AUTOPG_TEST_LIVE_PID) || process.ppid,
+    schemaVersion: 1
+  }));
+}
 if (args[0] === '--version') { process.stdout.write('5.0.0-stub\\n'); process.exit(0); }
 if (args[0] === 'jlist') {
   const sentinel = ${JSON.stringify(path.join(dir, 'registered'))};
   if (fs.existsSync(sentinel)) {
+    refreshRuntime();
+    const processStatus = fs.existsSync(${JSON.stringify(statusFile)})
+      ? fs.readFileSync(${JSON.stringify(statusFile)}, 'utf8').trim()
+      : 'online';
     process.stdout.write(JSON.stringify([{
       name: 'autopg-server',
-      pid: 12345,
-      pm2_env: { status: 'online', pm_uptime: Date.now() - 1000, restart_time: 0 }
+      pid: Number(process.env.AUTOPG_TEST_LIVE_PID) || 12345,
+      pm2_env: { status: processStatus, pm_uptime: Date.now() - 1000, restart_time: 0 }
     }]) + '\\n');
   } else {
     process.stdout.write('[]\\n');
@@ -61,17 +81,29 @@ if (args[0] === 'jlist') {
 }
 if (args[0] === 'start') {
   fs.writeFileSync(${JSON.stringify(path.join(dir, 'registered'))}, '');
+  fs.writeFileSync(${JSON.stringify(statusFile)}, 'online');
+  const nameIndex = args.indexOf('--name');
+  if (nameIndex >= 0 && args[nameIndex + 1] === 'autopg-server') {
+    const socketIndex = args.lastIndexOf('--socket-dir');
+    const portIndex = args.lastIndexOf('--port');
+    fs.writeFileSync(serviceStatePath, JSON.stringify({
+      socketDir: args[socketIndex + 1],
+      port: Number(args[portIndex + 1])
+    }));
+    refreshRuntime();
+  }
   process.exit(${exitCode});
 }
 if (args[0] === 'delete') {
   try { fs.unlinkSync(${JSON.stringify(path.join(dir, 'registered'))}); } catch {}
+  try { fs.unlinkSync(${JSON.stringify(statusFile)}); } catch {}
   process.exit(${exitCode});
 }
 process.exit(0);
 `;
   const pm2Path = path.join(dir, 'pm2');
   fs.writeFileSync(pm2Path, script, { mode: 0o755 });
-  return { dir, calls: callLog };
+  return { dir, calls: callLog, statusFile };
 }
 
 function readCallLog(callsPath) {
@@ -85,6 +117,8 @@ function runCli(args, env = {}) {
     env: {
       ...process.env,
       PGSERVE_CONFIG_DIR: tmpHome,
+      AUTOPG_TEST_LIVE_PID: String(process.pid),
+      XDG_RUNTIME_DIR: path.join(tmpHome, 'runtime'),
       PATH: `${stubBin.dir}:${process.env.PATH}`,
       // Default test mode: skip the B3 port pre-flight so existing
       // tests that assert on `port: 5432` literal output don't race
@@ -180,6 +214,18 @@ describe('pgserve install', () => {
     const calls2 = readCallLog(stubBin.calls);
     const startCount2 = calls2.filter((c) => c[0] === 'start').length;
     expect(startCount2).toBe(1); // no second start
+  });
+
+  test('an existing stopped pm2 entry is started and must become ready', () => {
+    runCli(['install', '--no-ui']);
+    fs.writeFileSync(stubBin.statusFile, 'stopped');
+
+    const result = runCli(['install', '--no-ui']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('already installed and ready');
+
+    const calls = readCallLog(stubBin.calls);
+    expect(calls).toContainEqual(['start', 'autopg-server']);
   });
 
   test('autopg install registers BOTH autopg-server and autopg-ui by default', () => {
@@ -543,14 +589,16 @@ describe('pgserve status', () => {
     expect(out.installed).toBe(false);
   });
 
-  test('status after install reports running with port from config', () => {
+  test('status after install reports readiness separately from pm2 state', () => {
     runCli(['install', '--port', '8482']);
     const result = runCli(['status', '--json']);
     expect(result.status).toBe(0);
     const out = JSON.parse(result.stdout);
     expect(out.installed).toBe(true);
     expect(out.name).toBe('autopg-server');
-    expect(out.status).toBe('online');
+    expect(out.status).toBe('ready');
+    expect(out.ready).toBe(true);
+    expect(out.supervisorStatus).toBe('online');
     expect(out.port).toBe(8482);
     expect(out.url).toBe('postgres://localhost:8482/postgres');
   });
@@ -562,6 +610,24 @@ describe('pgserve status', () => {
     expect(result.stdout).toContain('port');
     expect(result.stdout).toContain('5432');
     expect(result.stdout).toContain('postgres://localhost:5432/postgres');
+  });
+
+  test('status is degraded when pm2 is online but the runtime process is stale', () => {
+    runCli(['install', '--port', '8482']);
+    const admin = JSON.parse(fs.readFileSync(path.join(tmpHome, 'admin.json'), 'utf8'));
+    const runtimePath = path.join(admin.socketDir, 'runtime.json');
+    const runtime = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+    fs.writeFileSync(runtimePath, JSON.stringify({ ...runtime, autopgPid: 2147483646 }));
+
+    // Prevent the pm2 stub from refreshing runtime for this probe.
+    fs.rmSync(path.join(stubBin.dir, 'service-state.json'));
+    const result = runCli(['status', '--json']);
+    const out = JSON.parse(result.stdout);
+
+    expect(out.supervisorStatus).toBe('online');
+    expect(out.ready).toBe(false);
+    expect(out.status).toBe('degraded');
+    expect(out.runtime.live).toBe(false);
   });
 });
 
@@ -708,11 +774,20 @@ describe('pgserve singleton (v2.4) — socket dir + admin.json supervisor record
     // Clear XDG so resolveSocketDir falls back. The canonical /tmp/pgserve
     // path may already exist on the host — that's fine: ensureSocketDir
     // is idempotent and re-chmods to 0700.
-    const result = runCli(['install', '--no-ui'], { XDG_RUNTIME_DIR: '' });
-    expect(result.status).toBe(0);
-    const onDisk = JSON.parse(fs.readFileSync(path.join(tmpHome, 'admin.json'), 'utf8'));
-    expect(onDisk.socketDir).toBe('/tmp/pgserve');
-    expect(fs.statSync('/tmp/pgserve').mode & 0o777).toBe(0o700);
+    const runtimePath = '/tmp/pgserve/runtime.json';
+    const previousRuntime = fs.existsSync(runtimePath)
+      ? fs.readFileSync(runtimePath)
+      : null;
+    try {
+      const result = runCli(['install', '--no-ui'], { XDG_RUNTIME_DIR: '' });
+      expect(result.status).toBe(0);
+      const onDisk = JSON.parse(fs.readFileSync(path.join(tmpHome, 'admin.json'), 'utf8'));
+      expect(onDisk.socketDir).toBe('/tmp/pgserve');
+      expect(fs.statSync('/tmp/pgserve').mode & 0o777).toBe(0o700);
+    } finally {
+      if (previousRuntime) fs.writeFileSync(runtimePath, previousRuntime);
+      else fs.rmSync(runtimePath, { force: true });
+    }
   });
 });
 

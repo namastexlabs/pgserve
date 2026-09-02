@@ -137,7 +137,7 @@ autopg uninstall [--yes]               # remove from pm2 (data dir kept); confir
 autopg status                          # pm2 + on-disk config snapshot
 autopg url | autopg port               # canonical connection string / port
 autopg config <list|get|set|edit|path|init>   # manage ~/.autopg/settings.json
-autopg restart                         # pm2-aware: pm2 restart pgserve, else SIGTERM+respawn
+autopg restart                         # restart autopg-server; succeeds only when PostgreSQL is ready
 autopg ui [--port N] [--no-open]       # local web console on 127.0.0.1
 ```
 
