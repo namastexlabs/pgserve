@@ -133,7 +133,7 @@ this README and in `console/` use `autopg`.
 autopg [options]                       # foreground server (alias: pgserve)
 autopg daemon                          # long-lived background daemon
 autopg install [--port N] [--data P]   # register pgserve under pm2
-autopg uninstall                       # remove from pm2 (data dir kept)
+autopg uninstall [--yes]               # remove from pm2 (data dir kept); confirms first
 autopg status                          # pm2 + on-disk config snapshot
 autopg url | autopg port               # canonical connection string / port
 autopg config <list|get|set|edit|path|init>   # manage ~/.autopg/settings.json
@@ -254,7 +254,7 @@ autopg install --data /data/pg    # custom data dir
 autopg url                        # postgres://localhost:8432/postgres
 autopg port                       # 8432
 autopg status                     # pm2 + on-disk config snapshot
-autopg uninstall                  # remove from pm2; keep data dir
+autopg uninstall                  # remove from pm2; keep data dir (prompts; --yes for scripts)
 ```
 
 **Hardened defaults** (tuned for production-grade Postgres workloads,
