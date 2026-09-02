@@ -648,6 +648,21 @@ pgserve --ram --pgvector
 
 When `--pgvector` is enabled, every new database automatically has the vector extension installed. No SQL setup required.
 
+On Linux the `vector` extension files are fetched once from the pgdg apt pool
+(`postgresql-<major>-pgvector_<ver>.pgdg+1_<arch>.deb`). The version is
+resolved from the pool listing at install time (highest wins) because pgdg
+removes superseded packages; if the listing is unreachable a short list of
+known versions is tried in order. Overrides:
+
+| Env var | Effect |
+|---|---|
+| `AUTOPG_PGVECTOR_VERSION=<ver>` | Pin one pool version (e.g. `0.8.6-1`) instead of resolving. |
+| `AUTOPG_PGVECTOR_DEB=<file.deb>` | Install a local `.deb`; no network access. |
+
+A failed install never stops the postmaster, but it is logged with the
+versions tried and the override to use; `CREATE EXTENSION vector` fails until
+it is fixed.
+
 <details>
 <summary><b>Using pgvector</b></summary>
 
